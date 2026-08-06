@@ -46,37 +46,39 @@ func TestSASLPassthroughE2E(t *testing.T) {
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	if !findCapSub(d.sent, "NEW", "sasl") {
-		t.Fatalf("attach CAP NEW missing sasl: %+v", capMsgs(d.sent))
+	if !findCapSub(d.snapshot(), "NEW", "sasl") {
+		t.Fatalf("attach CAP NEW missing sasl: %+v", capMsgs(d.snapshot()))
 	}
-	d.sent = nil
+	d.clearSent()
 
 	if err := s.RequestClientSASL(d); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 3*time.Second, func() bool { return d.HasCap("sasl") })
-	if !findCapSub(d.sent, "ACK", "sasl") {
-		t.Fatalf("want CAP ACK sasl: %+v", capMsgs(d.sent))
+	if !findCapSub(d.snapshot(), "ACK", "sasl") {
+		t.Fatalf("want CAP ACK sasl: %+v", capMsgs(d.snapshot()))
 	}
-	d.sent = nil
+	d.clearSent()
 
 	if err := s.HandleClientMessage(d, irc.Message{Command: "AUTHENTICATE", Params: []string{"PLAIN"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 3*time.Second, func() bool {
-		return len(d.sent) > 0 && d.sent[len(d.sent)-1].Command == "AUTHENTICATE"
+		sent := d.snapshot()
+		return len(sent) > 0 && sent[len(sent)-1].Command == "AUTHENTICATE"
 	})
-	if got := d.sent[len(d.sent)-1].Param(0); got != "+" {
-		t.Fatalf("want AUTHENTICATE +, got %q in %+v", got, d.sent)
+	sent := d.snapshot()
+	if got := sent[len(sent)-1].Param(0); got != "+" {
+		t.Fatalf("want AUTHENTICATE +, got %q in %+v", got, sent)
 	}
-	d.sent = nil
+	d.clearSent()
 
 	payload := base64.StdEncoding.EncodeToString([]byte("\x00user\x00pass"))
 	if err := s.HandleClientMessage(d, irc.Message{Command: "AUTHENTICATE", Params: []string{payload}}); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 3*time.Second, func() bool {
-		for _, m := range d.sent {
+		for _, m := range d.snapshot() {
 			if m.Command == "903" {
 				return true
 			}
@@ -246,11 +248,12 @@ func TestSASLCAPNewDelPassthrough(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	if !findCapSub(d.sent, "NEW", "sasl") {
-		t.Fatalf("expected CAP NEW sasl: %+v", capMsgs(d.sent))
+	sent := d.snapshot()
+	if !findCapSub(sent, "NEW", "sasl") {
+		t.Fatalf("expected CAP NEW sasl: %+v", capMsgs(sent))
 	}
-	if !findCapSub(d.sent, "DEL", "sasl") {
-		t.Fatalf("expected CAP DEL sasl: %+v", capMsgs(d.sent))
+	if !findCapSub(sent, "DEL", "sasl") {
+		t.Fatalf("expected CAP DEL sasl: %+v", capMsgs(sent))
 	}
 	cancel()
 	<-runDone

@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
@@ -754,15 +755,61 @@ func TestRequestClientSASLAlreadyEnabled(t *testing.T) {
 
 type fakeDL struct {
 	id   ClientID
+	mu   sync.Mutex
 	caps map[string]bool
 	sent []irc.Message
 }
 
-func (f *fakeDL) ID() ClientID             { return f.id }
-func (f *fakeDL) Caps() map[string]bool    { return f.caps }
-func (f *fakeDL) HasCap(n string) bool     { return f.caps[n] }
-func (f *fakeDL) ClearCap(n string)        { delete(f.caps, n) }
-func (f *fakeDL) EnableCap(n string)       { f.caps[n] = true }
-func (f *fakeDL) Send(m irc.Message) error { f.sent = append(f.sent, m); return nil }
-func (f *fakeDL) Close() error             { return nil }
+func (f *fakeDL) ID() ClientID { return f.id }
+
+func (f *fakeDL) Caps() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]bool, len(f.caps))
+	for k, v := range f.caps {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeDL) HasCap(n string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.caps[n]
+}
+
+func (f *fakeDL) ClearCap(n string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.caps, n)
+}
+
+func (f *fakeDL) EnableCap(n string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.caps[n] = true
+}
+
+func (f *fakeDL) Send(m irc.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, m)
+	return nil
+}
+
+func (f *fakeDL) Close() error { return nil }
+
+func (f *fakeDL) snapshot() []irc.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]irc.Message, len(f.sent))
+	copy(out, f.sent)
+	return out
+}
+
+func (f *fakeDL) clearSent() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = nil
+}
 
