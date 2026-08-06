@@ -1,0 +1,15 @@
+# One IRC line per entry; blank and # comments ignored.
+# Used by TestGoldenMessages for parse/encode round-trips.
+
+PING :lag123
+:irc.example.org 001 alice :Welcome to the Internet Relay Network alice
+:alice!a@localhost JOIN #test
+:bob!b@host PRIVMSG #test :hello world
+PRIVMSG alice :hi there
+NOTICE #test :server notice
+@time=2011-10-19T16:40:51.620Z :Angel!angel@example.org PRIVMSG Wiz :Hello
+@aaa=bbb;ccc;example.com/ddd=eee :nick!user@host TAGMSG #chan
+@label=xyz :me!u@h WHOIS other
+:server 005 nick CHANMODES=beI,k,l,imnpst PREFIX=(ov)@+ CASEMAPPING=rfc1459 :are supported by this server
+:nick!u@h MODE #chan +o alice
+:nick!u@h MODE #chan +ntl 42

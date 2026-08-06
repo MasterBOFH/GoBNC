@@ -1,0 +1,11 @@
+{
+  "listen_addr": "127.0.0.1:6697",
+  "tls_cert": "certs/server.crt",
+  "tls_key": "certs/server.key",
+  "db_path": "gobnc.db",
+  "control_socket": "gobnc.sock",
+  "log_level": "info",
+  "log_file": "",
+  "allow_password_auth": true,
+  "allow_cert_auth": true
+}

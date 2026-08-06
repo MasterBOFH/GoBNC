@@ -1,0 +1,50 @@
+# Major ircd matrix for parser interop (`make test-ircd`).
+# Most irccom images are amd64-only; Colima/QEMU runs them via platform.
+services:
+  ircu2:
+    image: irccom/ircu2:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4443:4443"
+  unreal4:
+    image: irccom/unreal4:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4441:4441"
+  inspircd:
+    image: irccom/inspircd:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4448:4448"
+  hybrid:
+    image: irccom/ircd-hybrid:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4442:4442"
+  ngircd:
+    image: irccom/ngircd:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4445:4445"
+  bahamut:
+    image: irccom/bahamut:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4444:4444"
+  charybdis:
+    image: irccom/charybdis:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4447:4447"
+  ircd-irc2:
+    image: irccom/ircd-irc2:latest
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:4440:4440"
+  ergo:
+    image: ghcr.io/ergochat/ergo:stable
+    ports:
+      - "127.0.0.1:6667:6667"
+    volumes:
+      - ./ergo.yaml:/ircd.yaml:ro
+    command: ["ergo", "run", "--conf", "/ircd.yaml"]

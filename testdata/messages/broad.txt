@@ -1,0 +1,54 @@
+# Broad command/tag fixtures for parse↔encode coverage.
+# Format: one IRC line per non-comment line.
+
+# JOIN / PART / multi
+:nick!u@h JOIN #a
+:nick!u@h JOIN #a,#b
+:nick!u@h PART #a :bye
+:nick!u@h PART #a,#b
+
+# PRIVMSG / NOTICE / STATUSMSG
+:nick!u@h PRIVMSG #chan :hello
+:nick!u@h PRIVMSG alice :pm
+:nick!u@h NOTICE #chan :channel notice
+:nick!u@h NOTICE alice :private notice
+:nick!u@h PRIVMSG @#chan :ops only statusmsg
+:nick!u@h PRIVMSG +#chan :voice statusmsg
+:nick!u@h NOTICE @#chan :ops notice
+
+# Server notices / wallops-ish
+:irc.example.com NOTICE * :*** Looking up your hostname
+:irc.example.com NOTICE nick :Server notice to nick
+:oper!o@h WALLOPS :important
+
+# Tags (IRCv3)
+@time=2024-01-02T03:04:05.000Z;msgid=abc :nick!u@h PRIVMSG #c :tagged
+@account=nick;time=2024-01-02T03:04:05.000Z :nick!u@h NOTICE #c :tagged notice
+@+typing=active :nick!u@h TAGMSG #c
+@label=xyz;batch=ref :irc.example.com NOTICE nick :labeled
+
+# KICK / QUIT
+:op!u@h KICK #chan victim :go away
+:nick!u@h QUIT :Client Quit
+:nick!u@h QUIT
+
+# User modes / channel modes / list modes
+:nick!u@h MODE nick +i
+:nick!u@h MODE nick -i+w
+:nick!u@h MODE #chan +nt
+:nick!u@h MODE #chan +o alice
+:nick!u@h MODE #chan +v-o bob alice
+:nick!u@h MODE #chan +b *!*@spam.example
+:nick!u@h MODE #chan +k secret
+:nick!u@h MODE #chan +l 42
+:nick!u@h MODE #chan +beI *!*@a *!*@b nick!*@*
+:irc.example.com 367 nick #chan *!*@spam.example setter 1710000000
+:irc.example.com 368 nick #chan :End of Channel Ban List
+:irc.example.com 324 nick #chan +ntk secret
+:irc.example.com 329 nick #chan 1710000000
+
+# Numerics often seen around joins
+:irc.example.com 353 nick = #chan :@alice +bob carol
+:irc.example.com 366 nick #chan :End of /NAMES list.
+:irc.example.com 332 nick #chan :topic text
+:irc.example.com 333 nick #chan setter 1710000000

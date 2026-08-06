@@ -1,0 +1,11 @@
+/bin/
+*.db
+*.sock
+gobnc.json
+certs/
+.DS_Store
+demo/*.db
+demo/*.json
+demo/*.log
+demo/*.sock
+*.log

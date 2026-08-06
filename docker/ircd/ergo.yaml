@@ -1,0 +1,45 @@
+network:
+  name: ErgoTest
+
+server:
+  name: ergo.test
+  listeners:
+    ":6667":
+  max-sendq: 16k
+  enforce-ident: false
+  lookup-hostnames: false
+  check-ident: false
+
+accounts:
+  authentication-enabled: false
+  registration:
+    enabled: false
+
+channels:
+  default-modes: +nt
+  registration:
+    enabled: false
+
+history:
+  enabled: true
+  autoresize-window: 24h
+  autofill-depth: 100
+
+limits:
+  nicklen: 32
+  channellen: 64
+  awaylen: 200
+  kicklen: 200
+  topiclen: 390
+  linelen:
+    rest: 2048
+
+roleplay:
+  enabled: false
+
+extjwt:
+  default: {}
+
+languages:
+  default: en
+  path: /languages
