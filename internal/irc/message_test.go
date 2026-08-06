@@ -9,17 +9,45 @@ import (
 	"testing"
 )
 
-func TestEncodeAlwaysColonTrailing(t *testing.T) {
-	msg := Message{Source: "nick!u@h", Command: "PRIVMSG", Params: []string{"#chan", "hei"}}
-	got := msg.Encode()
-	want := ":nick!u@h PRIVMSG #chan :hei"
+func TestWirePreservesNumericBody(t *testing.T) {
+	line := `:irc.example.com 366 me #c :End of /NAMES list.`
+	msg, err := Parse(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tag-only change must not reformat the numeric body.
+	msg.Tags = map[string]string{"time": "2024-01-01T00:00:00.000Z"}
+	got := msg.Wire()
+	want := `@time=2024-01-01T00:00:00.000Z ` + line
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
-	// Single-word NOTICE too.
+	// No tags → exact original.
+	msg.Tags = nil
+	if msg.Wire() != line {
+		t.Fatalf("got %q", msg.Wire())
+	}
+}
+
+func TestEncodeTrailingColon(t *testing.T) {
+	// PRIVMSG/NOTICE: always colon the message text.
+	msg := Message{Source: "nick!u@h", Command: "PRIVMSG", Params: []string{"#chan", "hei"}}
+	if got := msg.Encode(); got != ":nick!u@h PRIVMSG #chan :hei" {
+		t.Fatalf("PRIVMSG: %q", got)
+	}
 	msg = Message{Command: "NOTICE", Params: []string{"nick", "CAP"}}
 	if got := msg.Encode(); got != "NOTICE nick :CAP" {
-		t.Fatalf("got %q", got)
+		t.Fatalf("NOTICE: %q", got)
+	}
+
+	// Numerics: no colon when the last param is a plain token.
+	msg = Message{Source: "irc.example.com", Command: "366", Params: []string{"me", "#c", "End"}}
+	if got := msg.Encode(); got != ":irc.example.com 366 me #c End" {
+		t.Fatalf("numeric plain: %q", got)
+	}
+	msg = Message{Source: "irc.example.com", Command: "366", Params: []string{"me", "#c", "End of /NAMES list."}}
+	if got := msg.Encode(); got != ":irc.example.com 366 me #c :End of /NAMES list." {
+		t.Fatalf("numeric spaced: %q", got)
 	}
 }
 

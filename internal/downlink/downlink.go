@@ -376,7 +376,7 @@ func (c *Client) EnableCap(name string) {
 func (c *Client) Send(msg irc.Message) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	raw := msg.Encode()
+	raw := msg.Wire()
 	gobnclog.IRC(c.log, c.logPeer(), ">>", raw)
 	_, err := io.WriteString(c.conn, raw+"\r\n")
 	return err

@@ -13,11 +13,16 @@ type Message struct {
 	Source  string            // nick!user@host or server name (no leading :)
 	Command string
 	Params  []string
+	// Raw is the original wire line (no CRLF) when parsed from the network.
+	// When set and the message body is unchanged, Wire preserves it exactly
+	// (only the tag prefix may be rewritten for per-client caps).
+	Raw string
 }
 
 // Parse parses a single IRC line (without trailing CRLF).
 func Parse(line string) (Message, error) {
 	var msg Message
+	msg.Raw = line
 	s := line
 	if len(s) == 0 {
 		return msg, fmt.Errorf("empty message")
@@ -168,29 +173,11 @@ func EscapeTagValue(v string) string {
 }
 
 // Encode serializes the message to a wire line without CRLF.
+// Prefer Wire when forwarding a parsed network line so the body stays verbatim.
 func (m Message) Encode() string {
 	var b bytes.Buffer
 	if len(m.Tags) > 0 {
-		b.WriteByte('@')
-		first := true
-		// Stable-ish: iterate keys sorted for determinism in tests
-		keys := make([]string, 0, len(m.Tags))
-		for k := range m.Tags {
-			keys = append(keys, k)
-		}
-		sortStrings(keys)
-		for _, k := range keys {
-			if !first {
-				b.WriteByte(';')
-			}
-			first = false
-			b.WriteString(k)
-			v := m.Tags[k]
-			if v != "" {
-				b.WriteByte('=')
-				b.WriteString(EscapeTagValue(v))
-			}
-		}
+		b.WriteString(formatTagPrefix(m.Tags))
 		b.WriteByte(' ')
 	}
 	if m.Source != "" {
@@ -201,9 +188,8 @@ func (m Message) Encode() string {
 	b.WriteString(m.Command)
 	for i, p := range m.Params {
 		b.WriteByte(' ')
-		// Always colon-encode the final parameter. Required when it is empty, has
-		// spaces, or starts with ':'; also the expected form for PRIVMSG/NOTICE text.
-		if i == len(m.Params)-1 {
+		last := i == len(m.Params)-1
+		if last && needsTrailingColon(m.Command, p) {
 			b.WriteByte(':')
 			b.WriteString(p)
 		} else {
@@ -211,6 +197,69 @@ func (m Message) Encode() string {
 		}
 	}
 	return b.String()
+}
+
+// Wire returns the line to send to a client. If Raw is set (parsed from the
+// network and the body was not rewritten), the original prefix/command/params
+// are preserved and only the tag prefix is adjusted.
+func (m Message) Wire() string {
+	if m.Raw == "" {
+		return m.Encode()
+	}
+	body := stripTagPrefix(m.Raw)
+	if len(m.Tags) == 0 {
+		return body
+	}
+	return formatTagPrefix(m.Tags) + " " + body
+}
+
+// InvalidateRaw clears Raw so the next Wire/Encode rebuilds from fields.
+func (m *Message) InvalidateRaw() {
+	m.Raw = ""
+}
+
+func stripTagPrefix(line string) string {
+	if line == "" || line[0] != '@' {
+		return line
+	}
+	sp := strings.IndexByte(line, ' ')
+	if sp < 0 {
+		return line
+	}
+	return strings.TrimLeft(line[sp+1:], " ")
+}
+
+func formatTagPrefix(tags map[string]string) string {
+	var b bytes.Buffer
+	b.WriteByte('@')
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(k)
+		v := tags[k]
+		if v != "" {
+			b.WriteByte('=')
+			b.WriteString(EscapeTagValue(v))
+		}
+	}
+	return b.String()
+}
+
+// needsTrailingColon reports whether the final parameter must be colon-encoded.
+// PRIVMSG/NOTICE text is always trailing (even a single word). Other commands
+// only require it when empty, spaced, or starting with ':'.
+func needsTrailingColon(command, param string) bool {
+	switch strings.ToUpper(command) {
+	case "PRIVMSG", "NOTICE":
+		return true
+	}
+	return param == "" || strings.ContainsAny(param, " \t") || strings.HasPrefix(param, ":")
 }
 
 func sortStrings(a []string) {

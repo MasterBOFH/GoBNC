@@ -152,8 +152,10 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 				if stripWHOX {
 					// Remove injected querytype token (params[1]).
 					out.Params = append([]string{out.Params[0]}, out.Params[2:]...)
+					out.Raw = ""
 				} else if restoreWHOX != "" {
 					out.Params[1] = restoreWHOX
+					out.Raw = ""
 				}
 			}
 			if echoLabel != "" && d.HasCap("labeled-response") {
@@ -206,7 +208,10 @@ func (s *Session) maybeStoreHistory(msg irc.Message) {
 		}
 	}
 	msgid, _ := msg.Tag("msgid")
-	raw := msg.Encode()
+	raw := msg.Raw
+	if raw == "" {
+		raw = msg.Encode()
+	}
 	text := msg.Trailing()
 	for _, target := range targets {
 		_ = s.hist.Store(context.Background(), history.Record{
@@ -293,6 +298,7 @@ func (s *Session) rewriteMessage(d Downlink, msg irc.Message, forceSelfEcho bool
 	// extended-join: strip account/GECOS for clients that did not negotiate it.
 	if out.Command == "JOIN" && !d.HasCap("extended-join") && len(out.Params) > 1 {
 		out.Params = []string{out.Params[0]}
+		out.Raw = "" // body changed; cannot reuse uplink wire form
 	}
 	wantTime := d.HasCap("server-time")
 	wantTags := d.HasCap("message-tags")
