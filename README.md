@@ -29,7 +29,7 @@ Update an existing network without dropping the current uplink (`network mod`); 
 ./bin/gobnc network mod libera --host=irc.libera.chat --port=6667 --tls=false
 ```
 
-Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--sasl-user=`, `--sasl-pass=`, `--username=`, `--realname=`
+Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--user=` / `--username=`, `--realname=`, `--sasl-user=`, `--sasl-pass=`
 
 Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS libera/s3cret`). The password may contain `/`; the network name is everything before the first `/`. For client-cert auth without a password, use `PASS libera/` or `PASS libera`. Nick is your normal IRC nick.
 

@@ -19,8 +19,8 @@ func runCLI(args []string) error {
   auth set-password <password>
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> <nick> [--tls=true] [--sasl-user=] [--sasl-pass=]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--sasl-user=] [--sasl-pass=]
+  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=]
   network list
   network delete <name>
 
@@ -125,20 +125,36 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "add":
 		if len(args) < 5 {
-			return fmt.Errorf("usage: network add <name> <host> <port> <nick>")
+			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=]")
 		}
 		n := store.Network{
 			Name: args[1], Host: args[2], Nick: args[4], TLS: true, Enabled: true, Username: "gobnc", Realname: "GoBNC",
 		}
 		fmt.Sscanf(args[3], "%d", &n.Port)
-		for _, a := range args[5:] {
+		for i := 5; i < len(args); i++ {
+			a := args[i]
+			if a == "-config" {
+				i++ // skip path
+				continue
+			}
+			if strings.HasPrefix(a, "-config=") {
+				continue
+			}
 			switch {
 			case strings.HasPrefix(a, "--tls="):
 				n.TLS = a != "--tls=false"
+			case strings.HasPrefix(a, "--user="):
+				n.Username = strings.TrimPrefix(a, "--user=")
+			case strings.HasPrefix(a, "--username="):
+				n.Username = strings.TrimPrefix(a, "--username=")
+			case strings.HasPrefix(a, "--realname="):
+				n.Realname = strings.TrimPrefix(a, "--realname=")
 			case strings.HasPrefix(a, "--sasl-user="):
 				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
 			case strings.HasPrefix(a, "--sasl-pass="):
 				n.SASLPass = strings.TrimPrefix(a, "--sasl-pass=")
+			default:
+				return fmt.Errorf("unknown flag %q", a)
 			}
 		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
@@ -156,7 +172,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "mod":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--sasl-user=] [--sasl-pass=]")
+			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=]")
 		}
 		n, err := st.NetworkByName(ctx, args[1])
 		if err != nil {
@@ -191,6 +207,9 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			case strings.HasPrefix(a, "--sasl-pass="):
 				n.SASLPass = strings.TrimPrefix(a, "--sasl-pass=")
 				changed = true
+			case strings.HasPrefix(a, "--user="):
+				n.Username = strings.TrimPrefix(a, "--user=")
+				changed = true
 			case strings.HasPrefix(a, "--username="):
 				n.Username = strings.TrimPrefix(a, "--username=")
 				changed = true
@@ -202,7 +221,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			}
 		}
 		if !changed {
-			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--sasl-*/--username=/--realname=")
+			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--user=/--realname=/--sasl-*")
 		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
 			return err
