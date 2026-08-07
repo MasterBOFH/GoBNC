@@ -6,6 +6,7 @@
   "control_socket": "gobnc.sock",
   "log_level": "info",
   "log_file": "",
+  "quit_message": "GoBNC 0.1.0",
   "allow_password_auth": true,
   "allow_cert_auth": true
 }

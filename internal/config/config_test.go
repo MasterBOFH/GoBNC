@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 func TestLoadJSONMissing(t *testing.T) {
@@ -36,5 +39,27 @@ func TestValidateFailClosed(t *testing.T) {
 	cfg.AllowCertAuth = false
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestDefaultQuitMessage(t *testing.T) {
+	want := version.QuitMessage()
+	if want != "GoBNC "+version.Version {
+		t.Fatalf("version.QuitMessage=%q", want)
+	}
+	cfg := Default()
+	if cfg.QuitMessage != want {
+		t.Fatalf("Default QuitMessage=%q want %q", cfg.QuitMessage, want)
+	}
+	cfg.QuitMessage = ""
+	if cfg.QuitReason() != want {
+		t.Fatalf("empty QuitReason=%q", cfg.QuitReason())
+	}
+	cfg.QuitMessage = "custom bye"
+	if cfg.QuitReason() != "custom bye" {
+		t.Fatal(cfg.QuitReason())
+	}
+	if ShutdownTimeout != 5*time.Second {
+		t.Fatalf("ShutdownTimeout=%v", ShutdownTimeout)
 	}
 }

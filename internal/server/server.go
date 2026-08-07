@@ -65,11 +65,12 @@ func (s *Server) Session(network string) (*session.Session, error) {
 	return sess, nil
 }
 
-// Close closes resources.
+// Close cancels the run context, stops networks, and closes the DB.
 func (s *Server) Close() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.stopAllNetworks()
 	s.wg.Wait()
 	return s.store.Close()
 }
@@ -125,12 +126,65 @@ func (s *Server) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		_ = ln.Close()
+		s.gracefulShutdown()
+		s.stopAllNetworks()
 		s.wg.Wait()
 		return nil
 	case err := <-errCh:
 		s.cancel()
+		s.gracefulShutdown()
+		s.stopAllNetworks()
 		s.wg.Wait()
 		return err
+	}
+}
+
+// gracefulShutdown flushes uplink send queues and sends QUIT, bounded by ShutdownTimeout.
+func (s *Server) gracefulShutdown() {
+	timeout := config.ShutdownTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	reason := s.cfg.QuitReason()
+	s.log.Info("graceful shutdown", "quit", reason, "timeout", timeout)
+
+	s.mu.RLock()
+	sessions := make([]*session.Session, 0, len(s.sess))
+	for _, sess := range s.sess {
+		sessions = append(sessions, sess)
+	}
+	s.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, sess := range sessions {
+		wg.Add(1)
+		go func(sess *session.Session) {
+			defer wg.Done()
+			sess.GracefulQuit(ctx, reason)
+		}(sess)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		s.log.Info("shutdown timeout; proceeding to close uplinks")
+	}
+}
+
+func (s *Server) stopAllNetworks() {
+	s.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.netCancel))
+	for name, cancel := range s.netCancel {
+		cancels = append(cancels, cancel)
+		delete(s.netCancel, name)
+		delete(s.sess, name)
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
 }
 
@@ -236,7 +290,7 @@ func (s *Server) startNetworkLocked(n store.Network) error {
 	if err != nil {
 		return err
 	}
-	nctx, cancel := context.WithCancel(s.runCtx)
+	nctx, cancel := context.WithCancel(context.Background())
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name))
 	u := uplink.New(uplink.Config{
 		Network:  n,

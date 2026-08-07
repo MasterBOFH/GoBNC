@@ -6,17 +6,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // Config is process bootstrap configuration.
 type Config struct {
-	ListenAddr     string `json:"listen_addr"`
-	TLSCert        string `json:"tls_cert"`
-	TLSKey         string `json:"tls_key"`
-	DBPath         string `json:"db_path"`
-	ControlSocket  string `json:"control_socket"`
-	LogLevel       string `json:"log_level"`
-	LogFile        string `json:"log_file,omitempty"` // JSON logs; in debug mode console stays human-readable
+	ListenAddr    string `json:"listen_addr"`
+	TLSCert       string `json:"tls_cert"`
+	TLSKey        string `json:"tls_key"`
+	DBPath        string `json:"db_path"`
+	ControlSocket string `json:"control_socket"`
+	LogLevel      string `json:"log_level"`
+	LogFile       string `json:"log_file,omitempty"` // JSON logs; in debug mode console stays human-readable
+
+	// QuitMessage is sent as QUIT to all uplinks on process shutdown (not per-network).
+	// Empty uses version.QuitMessage() ("GoBNC <version>").
+	QuitMessage string `json:"quit_message"`
 
 	// Auth modes: either or both may be enabled. If neither, fail closed.
 	AllowPasswordAuth bool `json:"allow_password_auth"`
@@ -32,9 +39,21 @@ func Default() Config {
 		DBPath:            "gobnc.db",
 		ControlSocket:     "gobnc.sock",
 		LogLevel:          "info",
+		QuitMessage:       version.QuitMessage(),
 		AllowPasswordAuth: true,
 		AllowCertAuth:     true,
 	}
+}
+
+// ShutdownTimeout is how long graceful uplink flush+QUIT may take before forced close.
+const ShutdownTimeout = 5 * time.Second
+
+// QuitReason returns the QUIT text for uplink shutdown.
+func (c Config) QuitReason() string {
+	if c.QuitMessage == "" {
+		return version.QuitMessage()
+	}
+	return c.QuitMessage
 }
 
 // LoadJSON loads config from path; missing file returns Default.

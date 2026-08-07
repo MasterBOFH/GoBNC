@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 
@@ -105,6 +106,16 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 
 // SetUplink associates the uplink.
 func (s *Session) SetUplink(u *uplink.Uplink) { s.uplink = u }
+
+// Uplink returns the associated uplink (may be nil).
+func (s *Session) Uplink() *uplink.Uplink { return s.uplink }
+
+// GracefulQuit asks the uplink to flush paced sends and QUIT (bounded by ctx).
+func (s *Session) GracefulQuit(ctx context.Context, reason string) {
+	if s.uplink != nil {
+		s.uplink.GracefulQuit(ctx, reason)
+	}
+}
 
 // SetRegisteredForTest marks the session as uplink-registered (tests only).
 func (s *Session) SetRegisteredForTest(v bool) {
