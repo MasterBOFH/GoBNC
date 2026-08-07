@@ -17,7 +17,21 @@ const (
 	argonThreads = 4
 	argonKeyLen  = 32
 	saltLen      = 16
+	// DefaultGeneratedPasswordBytes is entropy for GeneratePassword (URL-safe base64 ≈ 4/3 longer).
+	DefaultGeneratedPasswordBytes = 24
 )
+
+// GeneratePassword returns a URL-safe random password from n random bytes (default 24 → ~32 chars).
+func GeneratePassword(n int) (string, error) {
+	if n <= 0 {
+		n = DefaultGeneratedPasswordBytes
+	}
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
 
 // HashPassword returns an encoded argon2id hash.
 func HashPassword(password string) (string, error) {

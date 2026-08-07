@@ -15,7 +15,7 @@ Copy `gobnc.json.example` to `gobnc.json`. Generate TLS certs for the listener.
 With `"log_level": "debug"`, the console shows colored, columnized logs including raw IRC (`<<` in / `>>` out) for uplink and downlink; set `"log_file"` for JSON logs. `PASS` / `AUTHENTICATE` secrets are redacted.
 
 ```bash
-./bin/gobnc auth set-password          # prompts on the TTY
+./bin/gobnc auth set-password          # asks to generate a random password (or enter one)
 ./bin/gobnc auth add-fingerprint <sha256-hex>
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
 ./bin/gobnc serve -config gobnc.json

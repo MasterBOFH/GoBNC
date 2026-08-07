@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ func runCLI(args []string) error {
   network delete <name>
 
 Secrets (bouncer password, SASL password) are prompted on a TTY; they are not accepted on the command line.
+auth set-password asks whether to generate a random password (default yes); otherwise you enter one.
 
 When the daemon is running, network add/delete also notify it via the control socket
 (control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
@@ -73,15 +75,32 @@ func cmdAuth(ctx context.Context, st *store.Store, args []string) error {
 		if len(args) > 1 {
 			return fmt.Errorf("usage: auth set-password (password is prompted; do not pass on the command line)")
 		}
-		pass, err := promptPasswordConfirm("New bouncer password: ")
+		gen, err := promptYesNo("Generate a random password?", true)
 		if err != nil {
 			return err
+		}
+		var pass string
+		if gen {
+			pass, err = auth.GeneratePassword(0)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "Generated password (save this; it will not be shown again):\n%s\n", pass)
+		} else {
+			pass, err = promptPasswordConfirm("New bouncer password: ")
+			if err != nil {
+				return err
+			}
 		}
 		h, err := auth.HashPassword(pass)
 		if err != nil {
 			return err
 		}
-		return st.SetPasswordHash(ctx, h)
+		if err := st.SetPasswordHash(ctx, h); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Password updated.")
+		return nil
 	case "add-fingerprint":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: auth add-fingerprint <sha256-hex> [label]")
@@ -313,6 +332,35 @@ func promptPasswordConfirm(prompt string) (string, error) {
 		return "", fmt.Errorf("passwords do not match")
 	}
 	return pass, nil
+}
+
+// promptYesNo asks a Y/n question on the TTY. Empty input uses defaultYes.
+func promptYesNo(prompt string, defaultYes bool) (bool, error) {
+	fd := int(syscall.Stdin)
+	if !term.IsTerminal(fd) {
+		return false, fmt.Errorf("refusing to prompt: stdin is not a TTY")
+	}
+	suffix := " [Y/n] "
+	if !defaultYes {
+		suffix = " [y/N] "
+	}
+	fmt.Fprint(os.Stderr, prompt+suffix)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false, err
+	}
+	s := strings.TrimSpace(strings.ToLower(line))
+	if s == "" {
+		return defaultYes, nil
+	}
+	switch s {
+	case "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("please answer y or n")
+	}
 }
 
 func promptSecret(prompt string) (string, error) {
