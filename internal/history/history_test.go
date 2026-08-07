@@ -305,3 +305,213 @@ func TestCHATHISTORYAfterAroundBetween(t *testing.T) {
 		t.Fatalf("between=%d", countPRIVMSG(s3.sent))
 	}
 }
+
+func TestCHATHISTORYBeforeMsgID(t *testing.T) {
+	h, netID := seedMsgIDHistory(t)
+
+	s := &fakeSender{caps: map[string]bool{"chathistory": true, "batch": true, "message-tags": true}}
+	if err := h.HandleCHATHISTORY(s, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"BEFORE", "#c", "msgid=m3", "10"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := privmsgIDs(s.sent)
+	if len(got) != 3 || got[0] != "m0" || got[2] != "m2" {
+		t.Fatalf("BEFORE msgid=m3 got %v", got)
+	}
+	for _, id := range got {
+		if id == "m3" {
+			t.Fatal("BEFORE must exclude the selector msgid")
+		}
+	}
+
+	s2 := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+	_ = h.HandleCHATHISTORY(s2, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"AFTER", "#c", "msgid=m2", "10"},
+	})
+	got = privmsgIDs(s2.sent)
+	if len(got) != 2 || got[0] != "m3" || got[1] != "m4" {
+		t.Fatalf("AFTER msgid=m2 got %v", got)
+	}
+
+	// Unknown msgid → empty batch, not FAIL.
+	s3 := &fakeSender{caps: map[string]bool{"chathistory": true, "batch": true}}
+	_ = h.HandleCHATHISTORY(s3, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"BEFORE", "#c", "msgid=does-not-exist", "10"},
+	})
+	if countPRIVMSG(s3.sent) != 0 {
+		t.Fatalf("unknown msgid should be empty, got %d", countPRIVMSG(s3.sent))
+	}
+	var batches int
+	for _, m := range s3.sent {
+		if m.Command == "BATCH" {
+			batches++
+		}
+		if m.Command == "FAIL" {
+			t.Fatalf("unexpected FAIL: %+v", m)
+		}
+	}
+	if batches != 2 {
+		t.Fatalf("want empty +/- batch, got %d BATCH lines", batches)
+	}
+}
+
+func TestCHATHISTORYMsgIDSelectorsComprehensive(t *testing.T) {
+	h, netID := seedMsgIDHistory(t)
+
+	t.Run("LATEST after msgid", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"LATEST", "#c", "msgid=m1", "10"},
+		})
+		got := privmsgIDs(s.sent)
+		// most recent among m2,m3,m4 (all after m1)
+		if len(got) != 3 || got[0] != "m2" || got[2] != "m4" {
+			t.Fatalf("LATEST msgid=m1 got %v", got)
+		}
+		for _, id := range got {
+			if id == "m0" || id == "m1" {
+				t.Fatalf("LATEST must exclude at/before selector: %v", got)
+			}
+		}
+	})
+
+	t.Run("AROUND msgid", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"AROUND", "#c", "msgid=m2", "4"},
+		})
+		got := privmsgIDs(s.sent)
+		if len(got) < 3 || len(got) > 4 {
+			t.Fatalf("AROUND msgid=m2 count=%d ids=%v", len(got), got)
+		}
+		found := false
+		for _, id := range got {
+			if id == "m2" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("AROUND should include anchor msgid: %v", got)
+		}
+	})
+
+	t.Run("BETWEEN msgids", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"BETWEEN", "#c", "msgid=m1", "msgid=m4", "10"},
+		})
+		got := privmsgIDs(s.sent)
+		if len(got) != 2 || got[0] != "m2" || got[1] != "m3" {
+			t.Fatalf("BETWEEN m1..m4 got %v", got)
+		}
+	})
+
+	t.Run("BETWEEN msgid order independent", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"BETWEEN", "#c", "msgid=m4", "msgid=m1", "10"},
+		})
+		got := privmsgIDs(s.sent)
+		if len(got) != 2 || got[0] != "m2" || got[1] != "m3" {
+			t.Fatalf("BETWEEN reversed got %v", got)
+		}
+	})
+
+	t.Run("timestamp= prefix still works", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true}}
+		ts := time.Date(2024, 6, 1, 12, 3, 0, 0, time.UTC).Format(time.RFC3339Nano)
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"BEFORE", "#c", "timestamp="+ts, "10"},
+		})
+		got := privmsgIDs(s.sent)
+		if len(got) != 3 || got[2] != "m2" {
+			t.Fatalf("BEFORE timestamp= got %v", got)
+		}
+	})
+
+	t.Run("invalid selector FAILs", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"BEFORE", "#c", "not-a-selector", "10"},
+		})
+		found := false
+		for _, m := range s.sent {
+			if m.Command == "FAIL" && m.Param(1) == "INVALID_PARAMS" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("want FAIL INVALID_PARAMS, got %+v", s.sent)
+		}
+	})
+
+	t.Run("empty msgid= FAILs", func(t *testing.T) {
+		s := &fakeSender{caps: map[string]bool{"chathistory": true}}
+		_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"BEFORE", "#c", "msgid=", "10"},
+		})
+		found := false
+		for _, m := range s.sent {
+			if m.Command == "FAIL" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("want FAIL for empty msgid, got %+v", s.sent)
+		}
+	})
+}
+
+func seedMsgIDHistory(t *testing.T) (*Store, int64) {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	netID, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db)
+	t0 := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	ids := []string{"m0", "m1", "m2", "m3", "m4"}
+	for i, mid := range ids {
+		ts := t0.Add(time.Duration(i) * time.Minute)
+		msg := irc.Message{
+			Tags:    map[string]string{"time": ts.Format("2006-01-02T15:04:05.000Z"), "msgid": mid},
+			Source:  "a!b@c",
+			Command: "PRIVMSG",
+			Params:  []string{"#c", "line" + string(rune('0'+i))},
+		}
+		if err := h.Store(ctx, Record{
+			NetworkID: netID, Target: "#c", Time: ts, MsgID: mid,
+			Command: "PRIVMSG", Source: msg.Source, Raw: msg.Encode(), Text: msg.Trailing(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h, netID
+}
+
+func privmsgIDs(sent []irc.Message) []string {
+	var got []string
+	for _, m := range sent {
+		if m.Command == "PRIVMSG" {
+			got = append(got, m.Tags["msgid"])
+		}
+	}
+	return got
+}

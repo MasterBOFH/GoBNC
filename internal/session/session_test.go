@@ -948,6 +948,34 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 }
 
+func TestAttachISUPPORTChatHistoryMsgRefTypes(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	hist := history.New(db)
+	s := New(store.Network{Name: "n", Nick: "me"}, db, hist, nil)
+	s.registered = true
+	s.isupport.Parse005([]string{"me", "NETWORK=x", "are supported by this server"})
+	d := &fakeDL{id: "c1", caps: map[string]bool{"chathistory": true}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	var joined string
+	for _, m := range d.sent {
+		if m.Command == "005" {
+			joined += " " + strings.Join(m.Params[1:], " ")
+		}
+	}
+	if !strings.Contains(joined, "MSGREFTYPES=msgid,timestamp") {
+		t.Fatalf("missing MSGREFTYPES: %q", joined)
+	}
+	if !strings.Contains(joined, "CHATHISTORY=") {
+		t.Fatalf("missing CHATHISTORY=: %q", joined)
+	}
+}
+
 func TestHandleClientMessageRejectsCRLF(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}

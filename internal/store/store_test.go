@@ -174,6 +174,33 @@ func TestMessagesQueryRetention(t *testing.T) {
 	if !latest[0].Time.Before(latest[1].Time) && !latest[0].Time.Equal(latest[1].Time) {
 		t.Fatal("not ascending")
 	}
+
+	anchor, err := s.MessageByMsgID(ctx, id, "#c", "mc")
+	if err != nil || anchor == nil || anchor.MsgID != "mc" {
+		t.Fatalf("MessageByMsgID: %+v err=%v", anchor, err)
+	}
+	beforeBound, err := s.QueryMessages(ctx, HistoryQuery{
+		NetworkID:  id,
+		Target:     "#c",
+		BeforeBound: &HistoryBound{Time: anchor.Time, ID: anchor.ID},
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeBound) != 2 {
+		t.Fatalf("BeforeBound want 2 got %d", len(beforeBound))
+	}
+	for _, m := range beforeBound {
+		if m.MsgID == "mc" {
+			t.Fatal("BeforeBound must exclude anchor")
+		}
+	}
+	missing, err := s.MessageByMsgID(ctx, id, "#c", "nope")
+	if err != nil || missing != nil {
+		t.Fatalf("missing msgid: %+v %v", missing, err)
+	}
+
 	n, err := s.DeleteOlderThan(ctx, id, t0.Add(2*time.Minute))
 	if err != nil || n != 2 {
 		t.Fatalf("deleted=%d err=%v", n, err)

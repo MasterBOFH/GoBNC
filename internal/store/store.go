@@ -377,10 +377,47 @@ type HistoryQuery struct {
 	Before    *time.Time
 	After     *time.Time
 	Around    *time.Time // center; Limit split before/after
-	Between   bool       // if true, require both After and Before
-	Limit     int
-	Latest    bool     // if true, return the Limit most recent (optionally before Before)
-	Commands  []string // if non-empty, only these IRC commands
+	// BeforeBound / AfterBound / AroundBound are exclusive/centered positions from msgid=
+	// selectors (time+row id). When set, they take precedence over Before/After/Around.
+	BeforeBound *HistoryBound
+	AfterBound  *HistoryBound
+	AroundBound *HistoryBound
+	Between    bool // if true, require both After/AfterBound and Before/BeforeBound
+	Limit      int
+	Latest     bool     // if true, return the Limit most recent (optionally before Before)
+	Commands   []string // if non-empty, only these IRC commands
+}
+
+// HistoryBound is a message position in store order (time, then id).
+type HistoryBound struct {
+	Time time.Time
+	ID   int64
+}
+
+// MessageByMsgID returns the stored message for msgid on network/target, or nil.
+func (s *Store) MessageByMsgID(ctx context.Context, networkID int64, target, msgid string) (*Message, error) {
+	if msgid == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, network_id, target, time, msgid, command, source, raw, text
+		FROM messages WHERE network_id=? AND target=? AND msgid=?
+		ORDER BY time ASC, id ASC LIMIT 1`, networkID, target, msgid)
+	var m Message
+	var ts string
+	err := row.Scan(&m.ID, &m.NetworkID, &m.Target, &ts, &m.MsgID, &m.Command, &m.Source, &m.Raw, &m.Text)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339, ts)
+	}
+	m.Time = t
+	return &m, nil
 }
 
 func historyWhere(q HistoryQuery) (clause string, args []any) {
@@ -401,6 +438,22 @@ func historyWhere(q HistoryQuery) (clause string, args []any) {
 	return clause, args
 }
 
+func beforeBoundArgs(b HistoryBound) []any {
+	ts := formatTime(b.Time)
+	return []any{ts, ts, b.ID}
+}
+
+func afterBoundArgs(b HistoryBound) []any {
+	ts := formatTime(b.Time)
+	return []any{ts, ts, b.ID}
+}
+
+const (
+	sqlBeforeBound = `(time < ? OR (time = ? AND id < ?))`
+	sqlAfterBound  = `(time > ? OR (time = ? AND id > ?))`
+	sqlFromBound   = `(time > ? OR (time = ? AND id >= ?))` // after-or-equal (AROUND include)
+)
+
 // QueryMessages returns messages matching q, oldest-first.
 // Limit == 0 defaults to 100. Limit < 0 means no SQL LIMIT (unlimited).
 func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, error) {
@@ -413,49 +466,103 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 	var rows *sql.Rows
 	var err error
 	switch {
-	case q.Around != nil:
+	case q.AroundBound != nil || q.Around != nil:
 		if unlimited {
-			q.Limit = 100 // Around needs a bound; fall back to default
+			q.Limit = 100
 		}
 		half := q.Limit / 2
 		if half < 1 {
 			half = 1
 		}
-		args := append(append([]any{}, baseArgs...), formatTime(*q.Around), half)
-		beforeRows, err1 := s.db.QueryContext(ctx, `
-			SELECT `+cols+` FROM (
+		var before []Message
+		var after []Message
+		if q.AroundBound != nil {
+			b := *q.AroundBound
+			args := append(append([]any{}, baseArgs...), beforeBoundArgs(b)...)
+			args = append(args, half)
+			beforeRows, err1 := s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND `+sqlBeforeBound+`
+					ORDER BY time DESC, id DESC LIMIT ?
+				) ORDER BY time ASC, id ASC`, args...)
+			if err1 != nil {
+				return nil, err1
+			}
+			before, err1 = scanMessages(beforeRows)
+			beforeRows.Close()
+			if err1 != nil {
+				return nil, err1
+			}
+			rest := q.Limit - len(before)
+			if rest < 1 {
+				rest = 1
+			}
+			args = append(append([]any{}, baseArgs...), formatTime(b.Time), formatTime(b.Time), b.ID, rest)
+			afterRows, err1 := s.db.QueryContext(ctx, `
 				SELECT `+cols+`
-				FROM messages WHERE `+where+` AND time < ?
-				ORDER BY time DESC LIMIT ?
-			) ORDER BY time ASC`, args...)
-		if err1 != nil {
-			return nil, err1
-		}
-		before, err1 := scanMessages(beforeRows)
-		beforeRows.Close()
-		if err1 != nil {
-			return nil, err1
-		}
-		rest := q.Limit - len(before)
-		if rest < 1 {
-			rest = 1
-		}
-		args = append(append([]any{}, baseArgs...), formatTime(*q.Around), rest)
-		afterRows, err1 := s.db.QueryContext(ctx, `
-			SELECT `+cols+`
-			FROM messages WHERE `+where+` AND time >= ?
-			ORDER BY time ASC LIMIT ?`, args...)
-		if err1 != nil {
-			return nil, err1
-		}
-		after, err1 := scanMessages(afterRows)
-		afterRows.Close()
-		if err1 != nil {
-			return nil, err1
+				FROM messages WHERE `+where+` AND `+sqlFromBound+`
+				ORDER BY time ASC, id ASC LIMIT ?`, args...)
+			if err1 != nil {
+				return nil, err1
+			}
+			after, err1 = scanMessages(afterRows)
+			afterRows.Close()
+			if err1 != nil {
+				return nil, err1
+			}
+		} else {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.Around), half)
+			beforeRows, err1 := s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND time < ?
+					ORDER BY time DESC LIMIT ?
+				) ORDER BY time ASC`, args...)
+			if err1 != nil {
+				return nil, err1
+			}
+			before, err1 = scanMessages(beforeRows)
+			beforeRows.Close()
+			if err1 != nil {
+				return nil, err1
+			}
+			rest := q.Limit - len(before)
+			if rest < 1 {
+				rest = 1
+			}
+			args = append(append([]any{}, baseArgs...), formatTime(*q.Around), rest)
+			afterRows, err1 := s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND time >= ?
+				ORDER BY time ASC LIMIT ?`, args...)
+			if err1 != nil {
+				return nil, err1
+			}
+			after, err1 = scanMessages(afterRows)
+			afterRows.Close()
+			if err1 != nil {
+				return nil, err1
+			}
 		}
 		return append(before, after...), nil
-	case q.Between && q.After != nil && q.Before != nil:
-		if unlimited {
+	case q.Between && ((q.AfterBound != nil && q.BeforeBound != nil) || (q.After != nil && q.Before != nil)):
+		if q.AfterBound != nil && q.BeforeBound != nil {
+			args := append(append([]any{}, baseArgs...), afterBoundArgs(*q.AfterBound)...)
+			args = append(args, beforeBoundArgs(*q.BeforeBound)...)
+			if unlimited {
+				rows, err = s.db.QueryContext(ctx, `
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND `+sqlAfterBound+` AND `+sqlBeforeBound+`
+					ORDER BY time ASC, id ASC`, args...)
+			} else {
+				args = append(args, q.Limit)
+				rows, err = s.db.QueryContext(ctx, `
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND `+sqlAfterBound+` AND `+sqlBeforeBound+`
+					ORDER BY time ASC, id ASC LIMIT ?`, args...)
+			}
+		} else if unlimited {
 			args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before))
 			rows, err = s.db.QueryContext(ctx, `
 				SELECT `+cols+`
@@ -469,37 +576,41 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 				ORDER BY time ASC LIMIT ?`, args...)
 		}
 	case q.Latest:
+		filter, fargs := latestFilter(q)
 		if unlimited {
-			if q.Before != nil {
-				args := append(append([]any{}, baseArgs...), formatTime(*q.Before))
-				rows, err = s.db.QueryContext(ctx, `
-					SELECT `+cols+`
-					FROM messages WHERE `+where+` AND time < ?
-					ORDER BY time ASC`, args...)
-			} else {
-				rows, err = s.db.QueryContext(ctx, `
-					SELECT `+cols+`
-					FROM messages WHERE `+where+`
-					ORDER BY time ASC`, baseArgs...)
-			}
-		} else if q.Before != nil {
-			args := append(append([]any{}, baseArgs...), formatTime(*q.Before), q.Limit)
+			args := append(append([]any{}, baseArgs...), fargs...)
 			rows, err = s.db.QueryContext(ctx, `
-				SELECT `+cols+` FROM (
-					SELECT `+cols+`
-					FROM messages WHERE `+where+` AND time < ?
-					ORDER BY time DESC LIMIT ?
-				) ORDER BY time ASC`, args...)
+				SELECT `+cols+`
+				FROM messages WHERE `+where+filter+`
+				ORDER BY time ASC, id ASC`, args...)
 		} else {
-			args := append(append([]any{}, baseArgs...), q.Limit)
+			args := append(append([]any{}, baseArgs...), fargs...)
+			args = append(args, q.Limit)
 			rows, err = s.db.QueryContext(ctx, `
 				SELECT `+cols+` FROM (
 					SELECT `+cols+`
-					FROM messages WHERE `+where+`
-					ORDER BY time DESC LIMIT ?
-				) ORDER BY time ASC`, args...)
+					FROM messages WHERE `+where+filter+`
+					ORDER BY time DESC, id DESC LIMIT ?
+				) ORDER BY time ASC, id ASC`, args...)
 		}
-	case q.Before != nil && q.After == nil:
+	case q.BeforeBound != nil && q.AfterBound == nil && q.After == nil:
+		if unlimited {
+			args := append(append([]any{}, baseArgs...), beforeBoundArgs(*q.BeforeBound)...)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND `+sqlBeforeBound+`
+				ORDER BY time ASC, id ASC`, args...)
+		} else {
+			args := append(append([]any{}, baseArgs...), beforeBoundArgs(*q.BeforeBound)...)
+			args = append(args, q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND `+sqlBeforeBound+`
+					ORDER BY time DESC, id DESC LIMIT ?
+				) ORDER BY time ASC, id ASC`, args...)
+		}
+	case q.Before != nil && q.After == nil && q.AfterBound == nil:
 		if unlimited {
 			args := append(append([]any{}, baseArgs...), formatTime(*q.Before))
 			rows, err = s.db.QueryContext(ctx, `
@@ -514,6 +625,21 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 					FROM messages WHERE `+where+` AND time < ?
 					ORDER BY time DESC LIMIT ?
 				) ORDER BY time ASC`, args...)
+		}
+	case q.AfterBound != nil:
+		if unlimited {
+			args := append(append([]any{}, baseArgs...), afterBoundArgs(*q.AfterBound)...)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND `+sqlAfterBound+`
+				ORDER BY time ASC, id ASC`, args...)
+		} else {
+			args := append(append([]any{}, baseArgs...), afterBoundArgs(*q.AfterBound)...)
+			args = append(args, q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND `+sqlAfterBound+`
+				ORDER BY time ASC, id ASC LIMIT ?`, args...)
 		}
 	case q.After != nil:
 		if unlimited {
@@ -550,6 +676,17 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 	}
 	defer rows.Close()
 	return scanMessages(rows)
+}
+
+// latestFilter returns AND-clause + args for LATEST's optional after-excluding selector.
+func latestFilter(q HistoryQuery) (string, []any) {
+	if q.AfterBound != nil {
+		return " AND " + sqlAfterBound, afterBoundArgs(*q.AfterBound)
+	}
+	if q.After != nil {
+		return " AND time > ?", []any{formatTime(*q.After)}
+	}
+	return "", nil
 }
 
 func scanMessages(rows *sql.Rows) ([]Message, error) {

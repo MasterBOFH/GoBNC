@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
@@ -46,6 +47,10 @@ func (s *Session) Attach(d Downlink) error {
 	umode := s.self.UModeString()
 	prefix := s.self.Prefix()
 	isupportRaw := s.isupport.CloneRaw(nil)
+	if s.hist != nil {
+		isupportRaw["CHATHISTORY"] = strconv.Itoa(s.hist.MaxLimit())
+		isupportRaw["MSGREFTYPES"] = "msgid,timestamp"
+	}
 	chans := make([]*ChannelState, 0, len(s.channels))
 	for _, ch := range s.channels {
 		chans = append(chans, ch)

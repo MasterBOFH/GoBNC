@@ -99,10 +99,48 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	target := msg.Params[1]
 	limit := 50
 	q := store.HistoryQuery{NetworkID: networkID, Target: target}
+	ctx := context.Background()
+
+	applySel := func(raw string, setBefore, setAfter, setAround bool) error {
+		sel, err := parseSelector(raw)
+		if err != nil {
+			return err
+		}
+		bound, ts, err := h.resolveSelector(ctx, networkID, target, sel)
+		if err != nil {
+			return err
+		}
+		if sel.kind == selMsgid && bound == nil {
+			// Unknown msgid: empty result (valid pagination end).
+			return errMsgIDMissing
+		}
+		if setBefore {
+			if bound != nil {
+				q.BeforeBound = bound
+			} else {
+				q.Before = ts
+			}
+		}
+		if setAfter {
+			if bound != nil {
+				q.AfterBound = bound
+			} else {
+				q.After = ts
+			}
+		}
+		if setAround {
+			if bound != nil {
+				q.AroundBound = bound
+			} else {
+				q.Around = ts
+			}
+		}
+		return nil
+	}
 
 	switch sub {
 	case "LATEST":
-		// CHATHISTORY LATEST <target> <timestamp|*> <limit>
+		// CHATHISTORY LATEST <target> <*|timestamp|msgid> <limit>
 		q.Latest = true
 		if len(msg.Params) >= 4 {
 			if n, err := strconv.Atoi(msg.Params[3]); err == nil {
@@ -110,71 +148,104 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			}
 		}
 		if len(msg.Params) >= 3 && msg.Params[2] != "*" {
-			if t, err := parseSelector(msg.Params[2]); err == nil {
-				q.Before = &t
+			// Spec: restrict to messages after and excluding the selector.
+			if err := applySel(msg.Params[2], false, true, false); err != nil {
+				if err == errMsgIDMissing {
+					return h.sendBatch(s, target, nil)
+				}
+				return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 			}
 		}
 	case "BEFORE":
-		// CHATHISTORY BEFORE <target> <timestamp> <limit>
 		if len(msg.Params) < 3 {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "BEFORE needs timestamp"}})
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "BEFORE needs selector"}})
 		}
-		t, err := parseSelector(msg.Params[2])
-		if err != nil {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "bad timestamp"}})
+		if err := applySel(msg.Params[2], true, false, false); err != nil {
+			if err == errMsgIDMissing {
+				return h.sendBatch(s, target, nil)
+			}
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
-		q.Before = &t
 		if len(msg.Params) >= 4 {
 			if n, err := strconv.Atoi(msg.Params[3]); err == nil {
 				limit = n
 			}
 		}
 	case "AFTER":
-		// CHATHISTORY AFTER <target> <timestamp> <limit>
 		if len(msg.Params) < 3 {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "AFTER needs timestamp"}})
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "AFTER needs selector"}})
 		}
-		t, err := parseSelector(msg.Params[2])
-		if err != nil {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "bad timestamp"}})
+		if err := applySel(msg.Params[2], false, true, false); err != nil {
+			if err == errMsgIDMissing {
+				return h.sendBatch(s, target, nil)
+			}
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
-		q.After = &t
 		if len(msg.Params) >= 4 {
 			if n, err := strconv.Atoi(msg.Params[3]); err == nil {
 				limit = n
 			}
 		}
 	case "AROUND":
-		// CHATHISTORY AROUND <target> <timestamp> <limit>
 		if len(msg.Params) < 3 {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "AROUND needs timestamp"}})
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "AROUND needs selector"}})
 		}
-		t, err := parseSelector(msg.Params[2])
-		if err != nil {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "bad timestamp"}})
+		if err := applySel(msg.Params[2], false, false, true); err != nil {
+			if err == errMsgIDMissing {
+				return h.sendBatch(s, target, nil)
+			}
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
-		q.Around = &t
 		if len(msg.Params) >= 4 {
 			if n, err := strconv.Atoi(msg.Params[3]); err == nil {
 				limit = n
 			}
 		}
 	case "BETWEEN":
-		// CHATHISTORY BETWEEN <target> <timestamp> <timestamp> <limit>
 		if len(msg.Params) < 4 {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "BETWEEN needs two timestamps"}})
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "BETWEEN needs two selectors"}})
 		}
-		a, err1 := parseSelector(msg.Params[2])
-		b, err2 := parseSelector(msg.Params[3])
+		selA, err1 := parseSelector(msg.Params[2])
+		selB, err2 := parseSelector(msg.Params[3])
 		if err1 != nil || err2 != nil {
-			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "bad timestamp"}})
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "bad selector"}})
 		}
-		// Spec: first is start, second is end; return messages strictly between, ascending toward end.
-		if a.After(b) {
-			a, b = b, a
+		boundA, tsA, err := h.resolveSelector(ctx, networkID, target, selA)
+		if err != nil {
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
-		q.After = &a
-		q.Before = &b
+		boundB, tsB, err := h.resolveSelector(ctx, networkID, target, selB)
+		if err != nil {
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[3], "bad selector"}})
+		}
+		if (selA.kind == selMsgid && boundA == nil) || (selB.kind == selMsgid && boundB == nil) {
+			return h.sendBatch(s, target, nil)
+		}
+		// Order bounds so After < Before in store order.
+		if boundA != nil && boundB != nil {
+			if boundA.Time.After(boundB.Time) || (boundA.Time.Equal(boundB.Time) && boundA.ID > boundB.ID) {
+				boundA, boundB = boundB, boundA
+			}
+			q.AfterBound, q.BeforeBound = boundA, boundB
+		} else if tsA != nil && tsB != nil {
+			a, b := *tsA, *tsB
+			if a.After(b) {
+				a, b = b, a
+			}
+			q.After, q.Before = &a, &b
+		} else {
+			// Mixed msgid/timestamp: convert timestamp to a bound at id=0 / MaxInt.
+			if boundA == nil {
+				boundA = &store.HistoryBound{Time: *tsA, ID: 0}
+			}
+			if boundB == nil {
+				boundB = &store.HistoryBound{Time: *tsB, ID: 1<<63 - 1}
+			}
+			if boundA.Time.After(boundB.Time) || (boundA.Time.Equal(boundB.Time) && boundA.ID > boundB.ID) {
+				boundA, boundB = boundB, boundA
+			}
+			q.AfterBound, q.BeforeBound = boundA, boundB
+		}
 		q.Between = true
 		if len(msg.Params) >= 5 {
 			if n, err := strconv.Atoi(msg.Params[4]); err == nil {
@@ -194,11 +265,66 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	q.Limit = limit
 	q.Commands = historyCommandsFor(s)
 
-	msgs, err := h.db.QueryMessages(context.Background(), q)
+	msgs, err := h.db.QueryMessages(ctx, q)
 	if err != nil {
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
 	}
 	return h.sendBatch(s, target, msgs)
+}
+
+var errMsgIDMissing = fmt.Errorf("msgid not found")
+
+type selectorKind int
+
+const (
+	selTimestamp selectorKind = iota
+	selMsgid
+)
+
+type historySelector struct {
+	kind  selectorKind
+	time  time.Time
+	msgid string
+}
+
+func parseSelector(s string) (historySelector, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "msgid=") {
+		id := strings.TrimPrefix(s, "msgid=")
+		if id == "" {
+			return historySelector{}, fmt.Errorf("empty msgid")
+		}
+		return historySelector{kind: selMsgid, msgid: id}, nil
+	}
+	if strings.HasPrefix(s, "timestamp=") {
+		s = strings.TrimPrefix(s, "timestamp=")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return historySelector{kind: selTimestamp, time: t}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return historySelector{}, err
+	}
+	return historySelector{kind: selTimestamp, time: t}, nil
+}
+
+// resolveSelector returns a store bound for msgid, or a timestamp pointer for timestamp=.
+func (h *Store) resolveSelector(ctx context.Context, networkID int64, target string, sel historySelector) (*store.HistoryBound, *time.Time, error) {
+	switch sel.kind {
+	case selMsgid:
+		m, err := h.db.MessageByMsgID(ctx, networkID, target, sel.msgid)
+		if err != nil {
+			return nil, nil, err
+		}
+		if m == nil {
+			return nil, nil, nil
+		}
+		return &store.HistoryBound{Time: m.Time, ID: m.ID}, nil, nil
+	default:
+		t := sel.time
+		return nil, &t, nil
+	}
 }
 
 // historyCommandsFor returns the command filter for a CHATHISTORY reply.
@@ -266,13 +392,4 @@ func (h *Store) ensurePlaybackMsgID(msg *irc.Message, m *store.Message) {
 		msg.Tags = map[string]string{}
 	}
 	msg.Tags["msgid"] = m.MsgID
-}
-
-func parseSelector(s string) (time.Time, error) {
-	s = strings.TrimPrefix(s, "timestamp=")
-	s = strings.TrimPrefix(s, "msgid=") // msgid-as-time not supported; fall through parse
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, nil
-	}
-	return time.Parse(time.RFC3339, s)
 }
