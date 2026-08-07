@@ -55,3 +55,26 @@ jobs:
             --generate-notes \
             dist/gobnc_* \
             dist/checksums.txt
+
+      # Tag already points at this commit; bump version strings on main afterward.
+      - name: Sync version on main
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${VERSION#v}"
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          sed -i "s/\"quit_message\": \"GoBNC [^\"]*\"/\"quit_message\": \"GoBNC ${ver}\"/" gobnc.json.example
+          sed -i "s/var Version = \"[^\"]*\"/var Version = \"${ver}\"/" internal/version/version.go
+
+          if git diff --quiet; then
+            echo "main already at ${ver}"
+            exit 0
+          fi
+          git add gobnc.json.example internal/version/version.go
+          git commit -m "Bump version to ${ver}"
+          git push origin main
