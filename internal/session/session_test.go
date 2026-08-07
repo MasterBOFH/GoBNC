@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
@@ -13,7 +14,50 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/testutil"
+	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
+
+func TestRequestTrackerISON(t *testing.T) {
+	rt := NewRequestTracker()
+	cm := irc.CaseRFC1459
+	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "ISON"})
+	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "ISON"})
+	if w1 != nil || w2 == nil {
+		t.Fatal("second ISON should wait", w1, w2)
+	}
+	c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "303", Params: []string{"me", "a b"}}, cm)
+	if !only || c != "c1" {
+		t.Fatalf("first 303 -> c1, got %s only=%v", c, only)
+	}
+	select {
+	case <-w2:
+	case <-time.After(time.Second):
+		t.Fatal("second ISON not released")
+	}
+	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "303", Params: []string{"me", ""}}, cm)
+	if !only || c != "c2" {
+		t.Fatalf("second 303 -> c2, got %s only=%v", c, only)
+	}
+}
+
+func TestClientNICKBlockedUntilRegistered(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = false
+	s.uplink = nil
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.HandleClientMessage(d, irc.Message{Command: "NICK", Params: []string{"other"}}); err == nil {
+		t.Fatal("expected uplink error")
+	}
+
+	u := uplink.New(uplink.Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
+	s.SetUplink(u)
+	if u.Registered() {
+		t.Fatal("precondition: uplink not registered")
+	}
+	if err := s.HandleClientMessage(d, irc.Message{Command: "NICK", Params: []string{"other"}}); err != nil {
+		t.Fatalf("NICK during register should be ignored, got %v", err)
+	}
+}
 
 func TestRequestTrackerHELPAndADMINAndMAP(t *testing.T) {
 	cm := irc.CaseRFC1459

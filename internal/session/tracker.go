@@ -101,6 +101,8 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 		return map[string]bool{"365": true}
 	case "MAP":
 		return irc.MAPEndCodes(ircd)
+	case "ISON":
+		return map[string]bool{"303": true}
 	case "HELP":
 		// RatBox / modern: 704 start, 705 text, 706 end.
 		return map[string]bool{"706": true, "524": true} // 524 = ERR_HELPNOTFOUND where used
@@ -146,6 +148,8 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 		}
 	case "MAP":
 		return irc.MAPReplyCodes(ircd)
+	case "ISON":
+		return map[string]bool{"303": true}
 	case "HELP":
 		return map[string]bool{"704": true, "705": true, "706": true, "524": true}
 	case "ADMIN":

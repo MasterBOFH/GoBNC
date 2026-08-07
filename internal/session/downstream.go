@@ -112,10 +112,20 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
-	case "INVITE", "KICK", "NICK":
+	case "INVITE", "KICK":
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
+		return s.uplink.WriteMessage(s.toUplink(msg))
+	case "NICK":
+		if s.uplink == nil {
+			return fmt.Errorf("uplink not ready")
+		}
+		// Avoid racing the registration nick ladder / reclaim.
+		if !s.uplink.Registered() {
+			return nil
+		}
+		s.uplink.StopNickRecovery()
 		return s.uplink.WriteMessage(s.toUplink(msg))
 	default:
 		if IsSolicitous(cmd) {

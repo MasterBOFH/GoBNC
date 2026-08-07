@@ -110,6 +110,11 @@ type Uplink struct {
 	floodStop chan struct{}
 
 	lastRXUnix int64 // atomic unix nano of last inbound line
+
+	nickRecMu               sync.Mutex
+	nickRecStop             chan struct{}
+	isonPending             bool
+	nickRecoveryUserStopped bool
 }
 
 // New creates an uplink (not yet connected).
@@ -183,6 +188,11 @@ func (u *Uplink) SetNetwork(n store.Network) {
 	u.cfg.Network = n
 	u.mu.Unlock()
 	u.setFloodParams(n.FloodBurst, n.FloodRate)
+	if !n.NickRecovery {
+		u.stopNickRecovery()
+	} else {
+		u.maybeStartNickRecovery()
+	}
 }
 
 // SetMaxFloodQueue updates the paced send-queue depth cap (0 = unlimited).
@@ -309,6 +319,7 @@ func (u *Uplink) Run(ctx context.Context) error {
 }
 
 func (u *Uplink) session(ctx context.Context) error {
+	u.resetNickRecoveryState()
 	u.mu.Lock()
 	u.reg = false
 	u.caps = make(map[string]bool)
@@ -341,6 +352,7 @@ func (u *Uplink) session(ctx context.Context) error {
 	u.startFloodDrain(ctx)
 	u.startKeepalive(ctx)
 	defer func() {
+		u.stopNickRecovery()
 		u.stopFloodDrain()
 		_ = c.Close()
 		u.mu.Lock()
@@ -379,6 +391,9 @@ func (u *Uplink) session(ctx context.Context) error {
 		}
 		// Uplink PING/PONG stay ringfenced — never fan out to downlinks.
 		if msg.Command == "PING" || msg.Command == "PONG" {
+			continue
+		}
+		if u.handleRecoveryNumeric(msg) {
 			continue
 		}
 		if u.handler != nil && u.Registered() {
@@ -423,6 +438,9 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 	if err := c.WriteLine("NICK " + n.Nick); err != nil {
 		return err
 	}
+	u.mu.Lock()
+	u.nick = n.Nick
+	u.mu.Unlock()
 	user := n.Username
 	if user == "" {
 		user = "gobnc"
@@ -512,9 +530,33 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 			if (msg.Command == "376" || msg.Command == "422") && gotWelcome {
 				return u.finishRegister(c)
 			}
-		case "432", "433": // erroneous/nick in use
+		case "432", "433": // erroneous / nick in use
+			bad := msg.Param(1)
+			ok, err := u.tryNextRegisterNick(c, bad)
+			if err != nil {
+				return err
+			}
+			if ok {
+				// Swallow mid-ladder nick errors (do not race awaiting clients).
+				continue
+			}
 			u.emitRegistrationLine(msg)
 			return fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
+		case "437": // nick/channel temporarily unavailable
+			// Pre-welcome nick form: first param is "*" (ZNC treats like 433).
+			if msg.Param(0) == "*" || !gotWelcome {
+				bad := msg.Param(1)
+				ok, err := u.tryNextRegisterNick(c, bad)
+				if err != nil {
+					return err
+				}
+				if ok {
+					continue
+				}
+				u.emitRegistrationLine(msg)
+				return fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
+			}
+			u.emitRegistrationLine(msg)
 		case "ERROR":
 			return fmt.Errorf("server ERROR: %s", msg.Trailing())
 		default:
@@ -558,6 +600,7 @@ func (u *Uplink) finishRegister(c *connio.Conn) error {
 		u.handler.OnRegistered(u)
 	}
 	u.joinChannels()
+	u.maybeStartNickRecovery()
 	return nil
 }
 
@@ -797,7 +840,9 @@ func (u *Uplink) handle(ctx context.Context, c *connio.Conn, msg irc.Message) er
 			if u.nick == "" && len(msg.Params) > 0 {
 				u.nick = msg.Params[0]
 			}
+			newNick := u.nick
 			u.mu.Unlock()
+			u.onSelfNickChange(newNick)
 		}
 	case "AUTHENTICATE":
 		return u.handleAuthenticate(c, msg)

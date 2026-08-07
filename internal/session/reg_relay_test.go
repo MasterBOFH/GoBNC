@@ -337,7 +337,7 @@ func TestNickInUseRelayedThenDisconnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "taken"}
+	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "taken", NickRecovery: false}
 	s := New(netCfg, nil, nil, nil)
 	u := uplink.New(uplink.Config{
 		Network:    netCfg,
@@ -434,3 +434,89 @@ func runNickInUseServer(server net.Conn, deadline time.Time) error {
 	}
 	return write(":server 433 * taken :Nickname is already in use.")
 }
+
+func TestNickLadderSwallowsMid433(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	netCfg := store.Network{
+		Name: "test", Host: "pipe", Port: 1, Nick: "taken", AltNick: "alt", NickRecovery: true,
+	}
+	s := New(netCfg, nil, nil, nil)
+	u := uplink.New(uplink.Config{
+		Network:    netCfg,
+		MinBackoff: time.Hour,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return client, nil
+		},
+	}, s)
+	s.SetUplink(u)
+
+	d := &fakeDL{id: "a", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	d.clearSent()
+
+	scriptDone := make(chan error, 1)
+	go func() {
+		scriptDone <- runNickLadderAcceptServer(server, time.Now().Add(6*time.Second))
+	}()
+	runDone := make(chan error, 1)
+	go func() { runDone <- u.Run(ctx) }()
+
+	waitUntil(t, 5*time.Second, func() bool { return u.Registered() })
+	snap := d.snapshot()
+	if countMsgCmd(snap, "433") != 0 {
+		t.Fatalf("mid-ladder 433 must not reach client: %+v", snap)
+	}
+	if countMsgCmd(snap, "001") < 1 {
+		t.Fatalf("missing welcome: %+v", snap)
+	}
+
+	cancel()
+	<-runDone
+	if err := <-scriptDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runNickLadderAcceptServer(server net.Conn, deadline time.Time) error {
+	br := newLineBuf(server)
+	read := func() (string, error) {
+		_ = server.SetReadDeadline(deadline)
+		return br.readLine()
+	}
+	write := func(s string) error {
+		_, err := io.WriteString(server, s+"\r\n")
+		return err
+	}
+	for _, want := range []string{"CAP LS", "NICK", "USER"} {
+		line, err := read()
+		if err != nil || !strings.Contains(line, want) {
+			return fmt.Errorf("%s: %q %v", want, line, err)
+		}
+	}
+	_ = write(":server CAP * LS :")
+	line, err := read()
+	if err != nil || line != "CAP END" {
+		return fmt.Errorf("CAP END: %q %v", line, err)
+	}
+	_ = write(":server 433 * taken :Nickname is already in use.")
+	line, err = read()
+	if err != nil || line != "NICK alt" {
+		return fmt.Errorf("alt: %q %v", line, err)
+	}
+	_ = write(":server 001 alt :Welcome")
+	_ = write(":server 376 alt :End of /MOTD command.")
+	// Drain possible ISON from recovery.
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if line, err := read(); err == nil && strings.HasPrefix(line, "ISON ") {
+		_ = write(":server 303 alt :taken")
+	}
+	return nil
+}
+

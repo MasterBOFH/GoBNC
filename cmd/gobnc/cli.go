@@ -21,8 +21,8 @@ func runCLI(args []string) error {
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]
+  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
 
@@ -34,6 +34,8 @@ so uplinks start/stop immediately.
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL apply on the next reconnect.
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
+--alt-nick= sets a fallback nick when the primary is taken; --nick-recovery= (default true)
+enables the nick ladder and ISON reclaim of the primary/alt nick.
 Pass --sasl-pass (no value) to prompt for a SASL password; if --sasl-user= is set without
 a password, you are prompted automatically.`)
 		return nil
@@ -114,8 +116,8 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			return err
 		}
 		for _, n := range nets {
-			fmt.Printf("%s\t%s:%d\ttls=%v\tnick=%s\tflood_burst=%d\tflood_rate=%g\n",
-				n.Name, n.Host, n.Port, n.TLS, n.Nick, n.FloodBurst, n.FloodRate)
+			fmt.Printf("%s\t%s:%d\ttls=%v\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g\n",
+				n.Name, n.Host, n.Port, n.TLS, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate)
 		}
 		return nil
 	case "delete":
@@ -138,10 +140,11 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "add":
 		if len(args) < 5 {
-			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]")
+			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 		}
 		n := store.Network{
 			Name: args[1], Host: args[2], Nick: args[4], TLS: true, Enabled: true, Username: "gobnc", Realname: "GoBNC",
+			NickRecovery: true,
 		}
 		fmt.Sscanf(args[3], "%d", &n.Port)
 		wantSASLPass := false
@@ -173,6 +176,10 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
 			case strings.HasPrefix(a, "--flood-rate="):
 				fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
+			case strings.HasPrefix(a, "--alt-nick="):
+				n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
+			case strings.HasPrefix(a, "--nick-recovery="):
+				n.NickRecovery = strings.TrimPrefix(a, "--nick-recovery=") != "false"
 			default:
 				return fmt.Errorf("unknown flag %q", a)
 			}
@@ -199,7 +206,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "mod":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]")
+			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 		}
 		n, err := st.NetworkByName(ctx, args[1])
 		if err != nil {
@@ -254,6 +261,12 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			case strings.HasPrefix(a, "--flood-rate="):
 				fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
 				changed = true
+			case strings.HasPrefix(a, "--alt-nick="):
+				n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
+				changed = true
+			case strings.HasPrefix(a, "--nick-recovery="):
+				n.NickRecovery = strings.TrimPrefix(a, "--nick-recovery=") != "false"
+				changed = true
 			default:
 				return fmt.Errorf("unknown flag %q", a)
 			}
@@ -267,7 +280,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			changed = true
 		}
 		if !changed {
-			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--user=/--realname=/--sasl-*/--flood-*")
+			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
 		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
 			return err

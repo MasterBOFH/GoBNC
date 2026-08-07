@@ -81,6 +81,36 @@ func TestNetworkFloodFields(t *testing.T) {
 	}
 }
 
+func TestNetworkNickRecoveryFields(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	_, err := s.UpsertNetwork(ctx, Network{
+		Name: "n", Host: "h", Port: 6667, Nick: "me", AltNick: "me2", NickRecovery: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.AltNick != "me2" || !n.NickRecovery {
+		t.Fatalf("got alt=%q recovery=%v", n.AltNick, n.NickRecovery)
+	}
+	n.NickRecovery = false
+	n.AltNick = ""
+	if _, err := s.UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.AltNick != "" || n.NickRecovery {
+		t.Fatalf("after clear: alt=%q recovery=%v", n.AltNick, n.NickRecovery)
+	}
+}
+
 func TestNetworkCRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
