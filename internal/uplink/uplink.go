@@ -100,6 +100,8 @@ type Uplink struct {
 	floodQ    []string
 	floodWake chan struct{}
 	floodStop chan struct{}
+
+	lastRXUnix int64 // atomic unix nano of last inbound line
 }
 
 // New creates an uplink (not yet connected).
@@ -312,6 +314,7 @@ func (u *Uplink) session(ctx context.Context) error {
 	u.conn = c
 	u.mu.Unlock()
 	u.startFloodDrain(ctx)
+	u.startKeepalive(ctx)
 	defer func() {
 		u.stopFloodDrain()
 		_ = c.Close()
@@ -336,6 +339,7 @@ func (u *Uplink) session(ctx context.Context) error {
 			}
 			return err
 		}
+		u.noteRX()
 		msg, err := irc.Parse(line)
 		if err != nil {
 			u.log.Debug("parse error", "line", line, "err", err)
@@ -343,6 +347,10 @@ func (u *Uplink) session(ctx context.Context) error {
 		}
 		if err := u.handle(ctx, c, msg); err != nil {
 			return err
+		}
+		// Uplink PING/PONG stay ringfenced — never fan out to downlinks.
+		if msg.Command == "PING" || msg.Command == "PONG" {
+			continue
 		}
 		if u.handler != nil && u.Registered() {
 			u.handler.OnMessage(u, msg)
@@ -410,6 +418,7 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 		if err != nil {
 			return err
 		}
+		u.noteRX()
 		msg, err := irc.Parse(line)
 		if err != nil {
 			continue

@@ -762,6 +762,30 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 }
 
+func TestClientPONGNotForwarded(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	// If PONG were forwarded, a nil uplink would error on WriteMessage.
+	s.uplink = nil
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.HandleClientMessage(d, irc.Message{Command: "PONG", Params: []string{"gobnc"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnMessageDropsUplinkPINGPONG(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	d := &fakeDL{id: "a", caps: map[string]bool{}}
+	_ = s.Attach(d)
+	d.sent = nil
+	s.OnMessage(nil, irc.Message{Command: "PING", Params: []string{"server"}})
+	s.OnMessage(nil, irc.Message{Command: "PONG", Params: []string{"gobnc"}})
+	if len(d.sent) != 0 {
+		t.Fatalf("uplink PING/PONG must not reach clients: %+v", d.sent)
+	}
+}
+
 func TestFanOutTwoClients(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.registered = true

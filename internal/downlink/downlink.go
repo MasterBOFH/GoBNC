@@ -121,6 +121,11 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	}
 	defer sess.Detach(cl.ID())
 
+	kaCtx, kaCancel := context.WithCancel(ctx)
+	defer kaCancel()
+	cl.touch()
+	go cl.keepaliveLoop(kaCtx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -131,6 +136,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		if err != nil {
 			return
 		}
+		cl.touch()
 		msg, err := irc.Parse(line)
 		if err != nil {
 			continue
@@ -340,6 +346,69 @@ type Client struct {
 	capStarted bool // client sent CAP LS or CAP REQ
 	capEnded   bool // client sent CAP END
 	cap302     bool // client sent CAP LS 302
+	lastRXUnix int64
+}
+
+// Keepalive timing (overridable in tests).
+var (
+	KeepaliveIdle  = 120 * time.Second
+	KeepaliveGrace = 60 * time.Second
+)
+
+func (c *Client) touch() {
+	atomic.StoreInt64(&c.lastRXUnix, time.Now().UnixNano())
+}
+
+func (c *Client) lastRX() time.Time {
+	ns := atomic.LoadInt64(&c.lastRXUnix)
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (c *Client) keepaliveLoop(ctx context.Context) {
+	idle := KeepaliveIdle
+	grace := KeepaliveGrace
+	if idle <= 0 {
+		return
+	}
+	tick := idle / 4
+	if tick < 50*time.Millisecond {
+		tick = 50 * time.Millisecond
+	}
+	if tick > 10*time.Second {
+		tick = 10 * time.Second
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	var pingAt time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		last := c.lastRX()
+		if last.IsZero() {
+			continue
+		}
+		silent := time.Since(last)
+		if silent < idle {
+			pingAt = time.Time{}
+			continue
+		}
+		if pingAt.IsZero() {
+			_ = c.Send(irc.Message{Command: "PING", Params: []string{"gobnc"}})
+			pingAt = time.Now()
+			continue
+		}
+		if grace > 0 && time.Since(pingAt) >= grace && time.Since(last) >= idle {
+			c.log.Info("downlink keepalive timeout; closing", "client", c.id)
+			_ = c.Close()
+			return
+		}
+	}
 }
 
 func (c *Client) ID() session.ClientID { return c.id }

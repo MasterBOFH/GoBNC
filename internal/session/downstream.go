@@ -29,6 +29,9 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 	switch cmd {
 	case "PING":
 		return d.Send(irc.Message{Command: "PONG", Params: msg.Params})
+	case "PONG":
+		// Reply to bouncer keepalive (or client stray PONG) — never forward upstream.
+		return nil
 	case "AUTHENTICATE":
 		return s.forwardClientAuthenticate(d, msg)
 	case "MARKREAD":

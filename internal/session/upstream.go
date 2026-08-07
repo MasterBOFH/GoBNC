@@ -214,6 +214,10 @@ func disconnectReason(err error) string {
 // OnMessage implements uplink.Handler — update state, history, fan-out to downlinks.
 func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 	_ = u
+	// Belt-and-suspenders: uplink keepalive must never reach clients.
+	if msg.Command == "PING" || msg.Command == "PONG" {
+		return
+	}
 	if msg.Command == "CAP" {
 		return
 	}
