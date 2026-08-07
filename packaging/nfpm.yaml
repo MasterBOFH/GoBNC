@@ -1,0 +1,29 @@
+# nfpm package definition for Linux .deb (and optional .rpm).
+# ARCH and VERSION are substituted by packaging/linux/build-deb.sh.
+name: gobnc
+arch: "${ARCH}"
+platform: linux
+version: "${VERSION}"
+section: net
+priority: optional
+maintainer: "MrIron <mriron@undernet.org>"
+description: |
+  Single-user IRC bouncer with multi-client attach, CHATHISTORY, and SQLite storage.
+vendor: GoBNC
+homepage: https://github.com/MasterBOFH/GoBNC
+license: MIT
+contents:
+  - src: ./dist/gobnc_${VERSION}_linux_${GOARCH}
+    dst: /usr/bin/gobnc
+    file_info:
+      mode: 0o755
+  - src: ./packaging/systemd/gobnc.service
+    dst: /lib/systemd/system/gobnc.service
+    file_info:
+      mode: 0o644
+  - src: ./gobnc.json.example
+    dst: /etc/gobnc/gobnc.json.example
+    file_info:
+      mode: 0o644
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh

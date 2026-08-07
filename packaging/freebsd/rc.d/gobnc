@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# PROVIDE: gobnc
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable gobnc:
+#   gobnc_enable="YES"
+#   gobnc_user="gobnc"          # optional
+#   gobnc_config="/usr/local/etc/gobnc/gobnc.json"
+#   gobnc_flags=""              # extra flags for serve
+
+. /etc/rc.subr
+
+name="gobnc"
+rcvar="gobnc_enable"
+
+load_rc_config $name
+
+: ${gobnc_enable:="NO"}
+: ${gobnc_user:="gobnc"}
+: ${gobnc_config:="/usr/local/etc/gobnc/gobnc.json"}
+: ${gobnc_flags:=""}
+
+command="/usr/local/bin/gobnc"
+# Foreground under daemon(8); FreeBSD rc manages the process.
+command_args="serve -config ${gobnc_config} -foreground ${gobnc_flags}"
+pidfile="/var/run/${name}.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+reload_cmd="${name}_reload"
+extra_commands="reload"
+
+gobnc_start()
+{
+	if [ -e "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
+		echo "${name} already running?"
+		return 1
+	fi
+	echo "Starting ${name}."
+	/usr/sbin/daemon -p "${pidfile}" -u "${gobnc_user}" \
+		${command} ${command_args}
+}
+
+gobnc_stop()
+{
+	if [ ! -e "${pidfile}" ]; then
+		echo "${name} not running?"
+		return 1
+	fi
+	echo "Stopping ${name}."
+	kill "$(cat "${pidfile}")" && rm -f "${pidfile}"
+}
+
+gobnc_reload()
+{
+	if [ ! -e "${pidfile}" ]; then
+		echo "${name} not running?"
+		return 1
+	fi
+	kill -HUP "$(cat "${pidfile}")"
+}
+
+run_rc_command "$1"

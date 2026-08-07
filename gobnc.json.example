@@ -7,13 +7,16 @@
   // SQLite DB (mode 0600 enforced). Holds auth, networks, SASL secrets, history.
   "db_path": "gobnc.db",
 
-  // Unix control socket for live network add/stop/reload.
+  // Unix control socket for live network add/stop/reload/rehash/shutdown.
   // Empty (or legacy "gobnc.sock") → $XDG_RUNTIME_DIR/gobnc/gobnc.sock or ~/.gobnc/gobnc.sock.
   // Parent dir 0700, socket 0600; same-UID peers only.
   "control_socket": "",
 
+  // PID file for daemon mode / gobnc stop. Empty → same state dir as control_socket.
+  "pid_file": "",
+
   "log_level": "info", // debug | info | warn | error
-  "log_file": "",      // optional JSON log path (0600); empty = no file
+  "log_file": "",      // optional JSON log path (0600); empty = no file (daemon mode defaults to state dir)
 
   // Max concurrent TLS client connections (0 uses default 32).
   "max_clients": 32,

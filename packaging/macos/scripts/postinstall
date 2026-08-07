@@ -1,0 +1,10 @@
+#!/bin/sh
+# postinstall for the macOS .pkg — create state dirs and seed config (runs as root).
+set -e
+install -d -m 0755 /usr/local/etc/gobnc
+install -d -m 0750 /usr/local/var/gobnc /usr/local/var/log/gobnc
+if [ ! -f /usr/local/etc/gobnc/gobnc.json ] && [ -f /usr/local/etc/gobnc/gobnc.json.example ]; then
+	cp /usr/local/etc/gobnc/gobnc.json.example /usr/local/etc/gobnc/gobnc.json
+	chmod 640 /usr/local/etc/gobnc/gobnc.json
+fi
+exit 0

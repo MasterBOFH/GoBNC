@@ -1,0 +1,25 @@
+[Unit]
+Description=GoBNC IRC bouncer
+Documentation=https://github.com/MasterBOFH/GoBNC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gobnc
+Group=gobnc
+# Stay in the foreground under systemd (do not double-daemonize).
+ExecStart=/usr/bin/gobnc serve -config /etc/gobnc/gobnc.json -foreground
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# Harden a bit; adjust if you store state elsewhere.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gobnc /var/log/gobnc /run/gobnc
+# Optional AmbientCapabilities if binding low ports (not needed for 6697 as rootless with authbind).
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.gobnc.bouncer</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/gobnc</string>
+		<string>serve</string>
+		<string>-config</string>
+		<string>/usr/local/etc/gobnc/gobnc.json</string>
+		<string>-foreground</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/usr/local/var/log/gobnc/launchd.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/usr/local/var/log/gobnc/launchd.err.log</string>
+</dict>
+</plist>

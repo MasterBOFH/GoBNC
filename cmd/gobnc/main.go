@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/daemon"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/server"
 )
@@ -20,7 +21,7 @@ func main() {
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 			runServe()
 			return
-		case "network", "auth", "rehash", "help", "-h", "--help":
+		case "network", "auth", "rehash", "stop", "help", "-h", "--help":
 			if err := runCLI(os.Args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
@@ -33,7 +34,13 @@ func main() {
 
 func runServe() {
 	cfgPath := flag.String("config", "gobnc.json", "path to bootstrap JSON config")
+	foreground := flag.Bool("foreground", false, "run in the foreground (no fork; for systemd/rc.d)")
+	flag.BoolVar(foreground, "f", false, "short for -foreground")
+	debug := flag.Bool("debug", false, "run in the foreground with the console attached (developer mode)")
+	flag.BoolVar(debug, "d", false, "short for -debug")
 	flag.Parse()
+
+	fg := *foreground || *debug
 
 	cfg, err := config.LoadJSON(*cfgPath)
 	if err != nil {
@@ -45,10 +52,31 @@ func runServe() {
 		os.Exit(1)
 	}
 
+	pidPath := cfg.ResolvedPidFile()
+	isChild := os.Getenv(daemon.EnvChild) != ""
+	if daemon.ShouldDaemonize(fg) {
+		if err := daemon.Reborn(daemon.Options{
+			PidFile: pidPath,
+			Args:    []string{os.Args[0], "serve", "-config", *cfgPath, "-foreground"},
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "daemonize: %v\n", err)
+			os.Exit(1)
+		}
+		// Parent exits inside Reborn; child continues with EnvChild set.
+	}
+
+	if err := daemon.WritePidFile(pidPath, os.Getpid()); err != nil {
+		fmt.Fprintf(os.Stderr, "pid file: %v\n", err)
+		os.Exit(1)
+	}
+	defer daemon.RemovePidFile(pidPath)
+
+	// Daemon children (no TTY) default logs to the state dir when log_file is unset.
+	logFile := cfg.ResolvedLogFile(isChild)
 	logger, closeLog, err := gobnclog.Setup(gobnclog.Options{
 		Level:   cfg.LogLevel,
 		Console: os.Stderr,
-		File:    cfg.LogFile,
+		File:    logFile,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "log: %v\n", err)
@@ -84,7 +112,13 @@ func runServe() {
 		}
 	}()
 
-	logger.Info("gobnc starting", "listen", cfg.ListenAddr, "db", cfg.DBPath, "log_file", cfg.LogFile)
+	logger.Info("gobnc starting",
+		"listen", cfg.ListenAddr,
+		"db", cfg.DBPath,
+		"log_file", logFile,
+		"pid_file", pidPath,
+		"daemon", isChild,
+	)
 	if err := srv.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Error("server stopped", "err", err)
 		os.Exit(1)

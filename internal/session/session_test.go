@@ -1288,6 +1288,82 @@ func TestEnsureMessageID(t *testing.T) {
 	}
 }
 
+func TestFanOutNICKTimeAndMsgID(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	netID, err := db.UpsertNetwork(context.Background(), store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := history.New(db)
+	s := New(store.Network{ID: netID, Name: "n", Nick: "me"}, db, hist, nil)
+	s.registered = true
+	s.mu.Lock()
+	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"bob": {}}}
+	s.mu.Unlock()
+
+	both := &fakeDL{id: "a", caps: map[string]bool{"message-tags": true, "server-time": true}}
+	timeOnly := &fakeDL{id: "b", caps: map[string]bool{"server-time": true}}
+	_ = s.Attach(both)
+	_ = s.Attach(timeOnly)
+	both.sent, timeOnly.sent = nil, nil
+
+	raw := ":bob!u@h NICK :robert"
+	s.OnMessage(nil, irc.Message{
+		Source:  "bob!u@h",
+		Command: "NICK",
+		Params:  []string{"robert"},
+		Raw:     raw,
+	})
+	if len(both.sent) != 1 || len(timeOnly.sent) != 1 {
+		t.Fatalf("fan-out both=%d timeOnly=%d", len(both.sent), len(timeOnly.sent))
+	}
+	got := both.sent[0]
+	if got.Command != "NICK" {
+		t.Fatalf("cmd=%q", got.Command)
+	}
+	if got.Tags["time"] == "" {
+		t.Fatalf("NICK missing @time: %+v", got.Tags)
+	}
+	if got.Tags["msgid"] == "" {
+		t.Fatalf("NICK missing @msgid: %+v", got.Tags)
+	}
+	wire := got.Wire()
+	if !strings.Contains(wire, "time=") || !strings.Contains(wire, "msgid=") {
+		t.Fatalf("NICK wire missing tags: %q", wire)
+	}
+	if !strings.Contains(wire, "NICK :robert") {
+		t.Fatalf("NICK wire body broken: %q", wire)
+	}
+	to := timeOnly.sent[0]
+	if to.Tags["time"] == "" {
+		t.Fatal("server-time client missing @time on NICK")
+	}
+	if _, ok := to.Tag("msgid"); ok {
+		t.Fatalf("server-time-only client got msgid: %+v", to.Tags)
+	}
+
+	// History Raw should carry the same tags for CHATHISTORY/event-playback.
+	msgs, err := db.QueryMessages(context.Background(), store.HistoryQuery{
+		NetworkID: netID, Target: "#c", Latest: true, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Command != "NICK" {
+		t.Fatalf("history=%+v", msgs)
+	}
+	if msgs[0].MsgID == "" {
+		t.Fatal("stored NICK missing msgid column")
+	}
+	if !strings.Contains(msgs[0].Raw, "msgid=") || !strings.Contains(msgs[0].Raw, "time=") {
+		t.Fatalf("stored NICK Raw missing tags: %q", msgs[0].Raw)
+	}
+}
+
 func TestFanOutMsgID(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.registered = true

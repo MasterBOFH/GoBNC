@@ -32,6 +32,7 @@ type Config struct {
 	TLSKey        string `json:"tls_key"`
 	DBPath        string `json:"db_path"`
 	ControlSocket string `json:"control_socket"`
+	PidFile       string `json:"pid_file,omitempty"`
 	LogLevel      string `json:"log_level"`
 	LogFile       string `json:"log_file,omitempty"` // JSON logs; in debug mode console stays human-readable
 
@@ -100,21 +101,44 @@ func (c Config) QuitReason() string {
 func (c Config) ResolvedControlSocket() string {
 	switch c.ControlSocket {
 	case "", "gobnc.sock":
-		return defaultControlSocketPath()
+		return filepath.Join(defaultStateDir(), "gobnc.sock")
 	default:
 		return c.ControlSocket
 	}
 }
 
-func defaultControlSocketPath() string {
+// ResolvedPidFile returns the PID file path.
+// Empty or "gobnc.pid" → $XDG_RUNTIME_DIR/gobnc/gobnc.pid or ~/.gobnc/gobnc.pid.
+func (c Config) ResolvedPidFile() string {
+	switch c.PidFile {
+	case "", "gobnc.pid":
+		return filepath.Join(defaultStateDir(), "gobnc.pid")
+	default:
+		return c.PidFile
+	}
+}
+
+// ResolvedLogFile returns log_file, or a default under the state dir when
+// useDefault is true and log_file is empty (daemon mode without an explicit path).
+func (c Config) ResolvedLogFile(useDefault bool) string {
+	if c.LogFile != "" {
+		return c.LogFile
+	}
+	if useDefault {
+		return filepath.Join(defaultStateDir(), "gobnc.log")
+	}
+	return ""
+}
+
+func defaultStateDir() string {
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		return filepath.Join(runtimeDir, "gobnc", "gobnc.sock")
+		return filepath.Join(runtimeDir, "gobnc")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "gobnc.sock"
+		return "."
 	}
-	return filepath.Join(home, ".gobnc", "gobnc.sock")
+	return filepath.Join(home, ".gobnc")
 }
 
 // LoadJSON loads config from path; missing file returns Default.

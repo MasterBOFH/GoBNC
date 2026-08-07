@@ -7,10 +7,12 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
+	"github.com/MasterBOFH/GoBNC/internal/daemon"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"golang.org/x/term"
 )
@@ -18,7 +20,8 @@ import (
 func runCLI(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Println(`gobnc commands:
-  serve [-config gobnc.json]
+  serve [-config gobnc.json] [-foreground|-f] [-debug|-d]
+  stop [-config gobnc.json]
   rehash [-config gobnc.json]
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
@@ -28,6 +31,10 @@ func runCLI(args []string) error {
   network list
   network delete <name>
 
+serve backgrounds by default (re-exec + pid file). Use -debug/-d or -foreground/-f
+to stay attached (required under systemd/rc.d). Daemon mode defaults log_file to
+the state dir when unset.
+
 Secrets (bouncer password, SASL password) are prompted on a TTY; they are not accepted on the command line.
 auth set-password asks whether to generate a random password (default yes); otherwise you enter one.
 
@@ -35,6 +42,7 @@ When the daemon is running, network add/delete also notify it via the control so
 (control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
 so uplinks start/stop immediately.
 rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
+stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL apply on the next reconnect.
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
@@ -52,8 +60,11 @@ a password, you are prompted automatically.`)
 	}
 	cfg, _ := config.LoadJSON(cfgPath)
 
-	if args[0] == "rehash" {
+	switch args[0] {
+	case "rehash":
 		return cmdRehash(cfg)
+	case "stop":
+		return cmdStop(cfg)
 	}
 
 	st, err := store.Open(cfg.DBPath)
@@ -82,6 +93,22 @@ func cmdRehash(cfg config.Config) error {
 		return fmt.Errorf("daemon not running (no control socket at %s)", cfg.ResolvedControlSocket())
 	}
 	fmt.Fprintln(os.Stderr, "Rehash complete.")
+	return nil
+}
+
+func cmdStop(cfg config.Config) error {
+	notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdShutdown)
+	if err != nil {
+		return err
+	}
+	if notified {
+		fmt.Fprintln(os.Stderr, "Shutdown requested.")
+		return nil
+	}
+	if err := daemon.Stop(cfg.ResolvedPidFile(), 8*time.Second); err != nil {
+		return fmt.Errorf("daemon not running via control socket; pid stop: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "Stopped via pid file.")
 	return nil
 }
 

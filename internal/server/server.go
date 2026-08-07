@@ -342,9 +342,22 @@ func (s *Server) handleControl(c net.Conn) {
 			} else {
 				reply = "OK"
 			}
+		case control.CmdShutdown:
+			reply = "OK"
+			go s.RequestShutdown()
 		}
 	}
 	_, _ = c.Write([]byte(reply + "\n"))
+}
+
+// RequestShutdown cancels the run context (graceful stop via SIGTERM path).
+func (s *Server) RequestShutdown() {
+	s.mu.RLock()
+	cancel := s.cancel
+	s.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // StartNetworkByName loads a network from the DB and starts its uplink.

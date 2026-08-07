@@ -18,9 +18,12 @@ With `"log_level": "debug"`, the console shows colored, columnized logs includin
 ./bin/gobnc auth set-password          # asks to generate a random password (or enter one)
 ./bin/gobnc auth add-fingerprint <sha256-hex>
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
-./bin/gobnc serve -config gobnc.json
+./bin/gobnc serve -config gobnc.json           # backgrounds by default
+./bin/gobnc serve -config gobnc.json -debug    # foreground (developer mode)
+./bin/gobnc stop -config gobnc.json
 ```
 
+`serve` re-execs into the background by default and writes a pid file (`pid_file`, default under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc`). Use `-debug`/`-d` or `-foreground`/`-f` to stay attached. Under systemd or FreeBSD `rc.d`, always use `-foreground` (see `packaging/`). Daemon mode defaults `log_file` to the state dir when unset.
 `--sasl-pass` (no value) prompts for the SASL password. Do not pass passwords on the command line.
 
 You can also run `network add` / `network delete` while the daemon is already running: the CLI writes SQLite and notifies the process over `control_socket` so the uplink starts or stops immediately. When unset (or the legacy value `gobnc.sock`), the socket defaults to `$XDG_RUNTIME_DIR/gobnc/gobnc.sock`, or `~/.gobnc/gobnc.sock` if `XDG_RUNTIME_DIR` is unset. The daemon creates the parent directory mode `0700` and the socket mode `0600`, and accepts connections only from the same Unix UID.
@@ -42,6 +45,16 @@ Channels are remembered when you `JOIN` (including channel keys) and forgotten w
 Send `SIGHUP` to the running `serve` process, or run `./bin/gobnc rehash`, to reload `gobnc.json` and refresh network rows from SQLite without dropping connected clients or reconnecting uplinks. Listener TLS certificates are hot-swapped: existing sessions keep their handshake; new connections use the reloaded cert/key.
 
 Ignored on rehash (require a full restart): `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
+
+## Service units
+
+Release tags build installers automatically:
+
+- Linux: `.deb` (amd64/arm64) with systemd unit
+- macOS: `.pkg` (amd64/arm64) with LaunchDaemon
+- FreeBSD: `.tar.gz` with binary + `rc.d` script (native pkgng needs a FreeBSD builder)
+
+See `packaging/` for local build scripts and unit files. Supervised installs run `gobnc serve … -foreground`.
 
 ## Security notes
 

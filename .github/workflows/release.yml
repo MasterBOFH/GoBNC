@@ -9,23 +9,39 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test ./...
+      - name: Race
+        run: go test -race ./...
 
+  linux-packages:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Test
-        run: go test ./...
+      - name: Install nfpm
+        env:
+          NFPM_VERSION: "2.43.1"
+        run: |
+          set -euo pipefail
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin nfpm
+          nfpm --version
 
-      - name: Race
-        run: go test -race ./...
-
-      - name: Build release binaries
+      - name: Build Linux/FreeBSD binaries and packages
         env:
           VERSION: ${{ github.ref_name }}
         run: |
@@ -33,30 +49,103 @@ jobs:
           ver="${VERSION#v}"
           mkdir -p dist
           ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver}"
-          for os in linux darwin; do
+          for os in linux freebsd; do
             for arch in amd64 arm64; do
               out="dist/gobnc_${ver}_${os}_${arch}"
               echo "building $out"
               GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
                 go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/gobnc
+              chmod +x "$out"
             done
           done
+          chmod +x packaging/linux/build-deb.sh packaging/freebsd/build-tarball.sh packaging/linux/postinstall.sh
+          VERSION="$ver" ./packaging/linux/build-deb.sh
+          VERSION="$ver" ./packaging/freebsd/build-tarball.sh
+          tar -czf "dist/gobnc_${ver}_packaging.tar.gz" packaging/ gobnc.json.example
           (
             cd dist
-            sha256sum gobnc_* | tee checksums.txt
+            sha256sum gobnc_* | tee checksums-linux.txt
           )
 
-      - name: Publish GitHub Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: |
+            dist/gobnc_*
+            dist/checksums-linux.txt
+
+  macos-packages:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Darwin binaries and .pkg
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${VERSION#v}"
+          mkdir -p dist
+          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver}"
+          for arch in amd64 arm64; do
+            out="dist/gobnc_${ver}_darwin_${arch}"
+            echo "building $out"
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/gobnc
+            chmod +x "$out"
+          done
+          chmod +x packaging/macos/build-pkg.sh packaging/macos/scripts/postinstall
+          VERSION="$ver" ./packaging/macos/build-pkg.sh
+          (
+            cd dist
+            shasum -a 256 gobnc_* | tee checksums-darwin.txt
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-dist
+          path: |
+            dist/gobnc_*
+            dist/checksums-darwin.txt
+
+  release:
+    needs: [linux-packages, macos-packages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-dist
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-dist
+          path: dist
+
+      - name: Merge checksums and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          set -euo pipefail
+          cd dist
+          cat checksums-linux.txt checksums-darwin.txt | sort > checksums.txt
+          rm -f checksums-linux.txt checksums-darwin.txt
+          ls -la
+          gh release create "${VERSION}" \
+            --repo "${{ github.repository }}" \
+            --title "${VERSION}" \
             --generate-notes \
-            dist/gobnc_* \
-            dist/checksums.txt
+            gobnc_* \
+            checksums.txt
 
-      # Tag already points at this commit; bump version strings on main afterward.
       - name: Sync version on main
         env:
           VERSION: ${{ github.ref_name }}
