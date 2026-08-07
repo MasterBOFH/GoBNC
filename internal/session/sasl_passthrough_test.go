@@ -320,7 +320,7 @@ func TestSASLNoFallbackWithoutClient(t *testing.T) {
 }
 
 func TestBouncerOwnedSASLOnlyEmitsLoggedIn(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me", SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
 	s.mu.Lock()

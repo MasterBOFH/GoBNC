@@ -28,8 +28,8 @@ func runCLI(args []string) error {
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
   network reconnect <name>
@@ -56,6 +56,9 @@ Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 
 enables the nick ladder and ISON reclaim of the primary/alt nick.
 --tls-cert= / --tls-key= set a per-network cert GoBNC presents to the IRC server
 (empty inherits tls_client_cert/key from gobnc.json; none or - disables).
+--sasl=true enables bouncer SASL (SCRAM/PLAIN with --sasl-user/--sasl-pass; EXTERNAL
+when sasl is on with no user/pass and a client cert). A client cert alone does not
+enable SASL. network add with --sasl-user and a password implies --sasl=true.
 network add uses default_nick / default_username / default_realname / default_alt_nick
 from gobnc.json when those fields are omitted.
 Pass --sasl-pass (no value) to prompt for a SASL password; if --sasl-user= is set without

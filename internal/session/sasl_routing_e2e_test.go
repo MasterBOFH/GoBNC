@@ -70,7 +70,7 @@ func TestMultiDownstreamBouncerSASL(t *testing.T) {
 
 	netCfg := store.Network{
 		Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
-		Username: "u", Realname: "r", SASLUser: "acct", SASLPass: "secret",
+		Username: "u", Realname: "r", SASL: true, SASLUser: "acct", SASLPass: "secret",
 	}
 	s := New(netCfg, nil, nil, nil)
 	u := uplink.New(uplink.Config{

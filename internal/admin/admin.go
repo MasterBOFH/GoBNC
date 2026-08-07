@@ -50,8 +50,8 @@ func Help() string {
   help
   status
   rehash
-  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
   network reconnect <name>`)
@@ -171,7 +171,7 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 
 func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) < 4 {
-		return nil, fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		return nil, fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
@@ -187,6 +187,7 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		i = 5
 	}
 	wantSASLPass := false
+	saslFlagSet := false
 	for ; i < len(args); i++ {
 		a := args[i]
 		if a == "-config" {
@@ -213,6 +214,9 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			n.Username = strings.TrimPrefix(a, "--username=")
 		case strings.HasPrefix(a, "--realname="):
 			n.Realname = strings.TrimPrefix(a, "--realname=")
+		case strings.HasPrefix(a, "--sasl="):
+			n.SASL = strings.TrimPrefix(a, "--sasl=") != "false"
+			saslFlagSet = true
 		case strings.HasPrefix(a, "--sasl-user="):
 			n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
 		case a == "--sasl-pass":
@@ -245,6 +249,9 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	if pass != "" {
 		n.SASLPass = pass
 	}
+	if !saslFlagSet && n.SASLUser != "" && n.SASLPass != "" {
+		n.SASL = true
+	}
 	if _, err := deps.Store.UpsertNetwork(ctx, n); err != nil {
 		return nil, err
 	}
@@ -260,7 +267,7 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 
 func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		return nil, fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
@@ -302,6 +309,9 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			changed = true
 		case strings.HasPrefix(a, "--tls-key="):
 			n.TLSKey = strings.TrimPrefix(a, "--tls-key=")
+			changed = true
+		case strings.HasPrefix(a, "--sasl="):
+			n.SASL = strings.TrimPrefix(a, "--sasl=") != "false"
 			changed = true
 		case strings.HasPrefix(a, "--sasl-user="):
 			n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
@@ -351,7 +361,7 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		changed = true
 	}
 	if !changed {
-		return nil, fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--tls-noverify=/--tls-cert=/--tls-key=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
+		return nil, fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--tls-noverify=/--tls-cert=/--tls-key=/--sasl=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
 	}
 	if _, err := deps.Store.UpsertNetwork(ctx, n); err != nil {
 		return nil, err

@@ -18,14 +18,8 @@ const authenticateChunkSize = 400
 
 func (u *Uplink) saslWanted() bool {
 	u.mu.RLock()
-	n := u.cfg.Network
-	tlsConf := u.cfg.TLSConf
-	globalCert, globalKey := u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey
-	u.mu.RUnlock()
-	if n.SASLUser != "" && n.SASLPass != "" {
-		return true
-	}
-	return hasClientCert(tlsConf) || clientCertPathsConfigured(n, globalCert, globalKey)
+	defer u.mu.RUnlock()
+	return u.cfg.Network.SASL
 }
 
 func hasClientCert(tc *tls.Config) bool {
@@ -114,14 +108,19 @@ func (u *Uplink) startSASL(c *connio.Conn) error {
 }
 
 // pickSASLMech prefers SCRAM-SHA-256, then PLAIN, then EXTERNAL.
+// EXTERNAL only when SASL is enabled with no user/pass and a client cert is available.
 // Empty advertised list (pre-302 / no value): PLAIN if password auth, else EXTERNAL with cert.
 func (u *Uplink) pickSASLMech() (string, bool) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	n := u.cfg.Network
+	if !n.SASL {
+		return "", false
+	}
 	passwordOK := n.SASLUser != "" && n.SASLPass != ""
-	externalOK := hasClientCert(u.cfg.TLSConf) ||
-		clientCertPathsConfigured(n, u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey)
+	externalOK := n.SASLUser == "" && n.SASLPass == "" &&
+		(hasClientCert(u.cfg.TLSConf) ||
+			clientCertPathsConfigured(n, u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey))
 
 	var preferred []string
 	if passwordOK {

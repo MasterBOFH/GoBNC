@@ -93,6 +93,7 @@ func (s *Store) migrate() error {
 			pass TEXT NOT NULL DEFAULT '',
 			sasl_user TEXT NOT NULL DEFAULT '',
 			sasl_pass TEXT NOT NULL DEFAULT '',
+			sasl INTEGER NOT NULL DEFAULT 0,
 			sasl_required INTEGER NOT NULL DEFAULT 0,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			flood_burst INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +152,9 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_noverify INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_cert TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN sasl INTEGER NOT NULL DEFAULT 0`)
+	// Existing networks with password SASL credentials keep doing SASL.
+	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS playback_cursors (
 		network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
 		target TEXT NOT NULL,
@@ -171,8 +175,11 @@ type Network struct {
 	Username     string
 	Realname     string
 	Pass         string
-	SASLUser     string
-	SASLPass     string
+	SASLUser 	 string
+	SASLPass 	 string
+	// SASL enables bouncer-owned SASL. With user+pass: SCRAM-SHA-256/PLAIN.
+	// With neither and a client cert: EXTERNAL. Cert alone does not enable SASL.
+	SASL         bool
 	SASLRequired bool
 	Enabled      bool
 	// FloodBurst is max queued send burst in bytes (0 with FloodRate 0 = unlimited).
@@ -215,19 +222,19 @@ type Message struct {
 // UpsertNetwork inserts or updates a network by name.
 func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			host=excluded.host, port=excluded.port, tls=excluded.tls, nick=excluded.nick,
 			username=excluded.username, realname=excluded.realname, pass=excluded.pass,
-			sasl_user=excluded.sasl_user, sasl_pass=excluded.sasl_pass,
+			sasl_user=excluded.sasl_user, sasl_pass=excluded.sasl_pass, sasl=excluded.sasl,
 			sasl_required=excluded.sasl_required, enabled=excluded.enabled,
 			flood_burst=excluded.flood_burst, flood_rate=excluded.flood_rate,
 			alt_nick=excluded.alt_nick, nick_recovery=excluded.nick_recovery,
 			tls_noverify=excluded.tls_noverify,
 			tls_cert=excluded.tls_cert, tls_key=excluded.tls_key
 	`, n.Name, n.Host, n.Port, boolInt(n.TLS), n.Nick, n.Username, n.Realname, n.Pass,
-		n.SASLUser, n.SASLPass, boolInt(n.SASLRequired), boolInt(n.Enabled),
+		n.SASLUser, n.SASLPass, boolInt(n.SASL), boolInt(n.SASLRequired), boolInt(n.Enabled),
 		n.FloodBurst, n.FloodRate, n.AltNick, boolInt(n.NickRecovery), boolInt(n.TLSNoVerify),
 		n.TLSCert, n.TLSKey)
 	if err != nil {
@@ -243,7 +250,7 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 // ListNetworks returns all networks.
 func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
 		FROM networks ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -252,13 +259,14 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	var out []Network
 	for rows.Next() {
 		var n Network
-		var tls, saslReq, en, nickRec, tlsNoVerify int
+		var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
 		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
-			&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
+			&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
 			&n.TLSCert, &n.TLSKey); err != nil {
 			return nil, err
 		}
 		n.TLS = tls != 0
+		n.SASL = saslOn != 0
 		n.SASLRequired = saslReq != 0
 		n.Enabled = en != 0
 		n.NickRecovery = nickRec != 0
@@ -271,17 +279,18 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 // NetworkByName returns a network.
 func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error) {
 	var n Network
-	var tls, saslReq, en, nickRec, tlsNoVerify int
+	var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
 		FROM networks WHERE name=?`, name).Scan(
 		&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
-		&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
+		&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
 		&n.TLSCert, &n.TLSKey)
 	if err != nil {
 		return n, err
 	}
 	n.TLS = tls != 0
+	n.SASL = saslOn != 0
 	n.SASLRequired = saslReq != 0
 	n.Enabled = en != 0
 	n.NickRecovery = nickRec != 0

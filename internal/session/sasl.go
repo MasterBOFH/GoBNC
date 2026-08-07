@@ -16,7 +16,7 @@ func bouncerOwnsSASL(n store.Network, u *uplink.Uplink) bool {
 	if u != nil {
 		return u.OwnsSASL()
 	}
-	return n.SASLUser != "" && n.SASLPass != ""
+	return n.SASL
 }
 
 // OffersPassthroughSASL reports whether sasl is advertised to clients.

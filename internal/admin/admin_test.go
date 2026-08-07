@@ -96,6 +96,9 @@ func TestInlineSASLPass(t *testing.T) {
 	if n.SASLUser != "me" || n.SASLPass != "s3cret" {
 		t.Fatalf("sasl: %+v", n)
 	}
+	if !n.SASL {
+		t.Fatal("expected sasl=true implied by user+pass")
+	}
 
 	_, err = Run(context.Background(), deps, opts, []string{
 		"network", "add", "n2", "irc.example", "6697", "nick", "--sasl-pass",
@@ -142,6 +145,39 @@ func TestNetworkTLSCertFlags(t *testing.T) {
 	}
 	if n.TLSCert != "none" {
 		t.Fatalf("mod none: %+v", n)
+	}
+}
+
+func TestNetworkSASLFlag(t *testing.T) {
+	rt := &memRuntime{startOK: true, reloadOK: true}
+	deps := testDeps(t, rt)
+	opts := Options{AllowInlineSASLPass: true}
+	_, err := Run(context.Background(), deps, opts, []string{
+		"network", "add", "ext", "irc.example", "6697", "nick",
+		"--sasl=true", "--tls-cert=certs/c.crt", "--tls-key=certs/c.key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := deps.Store.NetworkByName(context.Background(), "ext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.SASL || n.SASLUser != "" || n.SASLPass != "" {
+		t.Fatalf("external-style: %+v", n)
+	}
+	_, err = Run(context.Background(), deps, opts, []string{
+		"network", "mod", "ext", "--sasl=false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err = deps.Store.NetworkByName(context.Background(), "ext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.SASL {
+		t.Fatal("expected sasl=false after mod")
 	}
 }
 

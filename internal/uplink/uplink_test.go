@@ -47,7 +47,7 @@ func TestUplinkHappyPath(t *testing.T) {
 	u := New(Config{
 		Network: store.Network{
 			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
-			Username: "u", Realname: "r", SASLUser: "u", SASLPass: "p",
+			Username: "u", Realname: "r", SASL: true, SASLUser: "u", SASLPass: "p",
 		},
 		Channels:   []store.Channel{{Name: "#chan"}},
 		MinBackoff: time.Hour,
@@ -136,7 +136,7 @@ func TestUplinkSASLRequiredFailure(t *testing.T) {
 	u := New(Config{
 		Network: store.Network{
 			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
-			SASLUser: "u", SASLPass: "p", SASLRequired: true,
+			SASL: true, SASLUser: "u", SASLPass: "p", SASLRequired: true,
 		},
 		MinBackoff: time.Hour,
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -170,6 +170,7 @@ func TestPickSASLMech(t *testing.T) {
 	fx := testutil.NewTLSFixture(t)
 	cases := []struct {
 		name    string
+		sasl    bool
 		user    string
 		pass    string
 		tlsConf *tls.Config
@@ -177,19 +178,21 @@ func TestPickSASLMech(t *testing.T) {
 		want    string
 		ok      bool
 	}{
-		{name: "legacy empty prefers PLAIN", user: "u", pass: "p", want: "PLAIN", ok: true},
-		{name: "prefer SCRAM over PLAIN", user: "u", pass: "p", offered: []string{"PLAIN", "SCRAM-SHA-256"}, want: "SCRAM-SHA-256", ok: true},
-		{name: "PLAIN when no SCRAM", user: "u", pass: "p", offered: []string{"EXTERNAL", "PLAIN"}, want: "PLAIN", ok: true},
-		{name: "EXTERNAL with cert no password", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "PLAIN"}, want: "EXTERNAL", ok: true},
-		{name: "EXTERNAL optional user with cert", user: "acct", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, want: "EXTERNAL", ok: true},
-		{name: "password prefers SCRAM over EXTERNAL", user: "u", pass: "p", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "SCRAM-SHA-256", "PLAIN"}, want: "SCRAM-SHA-256", ok: true},
-		{name: "no match", user: "u", pass: "p", offered: []string{"EXTERNAL"}, ok: false},
-		{name: "no credentials", offered: []string{"PLAIN", "SCRAM-SHA-256", "EXTERNAL"}, ok: false},
+		{name: "sasl off ignores credentials", sasl: false, user: "u", pass: "p", want: "", ok: false},
+		{name: "legacy empty prefers PLAIN", sasl: true, user: "u", pass: "p", want: "PLAIN", ok: true},
+		{name: "prefer SCRAM over PLAIN", sasl: true, user: "u", pass: "p", offered: []string{"PLAIN", "SCRAM-SHA-256"}, want: "SCRAM-SHA-256", ok: true},
+		{name: "PLAIN when no SCRAM", sasl: true, user: "u", pass: "p", offered: []string{"EXTERNAL", "PLAIN"}, want: "PLAIN", ok: true},
+		{name: "EXTERNAL when sasl and cert no credentials", sasl: true, tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "PLAIN"}, want: "EXTERNAL", ok: true},
+		{name: "user without pass is not EXTERNAL", sasl: true, user: "acct", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, ok: false},
+		{name: "cert alone without sasl flag", sasl: false, tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, ok: false},
+		{name: "password prefers SCRAM over EXTERNAL", sasl: true, user: "u", pass: "p", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "SCRAM-SHA-256", "PLAIN"}, want: "SCRAM-SHA-256", ok: true},
+		{name: "no match", sasl: true, user: "u", pass: "p", offered: []string{"EXTERNAL"}, ok: false},
+		{name: "sasl on but no credentials or cert", sasl: true, offered: []string{"PLAIN", "EXTERNAL"}, ok: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			u := New(Config{
-				Network: store.Network{SASLUser: tc.user, SASLPass: tc.pass},
+				Network: store.Network{SASL: tc.sasl, SASLUser: tc.user, SASLPass: tc.pass},
 				TLSConf: tc.tlsConf,
 			}, nil)
 			u.saslMechs = tc.offered
@@ -202,7 +205,7 @@ func TestPickSASLMech(t *testing.T) {
 
 	t.Run("EXTERNAL via global cert paths", func(t *testing.T) {
 		u := New(Config{
-			Network:             store.Network{},
+			Network:             store.Network{SASL: true},
 			GlobalTLSClientCert: "certs/client.crt",
 			GlobalTLSClientKey:  "certs/client.key",
 		}, nil)
@@ -214,7 +217,7 @@ func TestPickSASLMech(t *testing.T) {
 	})
 	t.Run("network none disables global", func(t *testing.T) {
 		u := New(Config{
-			Network:             store.Network{TLSCert: "none"},
+			Network:             store.Network{SASL: true, TLSCert: "none"},
 			GlobalTLSClientCert: "certs/client.crt",
 			GlobalTLSClientKey:  "certs/client.key",
 		}, nil)
@@ -236,7 +239,7 @@ func TestUplinkSASLExternal(t *testing.T) {
 	u := New(Config{
 		Network: store.Network{
 			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
-			SASLUser: "acct", // optional authzid
+			SASL: true, // EXTERNAL: sasl on, no user/pass, client cert present
 		},
 		TLSConf:    fx.ClientTLS,
 		MinBackoff: time.Hour,
@@ -256,7 +259,7 @@ func TestUplinkSASLExternal(t *testing.T) {
 			{Send: "CAP * ACK :sasl cap-notify"},
 			{Expect: "AUTHENTICATE EXTERNAL"},
 			{Send: "AUTHENTICATE +"},
-			{Expect: "AUTHENTICATE " + mustB64("acct")},
+			{Expect: "AUTHENTICATE +"},
 			{Send: ":server 903 testnick :SASL authentication successful"},
 			{Expect: "CAP END"},
 			{Send: ":server 001 testnick :Welcome"},
@@ -290,6 +293,7 @@ func TestUplinkSASLExternalEmptyAuthzid(t *testing.T) {
 	u := New(Config{
 		Network: store.Network{
 			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
+			SASL: true,
 		},
 		TLSConf:    fx.ClientTLS,
 		MinBackoff: time.Hour,
@@ -359,7 +363,7 @@ func TestUplinkSASLSCRAMSHA256(t *testing.T) {
 	u := New(Config{
 		Network: store.Network{
 			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
-			SASLUser: user, SASLPass: pass,
+			SASL: true, SASLUser: user, SASLPass: pass,
 		},
 		MinBackoff: time.Hour,
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {

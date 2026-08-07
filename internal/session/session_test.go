@@ -1526,7 +1526,7 @@ func TestPassthroughSASLOffer(t *testing.T) {
 	}
 
 	// Bouncer credentials: never advertise.
-	s2 := New(store.Network{Name: "n", Nick: "me", SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
+	s2 := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
 	s2.mu.Lock()
 	s2.saslOffer = "sasl=PLAIN" // stale; refresh clears
 	s2.mu.Unlock()

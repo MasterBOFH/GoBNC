@@ -10,6 +10,8 @@ cp gobnc.json.example gobnc.json
 make cert                        # prompts for hostname; or: make cert HOST=bnc.example.com
 ./bin/gobnc auth set-password    # bouncer login password (not NickServ)
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
+# CERTFP only: set tls_client_cert in gobnc.json, then reconnect (no --sasl)
+# SASL EXTERNAL: --sasl=true with that cert and no --sasl-user/--sasl-pass
 ./bin/gobnc serve -config gobnc.json
 ```
 
@@ -51,9 +53,17 @@ Connect with TLS to `listen_addr` (default `127.0.0.1:6697`).
 
 Then connect with `PASS libera/` (or `libera`) and that client cert enabled.
 
-### CERTFP / SASL EXTERNAL (to the IRC network)
+### CERTFP / SASL (to the IRC network)
 
-With `tls_client_cert` / `tls_client_key` set (or per-network `--tls-cert=` / `--tls-key=`), GoBNC presents that certificate when connecting to the IRC server. Register the **SHA-512** fingerprint with NickServ (`CERT ADD …` from `make cert` output). Empty network paths inherit the global JSON paths; `none` or `-` disables the cert for one network.
+`tls_client_cert` / `tls_client_key` (or per-network `--tls-cert=` / `--tls-key=`) make GoBNC present a client certificate when connecting. That alone is enough for NickServ **CERTFP** (`CERT ADD` with the SHA-512 from `make cert`). It does **not** start SASL.
+
+Enable bouncer SASL with `--sasl=true`:
+
+- `--sasl-user=` + `--sasl-pass` → SCRAM-SHA-256 or PLAIN (whichever the server offers)
+- no user/pass + client cert → **EXTERNAL**
+- `network add` with user+pass implies `--sasl=true` if you omit `--sasl=`
+
+Empty network cert paths inherit the global JSON paths; `none` or `-` disables the cert for one network.
 
 Channels you `JOIN` (including keys) are remembered and auto-rejoined on uplink reconnect; `PART` forgets them.
 
@@ -68,14 +78,14 @@ Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BN
   [--nick=] [--tls=true|false] [--tls-noverify=true|false] \
   [--tls-cert=] [--tls-key=] \
   [--user=] [--realname=] \
-  [--sasl-user=] [--sasl-pass] \
+  [--sasl=true|false] [--sasl-user=] [--sasl-pass] \
   [--flood-burst=] [--flood-rate=] \
   [--alt-nick=] [--nick-recovery=true|false]
 ./bin/gobnc network mod <name> \
   [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] \
   [--tls-cert=] [--tls-key=] \
   [--user=] [--realname=] \
-  [--sasl-user=] [--sasl-pass] \
+  [--sasl=true|false] [--sasl-user=] [--sasl-pass] \
   [--flood-burst=] [--flood-rate=] \
   [--alt-nick=] [--nick-recovery=true|false]
 ./bin/gobnc network delete <name>
@@ -96,7 +106,7 @@ BNC rehash
 
 `BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
 
-Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). SASL mechanism is chosen automatically (SCRAM-SHA-256 → PLAIN with user+pass; EXTERNAL with a client cert).
+Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables).
 
 `network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert apply on the next reconnect). `network reconnect` forces a reconnect now. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`) and network rows without dropping clients. Restart required for: `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
 
