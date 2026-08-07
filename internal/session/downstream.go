@@ -176,6 +176,7 @@ func (s *Session) echoSelfLocally(msg irc.Message) {
 		}
 	}
 	echo = ensureMessageTime(echo)
+	echo = ensureMessageID(echo)
 	s.maybeStoreHistory(echo)
 
 	s.mu.RLock()

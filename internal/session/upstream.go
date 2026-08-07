@@ -10,6 +10,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/uplink"
+	"github.com/google/uuid"
 )
 
 // OnRegistered implements uplink.Handler.
@@ -225,6 +226,7 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 		return
 	}
 	msg = ensureMessageTime(msg)
+	msg = ensureMessageID(msg)
 	s.maybeStoreHistory(msg) // before applyState so QUIT/NICK still see channel membership
 	s.applyState(msg)
 
@@ -279,6 +281,28 @@ func ensureMessageTime(msg irc.Message) irc.Message {
 		msg.Tags = map[string]string{}
 	}
 	msg.Tags["time"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	msg.Raw = "" // tags changed; cannot reuse uplink wire form
+	return msg
+}
+
+// ensureMessageID adds @msgid= when the uplink did not supply one.
+// IDs are RFC 4122 UUIDs so they stay unique across restarts and never collide
+// with typical ircd formats. Spec MAY attach on any event (SHOULD on PRIVMSG/
+// NOTICE); we assign on all live traffic so history and clients stay consistent.
+// See https://ircv3.net/specs/extensions/message-ids
+func ensureMessageID(msg irc.Message) irc.Message {
+	if msg.Command == "" {
+		return msg
+	}
+	if _, ok := msg.Tag("msgid"); ok {
+		return msg
+	}
+	msg.Tags = msg.CopyTags()
+	if msg.Tags == nil {
+		msg.Tags = map[string]string{}
+	}
+	msg.Tags["msgid"] = uuid.NewString()
+	msg.Raw = ""
 	return msg
 }
 

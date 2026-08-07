@@ -785,6 +785,75 @@ func TestFanOutTwoClients(t *testing.T) {
 	}
 }
 
+func TestEnsureMessageID(t *testing.T) {
+	bare := irc.Message{Source: "n!u@h", Command: "PRIVMSG", Params: []string{"#c", "hi"}, Raw: "@time=t :n!u@h PRIVMSG #c :hi"}
+	got := ensureMessageID(bare)
+	id, ok := got.Tag("msgid")
+	if !ok || id == "" {
+		t.Fatal("expected generated msgid")
+	}
+	if got.Raw != "" {
+		t.Fatal("Raw must be cleared when tags change")
+	}
+	// Upstream ID preserved.
+	up := irc.Message{
+		Tags:    map[string]string{"msgid": "upstream-id-1"},
+		Source:  "n!u@h",
+		Command: "PRIVMSG",
+		Params:  []string{"#c", "hi"},
+	}
+	if ensureMessageID(up).Tags["msgid"] != "upstream-id-1" {
+		t.Fatal("must keep uplink msgid")
+	}
+	join := ensureMessageID(irc.Message{Source: "n!u@h", Command: "JOIN", Params: []string{"#c"}})
+	if join.Tags["msgid"] == "" {
+		t.Fatal("JOIN should also get a synthetic msgid")
+	}
+	if ensureMessageID(irc.Message{}).Tags != nil {
+		t.Fatal("empty command should stay untouched")
+	}
+}
+
+func TestFanOutMsgID(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	withTags := &fakeDL{id: "a", caps: map[string]bool{"message-tags": true, "server-time": true}}
+	noTags := &fakeDL{id: "b", caps: map[string]bool{"server-time": true}}
+	withTags2 := &fakeDL{id: "c", caps: map[string]bool{"message-tags": true}}
+	_ = s.Attach(withTags)
+	_ = s.Attach(noTags)
+	_ = s.Attach(withTags2)
+	withTags.sent, noTags.sent, withTags2.sent = nil, nil, nil
+
+	s.OnMessage(nil, irc.Message{
+		Source:  "x!u@h",
+		Command: "PRIVMSG",
+		Params:  []string{"#c", "hi"},
+	})
+	if len(withTags.sent) != 1 || len(withTags2.sent) != 1 || len(noTags.sent) != 1 {
+		t.Fatalf("fan-out counts tags=%d tags2=%d none=%d", len(withTags.sent), len(withTags2.sent), len(noTags.sent))
+	}
+	id1 := withTags.sent[0].Tags["msgid"]
+	id2 := withTags2.sent[0].Tags["msgid"]
+	if id1 == "" || id1 != id2 {
+		t.Fatalf("clients with message-tags must share one msgid: %q vs %q", id1, id2)
+	}
+	if _, ok := noTags.sent[0].Tag("msgid"); ok {
+		t.Fatalf("client without message-tags got msgid: %+v", noTags.sent[0].Tags)
+	}
+
+	withTags.sent, withTags2.sent = nil, nil
+	s.OnMessage(nil, irc.Message{
+		Tags:    map[string]string{"msgid": "net-xyz", "time": "2024-01-01T00:00:00.000Z"},
+		Source:  "x!u@h",
+		Command: "NOTICE",
+		Params:  []string{"#c", "n"},
+	})
+	if withTags.sent[0].Tags["msgid"] != "net-xyz" || withTags2.sent[0].Tags["msgid"] != "net-xyz" {
+		t.Fatalf("must pass through uplink msgid: %v / %v", withTags.sent[0].Tags, withTags2.sent[0].Tags)
+	}
+}
+
 func TestHistoryTargetsQUITNICK(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.mu.Lock()
