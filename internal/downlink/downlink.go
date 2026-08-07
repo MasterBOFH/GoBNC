@@ -159,7 +159,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 
 	authed, network, err := l.authenticate(ctx, cl, tc)
 	if err != nil || !authed {
-		l.log.Info("auth failed", "err", err)
+		l.log.Info("auth failed", "ip", peerIP(c), "err", err)
 		_ = cl.Send(irc.Message{Command: "ERROR", Params: []string{"Authentication failed"}})
 		return
 	}
@@ -291,6 +291,18 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		return false, "", fmt.Errorf("network not specified (use PASS network/password or PASS network/ for cert auth)")
 	}
 	return true, network, nil
+}
+
+// peerIP returns the remote host without port (for auth failure logs).
+func peerIP(c net.Conn) string {
+	if c == nil || c.RemoteAddr() == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return c.RemoteAddr().String()
+	}
+	return host
 }
 
 // stripNetworkFromPass returns the password portion of PASS.

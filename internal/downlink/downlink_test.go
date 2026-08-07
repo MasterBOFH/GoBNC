@@ -147,6 +147,39 @@ func TestAuthFailClosed(t *testing.T) {
 	}
 }
 
+func TestPeerIP(t *testing.T) {
+	if got := peerIP(nil); got != "" {
+		t.Fatalf("nil conn: %q", got)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- c
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server := <-done
+	if server == nil {
+		t.Fatal("accept failed")
+	}
+	defer server.Close()
+	if got := peerIP(server); got != "127.0.0.1" {
+		t.Fatalf("peerIP = %q, want 127.0.0.1", got)
+	}
+}
+
 func TestPlainTCPRejected(t *testing.T) {
 	fx := testutil.NewTLSFixture(t)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
