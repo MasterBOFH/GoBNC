@@ -13,34 +13,61 @@ const ServerName = "gobnc"
 
 // Attach registers a downlink and replays welcome + channel state.
 //
-// If the uplink is already registered, sends the full cached burst.
-// Otherwise sends only a pending 001 so the client can finish local
-// registration, then relays live (and buffered) uplink registration traffic.
+// If the uplink is already registered, sends the full cached burst using the
+// live uplink nick (modern IRC: 001's first parameter is the assigned nick).
+//
+// If the uplink is not registered yet, send a synthetic 001 with the configured
+// nick so the client can finish local registration, then relay live/buffered
+// uplink traffic. When a later real 001 has a different nick, OnRegistrationLine
+// sends self-NICK then the real 001. Mid-attach with a buffered 001 already
+// present replays the buffer, then self-NICK if the nick differs.
 func (s *Session) Attach(d Downlink) error {
 	s.mu.Lock()
 	s.downlinks[d.ID()] = d
 	registered := s.registered
 	if !registered {
-		nick := s.self.Nick
-		if nick == "" {
-			nick = s.Network.Nick
+		cfgNick := s.Network.Nick
+		if s.self != nil && s.self.Nick != "" {
+			cfgNick = s.self.Nick
+		}
+		if cfgNick == "" {
+			cfgNick = "*"
 		}
 		buf := append([]irc.Message(nil), s.regBuffer...)
 		s.awaitingUplink[d.ID()] = true
 		s.mu.Unlock()
 
-		_ = d.Send(s.rewriteFor(d, irc.Message{
-			Source:  ServerName,
-			Command: "001",
-			Params:  []string{nick, "Welcome pending uplink registration"},
-		}))
+		has001 := false
+		actualNick := ""
+		for _, m := range buf {
+			if m.Command == "001" && len(m.Params) > 0 {
+				has001 = true
+				actualNick = m.Params[0]
+				break
+			}
+		}
+		if !has001 {
+			_ = d.Send(s.rewriteFor(d, irc.Message{
+				Source:  ServerName,
+				Command: "001",
+				Params:  []string{cfgNick, "Welcome pending uplink registration"},
+			}))
+		}
 		for _, m := range buf {
 			_ = d.Send(s.rewriteFor(d, m))
+		}
+		// If client/config nick ≠ IRC nick, notify with self-NICK.
+		if has001 && actualNick != "" && !irc.CaseRFC1459.Equal(cfgNick, actualNick) {
+			_ = d.Send(s.rewriteFor(d, irc.Message{
+				Source:  cfgNick + "!" + s.networkIdent() + "@" + ServerName,
+				Command: "NICK",
+				Params:  []string{actualNick},
+			}))
 		}
 		return nil
 	}
 
-	nick := s.self.Nick
+	nick := s.liveNickLocked()
 	rpl002 := append([]string(nil), s.rpl002...)
 	rpl003 := append([]string(nil), s.rpl003...)
 	rpl004 := append([]string(nil), s.rpl004...)
@@ -111,6 +138,31 @@ func (s *Session) Attach(d Downlink) error {
 	}
 	s.notifyAttachCaps(d)
 	return nil
+}
+
+func (s *Session) networkIdent() string {
+	if s.Network.Username != "" {
+		return s.Network.Username
+	}
+	return "gobnc"
+}
+
+// liveNickLocked returns the nick to advertise to clients. Prefers the uplink's
+// live nick when registered so attach 001 matches reality after nick collisions.
+// Caller must hold s.mu.
+func (s *Session) liveNickLocked() string {
+	if s.uplink != nil {
+		if un := s.uplink.Nick(); un != "" {
+			if s.self == nil || s.self.Nick != un {
+				s.ensureSelfLocked(un)
+			}
+			return un
+		}
+	}
+	if s.self != nil && s.self.Nick != "" {
+		return s.self.Nick
+	}
+	return s.Network.Nick
 }
 
 // notifyAttachCaps tells cap-notify clients about uplink-backed caps available now

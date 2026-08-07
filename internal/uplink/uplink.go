@@ -160,6 +160,13 @@ func (u *Uplink) Nick() string {
 	return u.nick
 }
 
+// SetNickForTest sets the uplink nick (tests only).
+func (u *Uplink) SetNickForTest(nick string) {
+	u.mu.Lock()
+	u.nick = nick
+	u.mu.Unlock()
+}
+
 // ISUPPORT returns negotiated ISUPPORT.
 func (u *Uplink) ISUPPORT() *irc.ISUPPORT {
 	u.mu.RLock()
@@ -579,7 +586,7 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 			u.emitRegistrationLine(msg)
 			return fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
 		case "437": // nick/channel temporarily unavailable
-			// Pre-welcome nick form: first param is "*" (ZNC treats like 433).
+			// Pre-welcome nick form: first param is "*".
 			if msg.Param(0) == "*" || !gotWelcome {
 				bad := msg.Param(1)
 				ok, err := u.tryNextRegisterNick(c, bad)

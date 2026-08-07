@@ -2,83 +2,106 @@
 
 Single-user IRC bouncer in Go.
 
-## Build
+## 1. Installing GoBNC
 
 ```bash
 make build
-```
-
-## Configure
-
-Copy `gobnc.json.example` to `gobnc.json`. Generate TLS certs for the listener.
-
-With `"log_level": "debug"`, the console shows colored, columnized logs including raw IRC (`<<` in / `>>` out) for uplink and downlink; set `"log_file"` for JSON logs. `PASS` / `AUTHENTICATE` secrets are redacted.
-
-```bash
-./bin/gobnc auth set-password          # asks to generate a random password (or enter one)
-./bin/gobnc auth add-fingerprint <sha256-hex>
+cp gobnc.json.example gobnc.json
+make cert                        # prompts for hostname; or: make cert HOST=bnc.example.com
+./bin/gobnc auth set-password    # bouncer login password (not NickServ)
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
-# or with defaults from gobnc.json (default_nick / default_username / …):
-# ./bin/gobnc network add libera irc.libera.chat 6697
-./bin/gobnc serve -config gobnc.json           # backgrounds by default
-./bin/gobnc serve -config gobnc.json -debug    # foreground (developer mode)
-./bin/gobnc status -config gobnc.json
-./bin/gobnc stop -config gobnc.json
+./bin/gobnc serve -config gobnc.json
 ```
 
-`serve` re-execs into the background by default and writes a pid file (`pid_file`, default under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc`). Use `-debug`/`-d` or `-foreground`/`-f` to stay attached. Under systemd or FreeBSD `rc.d`, always use `-foreground` (see `packaging/`). Daemon mode defaults `log_file` to the state dir when unset.
-`--sasl-pass` (no value) prompts for the SASL password. Do not pass passwords on the command line.
+`make cert` writes under `certs/` (paths match `gobnc.json.example`):
 
-You can also run `network add` / `network delete` while the daemon is already running: the CLI writes SQLite and notifies the process over `control_socket` so the uplink starts or stops immediately. When unset (or the legacy value `gobnc.sock`), the socket defaults to `$XDG_RUNTIME_DIR/gobnc/gobnc.sock`, or `~/.gobnc/gobnc.sock` if `XDG_RUNTIME_DIR` is unset. The daemon creates the parent directory mode `0700` and the socket mode `0600`, and accepts connections only from the same Unix UID.
+| File | Role |
+| --- | --- |
+| `server.crt` / `server.key` | Listener cert |
+| `client.crt` / `client.key` / `client.pem` | Optional client identity for cert login |
 
-Update an existing network without dropping the current uplink (`network mod`); new settings apply on the next reconnect. Force an immediate uplink reconnect with `network reconnect <name>` (reloads DB settings first; clients stay attached):
+It prints **server** and **client** SHA-256 fingerprints.
+
+Further options: `gobnc.json` (commented in `gobnc.json.example`).
+
+`serve` backgrounds by default (pid file under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc`). Use `-foreground` / `-f` under systemd or `rc.d` (see `packaging/`).
+
+## 2. Using GoBNC
+
+Connect with TLS to `listen_addr` (default `127.0.0.1:6697`).
+
+### Login (`PASS`)
+
+`PASS` is `network/` plus either the bouncer password or nothing (cert login). The password is from `auth set-password`, not NickServ/SASL.
+
+| `PASS` | Meaning |
+| --- | --- |
+| `libera/s3cret` | Network `libera`, password `s3cret` |
+| `libera/a/b` | Network `libera`, password `a/b` (only the first `/` splits) |
+| `libera/` or `libera` | Network `libera`, client-cert login |
+
+**Password login:** set the IRC client’s server password to `network/your-bouncer-password`. For a self-signed listener, disable TLS certificate verification or pin the **server** SHA-256 from `make cert`.
+
+**Cert login:**
+
+1. Configure the IRC client to present a TLS client certificate (e.g. `certs/client.pem`).
+2. Register that cert’s SHA-256 (the **client** fingerprint from `make cert`):
 
 ```bash
-./bin/gobnc network mod libera --host=irc.libera.chat --port=6667 --tls=false
-./bin/gobnc network reconnect libera
+./bin/gobnc auth add-fingerprint <client-sha256>
+# or:
+openssl x509 -in certs/client.crt -outform DER | openssl dgst -sha256 -hex
 ```
 
-Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--tls-noverify=true|false`, `--user=` / `--username=`, `--realname=`, `--sasl-user=`, `--sasl-pass`
+3. Connect with `PASS libera/` (or `libera`) and the client cert enabled.
 
-Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS libera/s3cret`). The password may contain `/`; the network name is everything before the first `/`. For client-cert auth without a password, use `PASS libera/` or `PASS libera`. Nick is your normal IRC nick.
+Channels you `JOIN` (including keys) are remembered and auto-rejoined on uplink reconnect; `PART` forgets them.
 
-Channels are remembered when you `JOIN` (including channel keys) and forgotten when you `PART`; they are auto-rejoined on uplink reconnect.
+### Administer
 
-## In-band `BNC` command
+Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BNC …`, or a client alias such as `/bnc`):
 
-From an attached client, send the IRC command `BNC` (e.g. `/quote BNC help`, or a client alias). Replies are `NOTICE` from `gobnc`. Supported: `help`, `status`, `rehash`, and `network` add/mod/list/delete/reconnect. `serve`, `auth`, and `stop` remain CLI-only. For SASL over `BNC`, use `--sasl-pass=secret` (the CLI still prompts on a TTY and rejects `--sasl-pass=`).
+```bash
+./bin/gobnc status
+./bin/gobnc network list|add|mod|delete|reconnect …
+./bin/gobnc rehash
+./bin/gobnc stop
+```
 
-`gobnc status` / `BNC status` shows the listen address, attached client count, and each network’s uplink state (`connected` / `connecting` / `stopped` / `disabled`) with nick and host.
+```
+BNC help
+BNC status
+BNC network list
+BNC network reconnect libera
+BNC rehash
+```
 
-## Rehash (SIGHUP / `gobnc rehash`)
+`BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. For SASL over `BNC`, use `--sasl-pass=secret`.
 
-Send `SIGHUP` to the running `serve` process, or run `./bin/gobnc rehash`, to reload `gobnc.json` and refresh network rows from SQLite without dropping connected clients or reconnecting uplinks. Listener TLS certificates are hot-swapped: existing sessions keep their handshake; new connections use the reloaded cert/key.
+`network mod` updates config without dropping the uplink (host/TLS/SASL on next reconnect). `network reconnect` forces an uplink reconnect now. `rehash` / `SIGHUP` reloads `gobnc.json` and network rows without dropping clients. Restart required for: `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
 
-Ignored on rehash (require a full restart): `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
+Identity defaults for `network add`: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--sasl-pass` on the CLI prompts on a TTY.
 
-## Service units
+## Packaging
 
-Release tags build installers automatically:
+Release tags build `.deb` / macOS `.pkg` / FreeBSD `.tar.gz` — see `packaging/`.
 
-- Linux: `.deb` (amd64/arm64) with systemd unit
-- macOS: `.pkg` (amd64/arm64) with LaunchDaemon
-- FreeBSD: `.tar.gz` with binary + `rc.d` script (native pkgng needs a FreeBSD builder)
+## Security
 
-See `packaging/` for local build scripts and unit files. Supervised installs run `gobnc serve … -foreground`.
+- Network passwords, SASL credentials, and channel keys are stored **plaintext** in SQLite (mode `0600`). Keep `db_path`, `log_file`, and any explicit `control_socket` under a private directory.
+- Control socket defaults under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc` (dir `0700`, socket `0600`, same-UID only).
+- Line limits: client 4608 bytes (`417` if longer); uplink 8703 (dropped). Default `max_clients` 32.
+- Tunables in `gobnc.json.example`: `max_flood_queue`, `legacy_playback_max`, `chathistory_max`, `history_retention_days`. Legacy attach playback uses a **shared** per-network/per-target cursor.
 
-## Security notes
+## Debug
 
-- Network passwords, SASL credentials, and channel keys are stored **plaintext** in SQLite so the bouncer can reconnect unattended. GoBNC enforces mode `0600` on the DB and on `log_file` when set.
-- On shared hosts, keep `db_path`, `log_file`, and any explicit `control_socket` under a private directory you own. Avoid placing the control socket in a shared-writable path (CWD on a shared machine, `/tmp`, etc.).
-- Client IRC lines are capped at 4608 bytes (IRCv3 client tags + 512-byte message); oversize input gets `ERR_INPUTTOOLONG` (`417`). Uplink lines are capped at 8703 bytes and dropped if longer. Concurrent clients default to `max_clients` 32; password checks are concurrency-limited.
-- Tunables (see comments in `gobnc.json.example`): `max_flood_queue` (default 16384, `0` = unlimited), `legacy_playback_max` (default 50000, `0` = unlimited attach backlog), `chathistory_max` (default 100; ISUPPORT `CHATHISTORY=N` / per-query cap), `history_retention_days` (default `0` = no prune).
-- Legacy attach playback uses a **shared** per-network/per-target cursor by design: one client's attach advances the watermark for other devices on the same network.
+`"log_level": "debug"` enables colored console IRC traces (`<<` / `>>`). `"log_file"` writes JSON. `PASS` / `AUTHENTICATE` secrets are redacted. `serve -debug` / `-d` stays in the foreground with debug logging.
 
 ## Tests
 
 ```bash
 make test
 make test-race
-make test-integration   # high-chatter multi-client + CHATHISTORY playback
-make test-ircd          # parser interop vs ircu2, Unreal, InspIRCd, Ergo, … (Docker)
+make test-integration
+make test-ircd          # parser interop vs major ircds (Docker)
 ```

@@ -23,6 +23,9 @@ func TestAttachPendingBeforeUplink(t *testing.T) {
 	if len(d.sent) != 1 || d.sent[0].Command != "001" {
 		t.Fatalf("want only pending 001, got %+v", d.sent)
 	}
+	if d.sent[0].Param(0) != "me" {
+		t.Fatalf("pending 001 nick=%q want configured nick", d.sent[0].Param(0))
+	}
 	if !strings.Contains(d.sent[0].Trailing(), "pending uplink") {
 		t.Fatalf("pending text: %+v", d.sent[0])
 	}
@@ -52,9 +55,12 @@ func TestAttachMidRegistrationCatchUp(t *testing.T) {
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	// pending 001 + buffered NOTICE + buffered 001
-	if countMsgCmd(d.snapshot(), "001") != 2 {
-		t.Fatalf("want stub+real 001: %+v", d.sent)
+	// Buffer already has the real 001 — do not prepend a stub with the wrong nick.
+	if countMsgCmd(d.snapshot(), "001") != 1 {
+		t.Fatalf("want only buffered 001: %+v", d.sent)
+	}
+	if d.snapshot()[1].Command != "001" || d.snapshot()[1].Param(0) != "me" {
+		t.Fatalf("buffered 001: %+v", d.sent)
 	}
 	if countMsgCmd(d.snapshot(), "NOTICE") != 1 {
 		t.Fatalf("want buffered NOTICE: %+v", d.sent)
@@ -476,11 +482,88 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	if countMsgCmd(snap, "001") < 1 {
 		t.Fatalf("missing welcome: %+v", snap)
 	}
+	if got := s.Nick(); got != "alt" {
+		t.Fatalf("session nick after ladder: %q want alt", got)
+	}
+	// Late attach must advertise the live nick, not the configured primary.
+	late := &fakeDL{id: "late", caps: map[string]bool{}}
+	if err := s.Attach(late); err != nil {
+		t.Fatal(err)
+	}
+	var welcome irc.Message
+	for _, m := range late.snapshot() {
+		if m.Command == "001" {
+			welcome = m
+			break
+		}
+	}
+	if welcome.Command != "001" || welcome.Param(0) != "alt" || !strings.Contains(welcome.Trailing(), "Welcome to GoBNC") {
+		t.Fatalf("late attach 001: %+v (session nick=%q uplink=%q)", welcome, s.Nick(), u.Nick())
+	}
 
 	cancel()
 	<-runDone
 	if err := <-scriptDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAttachPendingThenSelfNickOnCollision(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "MrIron", Username: "u"}, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	if d.sent[0].Param(0) != "MrIron" {
+		t.Fatalf("pending 001: %+v", d.sent[0])
+	}
+	d.clearSent()
+
+	s.OnRegistrationLine(nil, irc.Message{
+		Source: "irc.example", Command: "001", Params: []string{"MrIron_", "Welcome"},
+	})
+	snap := d.snapshot()
+	// self-NICK, then real 001.
+	if len(snap) != 2 || snap[0].Command != "NICK" || snap[1].Command != "001" {
+		t.Fatalf("want NICK then 001: %+v", snap)
+	}
+	if !strings.HasPrefix(snap[0].Source, "MrIron!") || snap[0].Param(0) != "MrIron_" {
+		t.Fatalf("self-NICK: %+v", snap[0])
+	}
+	if snap[1].Param(0) != "MrIron_" {
+		t.Fatalf("real 001: %+v", snap[1])
+	}
+}
+
+func TestAttachWelcomeUsesUplinkNickWhenSelfStale(t *testing.T) {
+	// Simulate desync: configured/self still primary, uplink already on collision nick.
+	netCfg := store.Network{Name: "n", Nick: "MrIron"}
+	s := New(netCfg, nil, nil, nil)
+	u := uplink.New(uplink.Config{Network: netCfg}, s)
+	s.SetUplink(u)
+	s.SetRegisteredForTest(true)
+	// Uplink nick after 433 ladder (unit-level: set via 001 handling path).
+	u.SetNickForTest("MrIron_")
+	s.mu.Lock()
+	s.rpl002 = []string{"Your host is irc.example"}
+	s.mu.Unlock()
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	var welcome irc.Message
+	for _, m := range d.snapshot() {
+		if m.Command == "001" {
+			welcome = m
+			break
+		}
+	}
+	if welcome.Param(0) != "MrIron_" {
+		t.Fatalf("001 nick=%q want MrIron_ (self was stale at %q)", welcome.Param(0), "MrIron")
+	}
+	if s.Nick() != "MrIron_" {
+		t.Fatalf("session nick not synced: %q", s.Nick())
 	}
 }
 

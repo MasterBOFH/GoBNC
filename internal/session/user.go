@@ -115,12 +115,22 @@ func splitUserhost(source string) (nick, user, host string) {
 }
 
 func (s *Session) ensureSelfLocked(nick string) {
+	if nick == "" {
+		return
+	}
 	if s.self == nil {
 		s.self = &User{Nick: nick, UModes: make(map[byte]bool)}
 	}
-	folded := s.isupport.CaseMapping.Canonical(nick)
+	cm := s.isupport.CaseMapping
+	folded := cm.Canonical(nick)
+	// Drop stale map keys that still point at self under a previous nick
+	// (e.g. configured MrIron after uplink settled on MrIron_).
+	for k, u := range s.users {
+		if u == s.self && k != folded {
+			delete(s.users, k)
+		}
+	}
 	if existing := s.users[folded]; existing != nil && existing != s.self {
-		s.self.Nick = nick
 		if s.self.User == "" {
 			s.self.User = existing.User
 		}
