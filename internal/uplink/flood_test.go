@@ -23,7 +23,7 @@ func TestFloodQueueAndPONGBypass(t *testing.T) {
 		},
 	}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 	u.setFloodParams(20, 20)
 
@@ -85,7 +85,7 @@ func TestFloodDisabledImmediate(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n"}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 
 	done := make(chan string, 1)
@@ -115,7 +115,7 @@ func TestFloodNeverDropsQueued(t *testing.T) {
 		Network: store.Network{Nick: "n", FloodBurst: 50, FloodRate: 500},
 	}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 	u.setFloodParams(50, 500)
 
@@ -151,4 +151,36 @@ func TestFloodNeverDropsQueued(t *testing.T) {
 	if err := <-errc; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestFloodQueueCap(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	u := New(Config{
+		Network:       store.Network{Nick: "n", FloodBurst: 100, FloodRate: 100},
+		MaxFloodQueue: 2,
+	}, nil)
+	u.mu.Lock()
+	u.conn = connio.New(client, 0)
+	u.mu.Unlock()
+	u.setFloodParams(100, 100)
+	// Do not start drain — queue should fill and stay full.
+
+	if err := u.enqueueFlood("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.enqueueFlood("b"); err != nil {
+		t.Fatal(err)
+	}
+	err := u.enqueueFlood("c")
+	if err == nil || !strings.Contains(err.Error(), "flood queue full") {
+		t.Fatalf("want queue full, got %v", err)
+	}
+
+	u.cfg.MaxFloodQueue = 0
+	if err := u.enqueueFlood("d"); err != nil {
+		t.Fatal(err)
+	}
+	_ = server
 }

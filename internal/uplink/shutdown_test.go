@@ -19,7 +19,7 @@ func TestGracefulQuitSendsQUIT(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n"}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 
 	done := make(chan string, 1)
@@ -51,7 +51,7 @@ func TestGracefulQuitDrainsFloodThenQUIT(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n", FloodBurst: 1000, FloodRate: 100000}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 	u.setFloodParams(1000, 100000)
 
@@ -106,7 +106,7 @@ func TestGracefulQuitRespectsTimeout(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n"}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,6 +37,14 @@ func TestControlStartStopNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(20 * time.Millisecond)
+
+	st, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("socket mode=%04o want owner-only", perm)
+	}
 
 	_, err = s.Store().UpsertNetwork(ctx, store.Network{
 		Name: "net1", Host: "127.0.0.1", Port: 1, Nick: "n", Enabled: true,

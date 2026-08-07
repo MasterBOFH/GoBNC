@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -17,7 +18,11 @@ type Store struct {
 }
 
 // Open opens (or creates) a SQLite database and migrates schema.
+// The DB file is created with mode 0600 when missing; existing files are chmod'd to 0600.
 func Open(path string) (*Store, error) {
+	if err := ensureOwnerOnlyFile(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -28,7 +33,24 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// SQLite may create sidecar files; keep the main DB owner-only after first write.
+	_ = os.Chmod(path, 0o600)
 	return s, nil
+}
+
+// ensureOwnerOnlyFile creates path with 0600 if missing, or chmods an existing file to 0600.
+func ensureOwnerOnlyFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("open db file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod db file: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database.
@@ -380,8 +402,10 @@ func historyWhere(q HistoryQuery) (clause string, args []any) {
 }
 
 // QueryMessages returns messages matching q, oldest-first.
+// Limit == 0 defaults to 100. Limit < 0 means no SQL LIMIT (unlimited).
 func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, error) {
-	if q.Limit <= 0 {
+	unlimited := q.Limit < 0
+	if q.Limit == 0 {
 		q.Limit = 100
 	}
 	where, baseArgs := historyWhere(q)
@@ -390,6 +414,9 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 	var err error
 	switch {
 	case q.Around != nil:
+		if unlimited {
+			q.Limit = 100 // Around needs a bound; fall back to default
+		}
 		half := q.Limit / 2
 		if half < 1 {
 			half = 1
@@ -428,13 +455,34 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 		}
 		return append(before, after...), nil
 	case q.Between && q.After != nil && q.Before != nil:
-		args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before), q.Limit)
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+cols+`
-			FROM messages WHERE `+where+` AND time > ? AND time < ?
-			ORDER BY time ASC LIMIT ?`, args...)
+		if unlimited {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before))
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND time > ? AND time < ?
+				ORDER BY time ASC`, args...)
+		} else {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before), q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND time > ? AND time < ?
+				ORDER BY time ASC LIMIT ?`, args...)
+		}
 	case q.Latest:
-		if q.Before != nil {
+		if unlimited {
+			if q.Before != nil {
+				args := append(append([]any{}, baseArgs...), formatTime(*q.Before))
+				rows, err = s.db.QueryContext(ctx, `
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND time < ?
+					ORDER BY time ASC`, args...)
+			} else {
+				rows, err = s.db.QueryContext(ctx, `
+					SELECT `+cols+`
+					FROM messages WHERE `+where+`
+					ORDER BY time ASC`, baseArgs...)
+			}
+		} else if q.Before != nil {
 			args := append(append([]any{}, baseArgs...), formatTime(*q.Before), q.Limit)
 			rows, err = s.db.QueryContext(ctx, `
 				SELECT `+cols+` FROM (
@@ -452,27 +500,50 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 				) ORDER BY time ASC`, args...)
 		}
 	case q.Before != nil && q.After == nil:
-		args := append(append([]any{}, baseArgs...), formatTime(*q.Before), q.Limit)
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+cols+` FROM (
+		if unlimited {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.Before))
+			rows, err = s.db.QueryContext(ctx, `
 				SELECT `+cols+`
 				FROM messages WHERE `+where+` AND time < ?
-				ORDER BY time DESC LIMIT ?
-			) ORDER BY time ASC`, args...)
+				ORDER BY time ASC`, args...)
+		} else {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.Before), q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND time < ?
+					ORDER BY time DESC LIMIT ?
+				) ORDER BY time ASC`, args...)
+		}
 	case q.After != nil:
-		args := append(append([]any{}, baseArgs...), formatTime(*q.After), q.Limit)
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+cols+`
-			FROM messages WHERE `+where+` AND time > ?
-			ORDER BY time ASC LIMIT ?`, args...)
+		if unlimited {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.After))
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND time > ?
+				ORDER BY time ASC`, args...)
+		} else {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.After), q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+`
+				FROM messages WHERE `+where+` AND time > ?
+				ORDER BY time ASC LIMIT ?`, args...)
+		}
 	default:
-		args := append(append([]any{}, baseArgs...), q.Limit)
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+cols+` FROM (
+		if unlimited {
+			rows, err = s.db.QueryContext(ctx, `
 				SELECT `+cols+`
 				FROM messages WHERE `+where+`
-				ORDER BY time DESC LIMIT ?
-			) ORDER BY time ASC`, args...)
+				ORDER BY time ASC`, baseArgs...)
+		} else {
+			args := append(append([]any{}, baseArgs...), q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+`
+					ORDER BY time DESC LIMIT ?
+				) ORDER BY time ASC`, args...)
+		}
 	}
 	if err != nil {
 		return nil, err

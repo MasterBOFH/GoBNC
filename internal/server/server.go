@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
@@ -45,7 +46,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		cfg:       cfg,
 		log:       log,
 		store:     st,
-		hist:      history.New(st),
+		hist:      history.NewWithLimits(st, 100, cfg.LegacyPlaybackMax),
 		sess:      make(map[string]*session.Session),
 		netCancel: make(map[string]context.CancelFunc),
 	}, nil
@@ -100,6 +101,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.serveControl(ctx); err != nil {
 		s.cancel()
 		return err
+	}
+
+	if s.cfg.HistoryRetentionDays > 0 {
+		go s.retentionLoop(ctx)
 	}
 
 	cert, err := tls.LoadX509KeyPair(s.cfg.TLSCert, s.cfg.TLSKey)
@@ -188,13 +193,52 @@ func (s *Server) stopAllNetworks() {
 	}
 }
 
+// RetentionInterval is how often history prune runs (overridable in tests).
+var RetentionInterval = time.Hour
+
+func (s *Server) retentionLoop(ctx context.Context) {
+	s.pruneHistory(ctx)
+	t := time.NewTicker(RetentionInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.pruneHistory(ctx)
+		}
+	}
+}
+
+func (s *Server) pruneHistory(ctx context.Context) {
+	days := s.cfg.HistoryRetentionDays
+	if days <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+	nets, err := s.store.ListNetworks(ctx)
+	if err != nil {
+		s.log.Debug("retention list networks", "err", err)
+		return
+	}
+	for _, n := range nets {
+		deleted, err := s.store.DeleteOlderThan(ctx, n.ID, cutoff)
+		if err != nil {
+			s.log.Debug("retention prune", "network", n.Name, "err", err)
+			continue
+		}
+		if deleted > 0 {
+			s.log.Info("history pruned", "network", n.Name, "deleted", deleted, "older_than_days", days)
+		}
+	}
+}
+
 func (s *Server) serveControl(ctx context.Context) error {
-	path := s.cfg.ControlSocket
+	path := s.cfg.ResolvedControlSocket()
 	if path == "" {
 		return nil
 	}
-	_ = os.Remove(path)
-	ln, err := net.Listen("unix", path)
+	ln, err := control.ListenUnix(path)
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
@@ -224,6 +268,15 @@ func (s *Server) serveControl(ctx context.Context) error {
 
 func (s *Server) handleControl(c net.Conn) {
 	defer c.Close()
+	uid, err := control.PeerUID(c)
+	if err != nil {
+		s.log.Debug("control peer uid", "err", err)
+		return
+	}
+	if uid != os.Getuid() {
+		s.log.Debug("control peer uid mismatch", "peer", uid, "self", os.Getuid())
+		return
+	}
 	line, err := bufio.NewReader(c).ReadString('\n')
 	if err != nil {
 		return
@@ -293,9 +346,10 @@ func (s *Server) startNetworkLocked(n store.Network) error {
 	nctx, cancel := context.WithCancel(context.Background())
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name))
 	u := uplink.New(uplink.Config{
-		Network:  n,
-		Channels: chs,
-		Logger:   s.log.With("uplink", n.Name),
+		Network:       n,
+		Channels:      chs,
+		Logger:        s.log.With("uplink", n.Name),
+		MaxFloodQueue: s.cfg.MaxFloodQueue,
 	}, sess)
 	sess.SetUplink(u)
 	s.sess[n.Name] = sess

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/testutil"
@@ -292,6 +294,116 @@ func readUntil(c net.Conn, want string, timeout time.Duration) error {
 		if err != nil {
 			return fmt.Errorf("read until %q: %w (got %q)", want, err, got)
 		}
+	}
+}
+
+func TestMaxClientsRejectsExcess(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.SetPasswordHash(ctx, mustHash(t, "s3cret")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.UpsertNetwork(ctx, store.Network{Name: "libera", Host: "x", Port: 1, Nick: "n", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "libera")
+	sess := session.New(netw, db, nil, nil)
+	mgr := &memMgr{s: sess}
+
+	cfg := config.Default()
+	cfg.MaxClients = 1
+	cfg.AllowCertAuth = false
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	l := NewListener(cfg, db, mgr, fx.ServerTLS, nil)
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(serveCtx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+	c1, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	// Hold the single slot in auth (slow registration).
+	time.Sleep(50 * time.Millisecond)
+
+	c2, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		// Closed during handshake is fine — slot was refused.
+		return
+	}
+	defer c2.Close()
+	_ = c2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 64)
+	_, err = c2.Read(buf)
+	// Second connection should be closed promptly (EOF / reset), not serve IRC.
+	if err == nil {
+		t.Fatalf("expected second connection closed, read %q", buf)
+	}
+}
+
+func TestDownlinkLineTooLongSends417(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.SetPasswordHash(ctx, mustHash(t, "s3cret")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.UpsertNetwork(ctx, store.Network{Name: "libera", Host: "x", Port: 1, Nick: "n", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "libera")
+	sess := session.New(netw, db, nil, nil)
+	mgr := &memMgr{s: sess}
+
+	cfg := config.Default()
+	cfg.AllowCertAuth = false
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	l := NewListener(cfg, db, mgr, fx.ServerTLS, nil)
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(serveCtx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	write := func(s string) { _, _ = c.Write([]byte(s + "\r\n")) }
+	write("PASS libera/s3cret")
+	write("NICK me")
+	write("USER me 0 * :me")
+	if err := readUntil(c, "001", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	huge := strings.Repeat("A", irc.MaxClientLine) + "\r\nPING gobnc\r\n"
+	if _, err := c.Write([]byte(huge)); err != nil {
+		t.Fatal(err)
+	}
+	if err := readUntil(c, " 417 ", 5*time.Second); err != nil {
+		t.Fatal(err)
 	}
 }
 

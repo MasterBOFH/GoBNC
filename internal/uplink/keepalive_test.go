@@ -26,7 +26,7 @@ func TestUplinkKeepalivePING(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n"}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,7 +58,7 @@ func TestUplinkKeepaliveClearedByTraffic(t *testing.T) {
 
 	u := New(Config{Network: store.Network{Nick: "n"}}, nil)
 	u.mu.Lock()
-	u.conn = connio.New(client)
+	u.conn = connio.New(client, 0)
 	u.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())

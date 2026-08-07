@@ -48,10 +48,12 @@ func Setup(opts Options) (*slog.Logger, func() error, error) {
 	}
 
 	if opts.File != "" {
-		f, err := os.OpenFile(opts.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(opts.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open log file: %w", err)
 		}
+		// Tighten perms on pre-existing world-readable logs.
+		_ = os.Chmod(opts.File, 0o600)
 		handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{Level: lv}))
 		closer = f.Close
 	}

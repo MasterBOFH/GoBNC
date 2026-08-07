@@ -4,6 +4,7 @@ package uplink
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -42,11 +43,13 @@ var DesiredCaps = []string{
 
 // Config for an uplink connection.
 type Config struct {
-	Network store.Network
+	Network  store.Network
 	Channels []store.Channel
-	Dial    func(ctx context.Context, network, addr string) (net.Conn, error) // optional override
-	TLSConf *tls.Config
-	Logger  *slog.Logger
+	Dial     func(ctx context.Context, network, addr string) (net.Conn, error) // optional override
+	TLSConf  *tls.Config
+	Logger   *slog.Logger
+	// MaxFloodQueue caps paced outbound queue depth (0 = unlimited).
+	MaxFloodQueue int
 	// Backoff for reconnect tests
 	MinBackoff time.Duration
 	MaxBackoff time.Duration
@@ -211,7 +214,7 @@ func (u *Uplink) WriteMessage(msg irc.Message) error {
 }
 
 // WriteRaw queues a raw line for flood-paced send when pacing is enabled;
-// otherwise writes immediately. Never drops while connected.
+// otherwise writes immediately. Returns an error if MaxFloodQueue is set and full.
 func (u *Uplink) WriteRaw(line string) error {
 	if u.floodEnabled() {
 		return u.enqueueFlood(line)
@@ -302,7 +305,7 @@ func (u *Uplink) session(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c := connio.New(conn)
+	c := connio.New(conn, irc.MaxServerLine)
 	u.mu.RLock()
 	peer := u.cfg.Network.Name
 	if peer == "" {
@@ -334,6 +337,10 @@ func (u *Uplink) session(ctx context.Context) error {
 	for {
 		line, err := c.ReadLine(time.Now().Add(5 * time.Minute))
 		if err != nil {
+			if errors.Is(err, irc.ErrLineTooLong) {
+				u.log.Debug("uplink line too long; dropped")
+				continue
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -416,6 +423,10 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 		}
 		line, err := c.ReadLine(time.Now().Add(60 * time.Second))
 		if err != nil {
+			if errors.Is(err, irc.ErrLineTooLong) {
+				u.log.Debug("uplink line too long during register; dropped")
+				continue
+			}
 			return err
 		}
 		u.noteRX()

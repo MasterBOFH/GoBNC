@@ -8,9 +8,8 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
 
-// LegacyPlaybackMax is the safety cap on lines played per target on attach.
-// Overridable in tests.
-var LegacyPlaybackMax = 50000
+// DefaultLegacyPlaybackMax matches config.DefaultLegacyPlaybackMax.
+const DefaultLegacyPlaybackMax = 50000
 
 // LegacyPlaybackHorizon is used when no playback cursor exists yet.
 // Overridable in tests.
@@ -21,13 +20,17 @@ var LegacyCommands = []string{"PRIVMSG", "NOTICE"}
 
 // QueryLegacyAfter returns PRIVMSG/NOTICE after `after`, oldest-first.
 // Events (JOIN/PART/…) and TAGMSG are never included. No CHATHISTORY batching.
+// If legacyPlaybackMax is 0, results are unlimited; otherwise capped at that many lines.
 func (h *Store) QueryLegacyAfter(ctx context.Context, networkID int64, target string, after time.Time) ([]store.Message, error) {
 	if h == nil || h.db == nil {
 		return nil, nil
 	}
-	limit := LegacyPlaybackMax
-	if limit < 1 {
-		limit = 1
+	limit := h.legacyPlaybackMax
+	if limit < 0 {
+		limit = DefaultLegacyPlaybackMax
+	}
+	if limit == 0 {
+		limit = -1 // unlimited for store.QueryMessages
 	}
 	q := store.HistoryQuery{
 		NetworkID: networkID,

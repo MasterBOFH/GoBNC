@@ -1,12 +1,37 @@
 {
+  // TLS listener for IRC clients (prefer localhost on shared hosts).
   "listen_addr": "127.0.0.1:6697",
   "tls_cert": "certs/server.crt",
   "tls_key": "certs/server.key",
+
+  // SQLite DB (mode 0600 enforced). Holds auth, networks, SASL secrets, history.
   "db_path": "gobnc.db",
-  "control_socket": "gobnc.sock",
-  "log_level": "info",
-  "log_file": "",
+
+  // Unix control socket for live network add/stop/reload.
+  // Empty (or legacy "gobnc.sock") → $XDG_RUNTIME_DIR/gobnc/gobnc.sock or ~/.gobnc/gobnc.sock.
+  // Parent dir 0700, socket 0600; same-UID peers only.
+  "control_socket": "",
+
+  "log_level": "info", // debug | info | warn | error
+  "log_file": "",      // optional JSON log path (0600); empty = no file
+
+  // Max concurrent TLS client connections (0 uses default 32).
+  "max_clients": 32,
+
+  // Max lines waiting in the paced uplink send queue (0 = unlimited).
+  // Raised high by default so reconnect/catch-up bursts are not rejected early.
+  "max_flood_queue": 16384,
+
+  // Max PRIVMSG/NOTICE lines replayed per channel/query on legacy attach (0 = unlimited).
+  "legacy_playback_max": 50000,
+
+  // Delete stored messages older than N days (0 = never prune).
+  "history_retention_days": 0,
+
+  // QUIT reason sent to all uplinks on process shutdown.
   "quit_message": "GoBNC 0.1.0",
+
+  // At least one auth mode must be true.
   "allow_password_auth": true,
   "allow_cert_auth": true
 }

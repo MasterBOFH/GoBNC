@@ -6,10 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/version"
 )
+
+// DefaultMaxClients is the default concurrent downlink connection limit.
+const DefaultMaxClients = 32
+
+// DefaultMaxFloodQueue is the default max uplink flood send-queue depth.
+// Sized for reconnect / catch-up bursts; 0 disables the cap.
+const DefaultMaxFloodQueue = 16384
+
+// DefaultLegacyPlaybackMax is the default max PRIVMSG/NOTICE lines per target on attach.
+const DefaultLegacyPlaybackMax = 50000
 
 // Config is process bootstrap configuration.
 type Config struct {
@@ -21,6 +32,18 @@ type Config struct {
 	LogLevel      string `json:"log_level"`
 	LogFile       string `json:"log_file,omitempty"` // JSON logs; in debug mode console stays human-readable
 
+	// MaxClients caps concurrent TLS client connections (0 = DefaultMaxClients).
+	MaxClients int `json:"max_clients,omitempty"`
+
+	// MaxFloodQueue caps paced uplink send queue depth (0 = unlimited).
+	MaxFloodQueue int `json:"max_flood_queue"`
+
+	// LegacyPlaybackMax caps PRIVMSG/NOTICE lines per target on legacy attach (0 = unlimited).
+	LegacyPlaybackMax int `json:"legacy_playback_max"`
+
+	// HistoryRetentionDays prunes stored messages older than N days (0 = no prune).
+	HistoryRetentionDays int `json:"history_retention_days"`
+
 	// QuitMessage is sent as QUIT to all uplinks on process shutdown (not per-network).
 	// Empty uses version.QuitMessage() ("GoBNC <version>").
 	QuitMessage string `json:"quit_message"`
@@ -31,17 +54,22 @@ type Config struct {
 }
 
 // Default returns sensible defaults for local development.
+// ControlSocket empty means ResolvedControlSocket picks a private per-user path.
 func Default() Config {
 	return Config{
-		ListenAddr:        "127.0.0.1:6697",
-		TLSCert:           "certs/server.crt",
-		TLSKey:            "certs/server.key",
-		DBPath:            "gobnc.db",
-		ControlSocket:     "gobnc.sock",
-		LogLevel:          "info",
-		QuitMessage:       version.QuitMessage(),
-		AllowPasswordAuth: true,
-		AllowCertAuth:     true,
+		ListenAddr:           "127.0.0.1:6697",
+		TLSCert:              "certs/server.crt",
+		TLSKey:               "certs/server.key",
+		DBPath:               "gobnc.db",
+		ControlSocket:        "",
+		LogLevel:             "info",
+		MaxClients:           DefaultMaxClients,
+		MaxFloodQueue:        DefaultMaxFloodQueue,
+		LegacyPlaybackMax:    DefaultLegacyPlaybackMax,
+		HistoryRetentionDays: 0,
+		QuitMessage:          version.QuitMessage(),
+		AllowPasswordAuth:    true,
+		AllowCertAuth:        true,
 	}
 }
 
@@ -56,7 +84,32 @@ func (c Config) QuitReason() string {
 	return c.QuitMessage
 }
 
+// ResolvedControlSocket returns the Unix control socket path.
+// Empty or the legacy default "gobnc.sock" resolve to a private location:
+// $XDG_RUNTIME_DIR/gobnc/gobnc.sock when set, otherwise ~/.gobnc/gobnc.sock.
+// Any other explicit control_socket value is returned unchanged.
+func (c Config) ResolvedControlSocket() string {
+	switch c.ControlSocket {
+	case "", "gobnc.sock":
+		return defaultControlSocketPath()
+	default:
+		return c.ControlSocket
+	}
+}
+
+func defaultControlSocketPath() string {
+	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+		return filepath.Join(runtimeDir, "gobnc", "gobnc.sock")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "gobnc.sock"
+	}
+	return filepath.Join(home, ".gobnc", "gobnc.sock")
+}
+
 // LoadJSON loads config from path; missing file returns Default.
+// // line comments and /* block comments */ are allowed (JSONC-style).
 func LoadJSON(path string) (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
@@ -66,10 +119,72 @@ func LoadJSON(path string) (Config, error) {
 		}
 		return cfg, err
 	}
+	data, err = stripJSONC(data)
+	if err != nil {
+		return cfg, fmt.Errorf("parse config: %w", err)
+	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
 	return cfg, nil
+}
+
+// stripJSONC removes // and /* */ comments outside of JSON strings.
+func stripJSONC(in []byte) ([]byte, error) {
+	var out []byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		if inString {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			out = append(out, c)
+			continue
+		}
+		if c == '/' && i+1 < len(in) {
+			switch in[i+1] {
+			case '/':
+				i += 2
+				for i < len(in) && in[i] != '\n' {
+					i++
+				}
+				if i < len(in) {
+					out = append(out, '\n')
+				}
+				continue
+			case '*':
+				i += 2
+				for i+1 < len(in) && !(in[i] == '*' && in[i+1] == '/') {
+					i++
+				}
+				if i+1 >= len(in) {
+					return nil, fmt.Errorf("unterminated block comment")
+				}
+				i++ // skip '/'
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	if inString {
+		return nil, fmt.Errorf("unterminated string")
+	}
+	return out, nil
 }
 
 // Validate checks required fields for serving.

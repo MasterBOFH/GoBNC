@@ -33,17 +33,34 @@ type Sender interface {
 
 // Store wraps store.Store for history operations.
 type Store struct {
-	db       *store.Store
-	batchSeq uint64
-	maxLimit int
+	db                *store.Store
+	batchSeq          uint64
+	maxLimit          int
+	legacyPlaybackMax int // 0 = unlimited; <0 treated as DefaultLegacyPlaybackMax
 }
 
-// New creates a history store.
+// New creates a history store with default CHATHISTORY and legacy playback limits.
 func New(db *store.Store) *Store {
-	return &Store{db: db, maxLimit: 100}
+	return NewWithLimits(db, 100, DefaultLegacyPlaybackMax)
 }
 
-// MaxLimit returns the configured max lines per query.
+// NewWithLimits creates a history store.
+// legacyPlaybackMax 0 means unlimited attach playback; positive caps per target.
+func NewWithLimits(db *store.Store, chathistoryMax, legacyPlaybackMax int) *Store {
+	if chathistoryMax <= 0 {
+		chathistoryMax = 100
+	}
+	return &Store{db: db, maxLimit: chathistoryMax, legacyPlaybackMax: legacyPlaybackMax}
+}
+
+// SetLegacyPlaybackMax sets the per-target legacy attach cap (0 = unlimited). For tests.
+func (h *Store) SetLegacyPlaybackMax(n int) {
+	if h != nil {
+		h.legacyPlaybackMax = n
+	}
+}
+
+// MaxLimit returns the configured max lines per CHATHISTORY query.
 func (h *Store) MaxLimit() int { return h.maxLimit }
 
 // Store persists a record.
@@ -169,7 +186,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 
 	msgs, err := h.db.QueryMessages(context.Background(), q)
 	if err != nil {
-		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", err.Error()}})
+		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
 	}
 	return h.sendBatch(s, target, msgs)
 }

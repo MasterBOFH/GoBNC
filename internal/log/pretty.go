@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/mattn/go-isatty"
 )
 
@@ -21,7 +22,43 @@ func IRC(l *slog.Logger, peer, dir, line string) {
 }
 
 // RedactIRC masks secrets in PASS / AUTHENTICATE lines for logging.
+// Uses the IRC parser so tagged or prefixed lines are handled correctly.
 func RedactIRC(line string) string {
+	msg, err := irc.Parse(line)
+	if err != nil {
+		return redactIRCFallback(line)
+	}
+	switch strings.ToUpper(msg.Command) {
+	case "PASS":
+		secret := msg.Trailing()
+		if secret == "" && len(msg.Params) > 0 {
+			secret = msg.Params[0]
+		}
+		if i := strings.IndexByte(secret, '/'); i >= 0 {
+			msg.Params = []string{secret[:i+1] + "***"}
+		} else {
+			msg.Params = []string{"***"}
+		}
+		msg.Raw = ""
+		return msg.Encode()
+	case "AUTHENTICATE":
+		payload := strings.TrimSpace(msg.Trailing())
+		if payload == "" && len(msg.Params) > 0 {
+			payload = strings.TrimSpace(msg.Params[0])
+		}
+		if strings.EqualFold(payload, "+") {
+			return msg.Encode()
+		}
+		msg.Params = []string{"***"}
+		msg.Raw = ""
+		return msg.Encode()
+	default:
+		return line
+	}
+}
+
+// redactIRCFallback best-effort redacts when the line does not parse.
+func redactIRCFallback(line string) string {
 	upper := strings.ToUpper(line)
 	if strings.HasPrefix(upper, "PASS ") {
 		rest := strings.TrimSpace(line[5:])

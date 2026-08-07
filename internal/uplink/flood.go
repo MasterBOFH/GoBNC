@@ -2,6 +2,7 @@ package uplink
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/MasterBOFH/GoBNC/internal/flood"
@@ -71,6 +72,11 @@ func (u *Uplink) enqueueFlood(line string) error {
 		return errNotConnected
 	}
 	u.floodMu.Lock()
+	max := u.cfg.MaxFloodQueue
+	if max > 0 && len(u.floodQ) >= max {
+		u.floodMu.Unlock()
+		return fmt.Errorf("flood queue full (%d)", max)
+	}
 	u.floodQ = append(u.floodQ, line)
 	u.floodMu.Unlock()
 	u.kickFloodDrain()

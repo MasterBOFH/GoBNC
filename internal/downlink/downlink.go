@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/session"
@@ -39,21 +41,40 @@ type Manager interface {
 
 // Listener is the TLS client listener.
 type Listener struct {
-	cfg    config.Config
-	store  *store.Store
-	mgr    Manager
-	log    *slog.Logger
-	tlsCfg *tls.Config
-	ln     net.Listener
-	idSeq  uint64
+	cfg     config.Config
+	store   *store.Store
+	mgr     Manager
+	log     *slog.Logger
+	tlsCfg  *tls.Config
+	ln      net.Listener
+	idSeq   uint64
+	active  atomic.Int64
+	authSem chan struct{} // limits concurrent argon2 verifies
 }
+
+// maxAuthVerify is the max concurrent password hash checks.
+const maxAuthVerify = 4
 
 // NewListener creates a downlink listener.
 func NewListener(cfg config.Config, st *store.Store, mgr Manager, tlsCfg *tls.Config, log *slog.Logger) *Listener {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Listener{cfg: cfg, store: st, mgr: mgr, log: log, tlsCfg: tlsCfg}
+	return &Listener{
+		cfg:     cfg,
+		store:   st,
+		mgr:     mgr,
+		log:     log,
+		tlsCfg:  tlsCfg,
+		authSem: make(chan struct{}, maxAuthVerify),
+	}
+}
+
+func (l *Listener) maxClients() int {
+	if l.cfg.MaxClients <= 0 {
+		return config.DefaultMaxClients
+	}
+	return l.cfg.MaxClients
 }
 
 // Serve accepts connections until ctx cancelled.
@@ -73,11 +94,30 @@ func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
 				return err
 			}
 		}
+		if !l.tryAcquireClient() {
+			l.log.Debug("max clients reached; closing connection")
+			_ = c.Close()
+			continue
+		}
 		go l.handle(ctx, c)
 	}
 }
 
+func (l *Listener) tryAcquireClient() bool {
+	max := int64(l.maxClients())
+	for {
+		cur := l.active.Load()
+		if cur >= max {
+			return false
+		}
+		if l.active.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
 func (l *Listener) handle(ctx context.Context, c net.Conn) {
+	defer l.active.Add(-1)
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(60 * time.Second))
 
@@ -97,7 +137,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	cl := &Client{
 		id:   session.ClientID(fmt.Sprintf("c%d", atomic.AddUint64(&l.idSeq, 1))),
 		conn: tc,
-		r:    bufio.NewReader(tc),
+		r:    bufio.NewReaderSize(tc, irc.MaxClientLine),
 		caps: make(map[string]bool),
 		log:  l.log,
 	}
@@ -134,6 +174,10 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		}
 		line, err := cl.readLine(5 * time.Minute)
 		if err != nil {
+			if errors.Is(err, irc.ErrLineTooLong) {
+				_ = cl.Send(irc.InputTooLong(cl.inputNick()))
+				continue
+			}
 			return
 		}
 		cl.touch()
@@ -155,6 +199,10 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	for time.Now().Before(deadline) {
 		line, err := cl.readLine(time.Until(deadline))
 		if err != nil {
+			if errors.Is(err, irc.ErrLineTooLong) {
+				_ = cl.Send(irc.InputTooLong(cl.inputNick()))
+				continue
+			}
 			return false, "", err
 		}
 		msg, err := irc.Parse(line)
@@ -171,6 +219,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 			}
 		case "NICK":
 			nick = msg.Param(0)
+			cl.nick = nick
 		case "USER":
 			gotUser = true
 		case "QUIT":
@@ -207,8 +256,10 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		if err != nil {
 			return false, "", err
 		}
-		if hash != "" && auth.VerifyPassword(hash, passSecret) {
-			passOK = true
+		if hash != "" {
+			l.authSem <- struct{}{}
+			passOK = auth.VerifyPassword(hash, passSecret)
+			<-l.authSem
 		}
 	}
 	if !fpOK && !passOK {
@@ -341,6 +392,7 @@ type Client struct {
 	mu         sync.Mutex
 	caps       map[string]bool
 	sess       *session.Session
+	nick       string // registration nick (before/without session)
 	log        *slog.Logger
 	wmu        sync.Mutex
 	capStarted bool // client sent CAP LS or CAP REQ
@@ -453,13 +505,24 @@ func (c *Client) Send(msg irc.Message) error {
 
 func (c *Client) Close() error { return c.conn.Close() }
 
+func (c *Client) inputNick() string {
+	if c.sess != nil {
+		if n := c.sess.Nick(); n != "" {
+			return n
+		}
+	}
+	if c.nick != "" {
+		return c.nick
+	}
+	return "*"
+}
+
 func (c *Client) readLine(timeout time.Duration) (string, error) {
 	_ = c.conn.SetReadDeadline(time.Now().Add(timeout))
-	line, err := c.r.ReadString('\n')
+	line, err := connio.ReadLimitedLine(c.r, irc.MaxClientLine)
 	if err != nil {
 		return "", err
 	}
-	line = strings.TrimRight(line, "\r\n")
 	gobnclog.IRC(c.log, c.logPeer(), "<<", line)
 	return line, nil
 }

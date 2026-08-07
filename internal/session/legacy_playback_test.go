@@ -243,11 +243,10 @@ func TestLegacyPlaybackHorizonSkipsAncient(t *testing.T) {
 }
 
 func TestLegacyPlaybackPartialBurstResumes(t *testing.T) {
-	oldMax := history.LegacyPlaybackMax
-	history.LegacyPlaybackMax = 2
-	t.Cleanup(func() { history.LegacyPlaybackMax = oldMax })
-
 	db, hist, id := openLegacyFixture(t)
+	hist.SetLegacyPlaybackMax(2)
+	t.Cleanup(func() { hist.SetLegacyPlaybackMax(history.DefaultLegacyPlaybackMax) })
+
 	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	for i := 0; i < 5; i++ {
 		storeLine(t, hist, id, t0.Add(time.Duration(i)*time.Minute), "PRIVMSG", "#c", "m"+string(rune('0'+i)))

@@ -25,6 +25,13 @@ func (s *Session) Detach(id ClientID) {
 
 // HandleClientMessage processes a message from a downlink toward the uplink.
 func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
+	if irc.HasRawCRLF(msg) {
+		nick := s.Nick()
+		if nick == "" {
+			nick = "*"
+		}
+		return d.Send(irc.InputTooLong(nick))
+	}
 	cmd := strings.ToUpper(msg.Command)
 	switch cmd {
 	case "PING":

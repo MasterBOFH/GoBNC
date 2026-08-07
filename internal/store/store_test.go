@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,6 +20,43 @@ func TestMigrateIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	s2.Close()
+}
+
+func TestOpenDBFileModeOwnerOnly(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "t.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	assertOwnerOnly(t, p)
+}
+
+func TestOpenChmodsWorldReadableDB(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "t.db")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	assertOwnerOnly(t, p)
+}
+
+func assertOwnerOnly(t *testing.T, path string) {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("%s mode=%04o want owner-only", path, perm)
+	}
 }
 
 func TestNetworkFloodFields(t *testing.T) {

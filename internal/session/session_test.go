@@ -762,6 +762,24 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 }
 
+func TestHandleClientMessageRejectsCRLF(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	err := s.HandleClientMessage(d, irc.Message{
+		Command: "PRIVMSG",
+		Params:  []string{"#c", "x\rPRIVMSG y :z"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) != 1 || d.sent[0].Command != irc.ErrInputTooLong {
+		t.Fatalf("want 417, got %+v", d.sent)
+	}
+	if d.sent[0].Param(0) != "me" {
+		t.Fatalf("nick=%q", d.sent[0].Param(0))
+	}
+}
+
 func TestClientPONGNotForwarded(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.registered = true

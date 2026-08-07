@@ -5,30 +5,37 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
 	"github.com/MasterBOFH/GoBNC/internal/store"
+	"golang.org/x/term"
 )
 
 func runCLI(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Println(`gobnc commands:
   serve [-config gobnc.json]
-  auth set-password <password>
+  auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-*] [--flood-burst=] [--flood-rate=]
+  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]
   network list
   network delete <name>
 
+Secrets (bouncer password, SASL password) are prompted on a TTY; they are not accepted on the command line.
+
 When the daemon is running, network add/delete also notify it via the control socket
-(control_socket in gobnc.json, default gobnc.sock) so uplinks start/stop immediately.
+(control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
+so uplinks start/stop immediately.
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL apply on the next reconnect.
-Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.`)
+Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
+Pass --sasl-pass (no value) to prompt for a SASL password; if --sasl-user= is set without
+a password, you are prompted automatically.`)
 		return nil
 	}
 	cfgPath := "gobnc.json"
@@ -61,10 +68,14 @@ func cmdAuth(ctx context.Context, st *store.Store, args []string) error {
 	}
 	switch args[0] {
 	case "set-password":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: auth set-password <password>")
+		if len(args) > 1 {
+			return fmt.Errorf("usage: auth set-password (password is prompted; do not pass on the command line)")
 		}
-		h, err := auth.HashPassword(args[1])
+		pass, err := promptPasswordConfirm("New bouncer password: ")
+		if err != nil {
+			return err
+		}
+		h, err := auth.HashPassword(pass)
 		if err != nil {
 			return err
 		}
@@ -112,7 +123,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			return fmt.Errorf("usage: network delete <name>")
 		}
 		name := args[1]
-		notified, err := control.TryNotify(cfg.ControlSocket, control.CmdStopNetwork+" "+name)
+		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdStopNetwork+" "+name)
 		if err != nil {
 			return fmt.Errorf("stop network in daemon: %w", err)
 		}
@@ -127,12 +138,13 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "add":
 		if len(args) < 5 {
-			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=]")
+			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]")
 		}
 		n := store.Network{
 			Name: args[1], Host: args[2], Nick: args[4], TLS: true, Enabled: true, Username: "gobnc", Realname: "GoBNC",
 		}
 		fmt.Sscanf(args[3], "%d", &n.Port)
+		wantSASLPass := false
 		for i := 5; i < len(args); i++ {
 			a := args[i]
 			if a == "-config" {
@@ -153,8 +165,10 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				n.Realname = strings.TrimPrefix(a, "--realname=")
 			case strings.HasPrefix(a, "--sasl-user="):
 				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
+			case a == "--sasl-pass":
+				wantSASLPass = true
 			case strings.HasPrefix(a, "--sasl-pass="):
-				n.SASLPass = strings.TrimPrefix(a, "--sasl-pass=")
+				return fmt.Errorf("--sasl-pass=value is not allowed; use --sasl-pass to prompt")
 			case strings.HasPrefix(a, "--flood-burst="):
 				fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
 			case strings.HasPrefix(a, "--flood-rate="):
@@ -163,10 +177,17 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				return fmt.Errorf("unknown flag %q", a)
 			}
 		}
+		if wantSASLPass || (n.SASLUser != "" && n.SASLPass == "") {
+			pass, err := promptSecret("SASL password: ")
+			if err != nil {
+				return err
+			}
+			n.SASLPass = pass
+		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
 			return err
 		}
-		notified, err := control.TryNotify(cfg.ControlSocket, control.CmdStartNetwork+" "+n.Name)
+		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdStartNetwork+" "+n.Name)
 		if err != nil {
 			return fmt.Errorf("saved to db but failed to start in daemon: %w", err)
 		}
@@ -178,13 +199,15 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "mod":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=]")
+			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=]")
 		}
 		n, err := st.NetworkByName(ctx, args[1])
 		if err != nil {
 			return fmt.Errorf("network %q: %w", args[1], err)
 		}
 		changed := false
+		wantSASLPass := false
+		saslUserSet := false
 		for i := 2; i < len(args); i++ {
 			a := args[i]
 			if a == "-config" {
@@ -209,10 +232,13 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				changed = true
 			case strings.HasPrefix(a, "--sasl-user="):
 				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
+				saslUserSet = true
+				changed = true
+			case a == "--sasl-pass":
+				wantSASLPass = true
 				changed = true
 			case strings.HasPrefix(a, "--sasl-pass="):
-				n.SASLPass = strings.TrimPrefix(a, "--sasl-pass=")
-				changed = true
+				return fmt.Errorf("--sasl-pass=value is not allowed; use --sasl-pass to prompt")
 			case strings.HasPrefix(a, "--user="):
 				n.Username = strings.TrimPrefix(a, "--user=")
 				changed = true
@@ -232,13 +258,21 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				return fmt.Errorf("unknown flag %q", a)
 			}
 		}
+		if wantSASLPass || (saslUserSet && n.SASLPass == "") {
+			pass, err := promptSecret("SASL password: ")
+			if err != nil {
+				return err
+			}
+			n.SASLPass = pass
+			changed = true
+		}
 		if !changed {
 			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--user=/--realname=/--sasl-*/--flood-*")
 		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
 			return err
 		}
-		notified, err := control.TryNotify(cfg.ControlSocket, control.CmdReloadNetwork+" "+n.Name)
+		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdReloadNetwork+" "+n.Name)
 		if err != nil {
 			return fmt.Errorf("saved to db but failed to reload in daemon: %w", err)
 		}
@@ -253,4 +287,35 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 	}
 }
 
-var _ = os.Stderr
+func promptPasswordConfirm(prompt string) (string, error) {
+	pass, err := promptSecret(prompt)
+	if err != nil {
+		return "", err
+	}
+	again, err := promptSecret("Confirm password: ")
+	if err != nil {
+		return "", err
+	}
+	if pass != again {
+		return "", fmt.Errorf("passwords do not match")
+	}
+	return pass, nil
+}
+
+func promptSecret(prompt string) (string, error) {
+	fd := int(syscall.Stdin)
+	if !term.IsTerminal(fd) {
+		return "", fmt.Errorf("refusing to read secret: stdin is not a TTY")
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	b, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	s := string(b)
+	if s == "" {
+		return "", fmt.Errorf("empty password")
+	}
+	return s, nil
+}
