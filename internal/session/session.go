@@ -73,7 +73,12 @@ type Session struct {
 	readMarkers map[string]string
 	// playbackCursors is an in-memory fallback for legacy attach playback watermarks.
 	playbackCursors map[string]string
+	// admin handles the in-band BNC IRC command (nil if unset).
+	admin AdminFunc
 }
+
+// AdminFunc runs a BNC management command and returns NOTICE text lines.
+type AdminFunc func(args []string) (lines []string, err error)
 
 // New creates a session (uplink attached later via SetUplink / Run).
 func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logger) *Session {
@@ -107,6 +112,9 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 // SetUplink associates the uplink.
 func (s *Session) SetUplink(u *uplink.Uplink) { s.uplink = u }
 
+// SetAdmin registers the handler for the IRC BNC command.
+func (s *Session) SetAdmin(fn AdminFunc) { s.admin = fn }
+
 // Uplink returns the associated uplink (may be nil).
 func (s *Session) Uplink() *uplink.Uplink { return s.uplink }
 
@@ -133,6 +141,20 @@ func (s *Session) ApplyNetworkConfig(n store.Network) {
 	if s.uplink != nil {
 		s.uplink.SetNetwork(n)
 	}
+}
+
+// DownlinkCount returns the number of attached clients on this network.
+func (s *Session) DownlinkCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.downlinks)
+}
+
+// Registered reports whether the uplink has completed welcome (001).
+func (s *Session) Registered() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.registered
 }
 
 // Name returns the network name.

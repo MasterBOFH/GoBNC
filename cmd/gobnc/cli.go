@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/admin"
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
@@ -22,6 +23,7 @@ func runCLI(args []string) error {
 		fmt.Println(`gobnc commands:
   serve [-config gobnc.json] [-foreground|-f] [-debug|-d]
   stop [-config gobnc.json]
+  status [-config gobnc.json]
   rehash [-config gobnc.json]
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
@@ -42,6 +44,7 @@ auth set-password asks whether to generate a random password (default yes); othe
 When the daemon is running, network add/delete also notify it via the control socket
 (control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
 so uplinks start/stop immediately.
+status shows listen address, attached clients, and per-network uplink state (connected/connecting/stopped).
 rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
 stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
@@ -67,7 +70,14 @@ a password, you are prompted automatically.`)
 
 	switch args[0] {
 	case "rehash":
-		return cmdRehash(cfg)
+		return printAdmin(admin.Run(context.Background(), adminDeps(nil, cfg), admin.Options{}, []string{"rehash"}))
+	case "status":
+		st, err := store.Open(cfg.DBPath)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		return printAdmin(admin.Run(context.Background(), adminDeps(st, cfg), admin.Options{}, []string{"status"}))
 	case "stop":
 		return cmdStop(cfg)
 	}
@@ -83,21 +93,35 @@ a password, you are prompted automatically.`)
 	case "auth":
 		return cmdAuth(ctx, st, args[1:])
 	case "network":
-		return cmdNetwork(ctx, st, cfg, args[1:])
+		opts := admin.Options{
+			PromptSASL: func() (string, error) { return promptSecret("SASL password: ") },
+		}
+		return printAdmin(admin.Run(ctx, adminDeps(st, cfg), opts, args))
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-func cmdRehash(cfg config.Config) error {
-	notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdRehash)
+func adminDeps(st *store.Store, cfg config.Config) admin.Deps {
+	nick, user, real, alt := cfg.NetworkIdentityDefaults()
+	return admin.Deps{
+		Store:      st,
+		ListenAddr: cfg.ListenAddr,
+		Nick:       nick,
+		Username:   user,
+		Realname:   real,
+		AltNick:    alt,
+		Runtime:    admin.ControlRuntime{Socket: cfg.ResolvedControlSocket()},
+	}
+}
+
+func printAdmin(lines []string, err error) error {
 	if err != nil {
 		return err
 	}
-	if !notified {
-		return fmt.Errorf("daemon not running (no control socket at %s)", cfg.ResolvedControlSocket())
+	for _, line := range lines {
+		fmt.Println(line)
 	}
-	fmt.Fprintln(os.Stderr, "Rehash complete.")
 	return nil
 }
 
@@ -172,231 +196,6 @@ func cmdAuth(ctx context.Context, st *store.Store, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown auth command")
-	}
-}
-
-func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("network subcommand required")
-	}
-	switch args[0] {
-	case "list":
-		nets, err := st.ListNetworks(ctx)
-		if err != nil {
-			return err
-		}
-		for _, n := range nets {
-			fmt.Printf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g\n",
-				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate)
-		}
-		return nil
-	case "reconnect":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: network reconnect <name>")
-		}
-		name := args[1]
-		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdReconnectNetwork+" "+name)
-		if err != nil {
-			return err
-		}
-		if !notified {
-			return fmt.Errorf("daemon not running (no control socket at %s)", cfg.ResolvedControlSocket())
-		}
-		fmt.Printf("reconnect requested for %s\n", name)
-		return nil
-	case "delete":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: network delete <name>")
-		}
-		name := args[1]
-		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdStopNetwork+" "+name)
-		if err != nil {
-			return fmt.Errorf("stop network in daemon: %w", err)
-		}
-		if err := st.DeleteNetwork(ctx, name); err != nil {
-			return err
-		}
-		if notified {
-			fmt.Println("deleted and stopped in running daemon")
-		} else {
-			fmt.Println("deleted (daemon not running; will apply on next start)")
-		}
-		return nil
-	case "add":
-		if len(args) < 4 {
-			return fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
-		}
-		defNick, defUser, defReal, defAlt := cfg.NetworkIdentityDefaults()
-		n := store.Network{
-			Name: args[1], Host: args[2], Nick: defNick, TLS: true, Enabled: true,
-			Username: defUser, Realname: defReal, AltNick: defAlt, NickRecovery: true,
-		}
-		fmt.Sscanf(args[3], "%d", &n.Port)
-		i := 4
-		if len(args) > 4 && !strings.HasPrefix(args[4], "-") {
-			n.Nick = args[4]
-			i = 5
-		}
-		wantSASLPass := false
-		for ; i < len(args); i++ {
-			a := args[i]
-			if a == "-config" {
-				i++ // skip path
-				continue
-			}
-			if strings.HasPrefix(a, "-config=") {
-				continue
-			}
-			switch {
-			case strings.HasPrefix(a, "--nick="):
-				n.Nick = strings.TrimPrefix(a, "--nick=")
-			case strings.HasPrefix(a, "--tls="):
-				n.TLS = a != "--tls=false"
-			case strings.HasPrefix(a, "--tls-noverify="):
-				n.TLSNoVerify = strings.TrimPrefix(a, "--tls-noverify=") != "false"
-			case strings.HasPrefix(a, "--user="):
-				n.Username = strings.TrimPrefix(a, "--user=")
-			case strings.HasPrefix(a, "--username="):
-				n.Username = strings.TrimPrefix(a, "--username=")
-			case strings.HasPrefix(a, "--realname="):
-				n.Realname = strings.TrimPrefix(a, "--realname=")
-			case strings.HasPrefix(a, "--sasl-user="):
-				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
-			case a == "--sasl-pass":
-				wantSASLPass = true
-			case strings.HasPrefix(a, "--sasl-pass="):
-				return fmt.Errorf("--sasl-pass=value is not allowed; use --sasl-pass to prompt")
-			case strings.HasPrefix(a, "--flood-burst="):
-				fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
-			case strings.HasPrefix(a, "--flood-rate="):
-				fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
-			case strings.HasPrefix(a, "--alt-nick="):
-				n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
-			case strings.HasPrefix(a, "--nick-recovery="):
-				n.NickRecovery = strings.TrimPrefix(a, "--nick-recovery=") != "false"
-			default:
-				return fmt.Errorf("unknown flag %q", a)
-			}
-		}
-		if n.Nick == "" {
-			return fmt.Errorf("nick required: pass [nick] / --nick=, or set default_nick in gobnc.json")
-		}
-		if wantSASLPass || (n.SASLUser != "" && n.SASLPass == "") {
-			pass, err := promptSecret("SASL password: ")
-			if err != nil {
-				return err
-			}
-			n.SASLPass = pass
-		}
-		if _, err := st.UpsertNetwork(ctx, n); err != nil {
-			return err
-		}
-		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdStartNetwork+" "+n.Name)
-		if err != nil {
-			return fmt.Errorf("saved to db but failed to start in daemon: %w", err)
-		}
-		if notified {
-			fmt.Println("added and started in running daemon")
-		} else {
-			fmt.Println("added (daemon not running; will apply on next start)")
-		}
-		return nil
-	case "mod":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
-		}
-		n, err := st.NetworkByName(ctx, args[1])
-		if err != nil {
-			return fmt.Errorf("network %q: %w", args[1], err)
-		}
-		changed := false
-		wantSASLPass := false
-		saslUserSet := false
-		for i := 2; i < len(args); i++ {
-			a := args[i]
-			if a == "-config" {
-				i++ // skip path
-				continue
-			}
-			if strings.HasPrefix(a, "-config=") {
-				continue
-			}
-			switch {
-			case strings.HasPrefix(a, "--host="):
-				n.Host = strings.TrimPrefix(a, "--host=")
-				changed = true
-			case strings.HasPrefix(a, "--port="):
-				fmt.Sscanf(strings.TrimPrefix(a, "--port="), "%d", &n.Port)
-				changed = true
-			case strings.HasPrefix(a, "--nick="):
-				n.Nick = strings.TrimPrefix(a, "--nick=")
-				changed = true
-			case strings.HasPrefix(a, "--tls="):
-				n.TLS = strings.TrimPrefix(a, "--tls=") != "false"
-				changed = true
-			case strings.HasPrefix(a, "--tls-noverify="):
-				n.TLSNoVerify = strings.TrimPrefix(a, "--tls-noverify=") != "false"
-				changed = true
-			case strings.HasPrefix(a, "--sasl-user="):
-				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
-				saslUserSet = true
-				changed = true
-			case a == "--sasl-pass":
-				wantSASLPass = true
-				changed = true
-			case strings.HasPrefix(a, "--sasl-pass="):
-				return fmt.Errorf("--sasl-pass=value is not allowed; use --sasl-pass to prompt")
-			case strings.HasPrefix(a, "--user="):
-				n.Username = strings.TrimPrefix(a, "--user=")
-				changed = true
-			case strings.HasPrefix(a, "--username="):
-				n.Username = strings.TrimPrefix(a, "--username=")
-				changed = true
-			case strings.HasPrefix(a, "--realname="):
-				n.Realname = strings.TrimPrefix(a, "--realname=")
-				changed = true
-			case strings.HasPrefix(a, "--flood-burst="):
-				fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
-				changed = true
-			case strings.HasPrefix(a, "--flood-rate="):
-				fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
-				changed = true
-			case strings.HasPrefix(a, "--alt-nick="):
-				n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
-				changed = true
-			case strings.HasPrefix(a, "--nick-recovery="):
-				n.NickRecovery = strings.TrimPrefix(a, "--nick-recovery=") != "false"
-				changed = true
-			default:
-				return fmt.Errorf("unknown flag %q", a)
-			}
-		}
-		if wantSASLPass || (saslUserSet && n.SASLPass == "") {
-			pass, err := promptSecret("SASL password: ")
-			if err != nil {
-				return err
-			}
-			n.SASLPass = pass
-			changed = true
-		}
-		if !changed {
-			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--tls-noverify=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
-		}
-		if _, err := st.UpsertNetwork(ctx, n); err != nil {
-			return err
-		}
-		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdReloadNetwork+" "+n.Name)
-		if err != nil {
-			return fmt.Errorf("saved to db but failed to reload in daemon: %w", err)
-		}
-		if notified {
-			fmt.Printf("updated %s (flood pacing applies now; host/TLS/SASL on next uplink reconnect)\n", n.Name)
-		} else {
-			fmt.Printf("updated %s (daemon not running; will apply on next start)\n", n.Name)
-		}
-		return nil
-	default:
-		return fmt.Errorf("unknown network command")
 	}
 }
 

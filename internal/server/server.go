@@ -353,6 +353,8 @@ func (s *Server) handleControl(c net.Conn) {
 		case control.CmdShutdown:
 			reply = "OK"
 			go s.RequestShutdown()
+		case control.CmdStatus:
+			reply = statusControlReply(s)
 		}
 	}
 	_, _ = c.Write([]byte(reply + "\n"))
@@ -403,6 +405,7 @@ func (s *Server) startNetworkLocked(n store.Network) error {
 		MaxFloodQueue: s.cfg.MaxFloodQueue,
 	}, sess)
 	sess.SetUplink(u)
+	s.attachAdmin(sess)
 	s.sess[n.Name] = sess
 	s.netCancel[n.Name] = cancel
 	s.wg.Add(1)
@@ -574,6 +577,7 @@ func (s *Server) StartNetwork(ctx context.Context, n store.Network, cfg uplink.C
 	}
 	u := uplink.New(cfg, sess)
 	sess.SetUplink(u)
+	s.attachAdmin(sess)
 	s.mu.Lock()
 	s.sess[n.Name] = sess
 	s.mu.Unlock()

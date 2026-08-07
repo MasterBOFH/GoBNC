@@ -180,3 +180,48 @@ func TestControlReconnectNetwork(t *testing.T) {
 		t.Fatalf("config not reloaded before reconnect: port=%d", sess.Network.Port)
 	}
 }
+
+func TestControlStatus(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "status.sock")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "t.db")
+	cfg.ControlSocket = sock
+	cfg.ListenAddr = "127.0.0.1:6697"
+
+	s, err := New(cfg, gobnclog.New("error", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = ctx
+	s.cancel = cancel
+	if err := s.serveControl(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = s.Store().UpsertNetwork(ctx, store.Network{
+		Name: "net1", Host: "irc.example", Port: 6697, Nick: "alice", TLS: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := control.Client(sock, control.CmdStartNetwork+" net1"); err != nil || resp != "OK" {
+		t.Fatalf("start: %q %v", resp, err)
+	}
+
+	payload, ok, err := control.TryQuery(sock, control.CmdStatus)
+	if err != nil || !ok || payload == "" {
+		t.Fatalf("status: ok=%v payload=%q err=%v", ok, payload, err)
+	}
+	if !strings.Contains(payload, `"listen_addr":"127.0.0.1:6697"`) {
+		t.Fatalf("listen: %s", payload)
+	}
+	if !strings.Contains(payload, `"name":"net1"`) || !strings.Contains(payload, `"running":true`) {
+		t.Fatalf("network: %s", payload)
+	}
+}

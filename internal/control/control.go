@@ -19,6 +19,7 @@ const (
 	CmdReconnectNetwork = "RECONNECT_NETWORK" // reload config and drop uplink to force reconnect
 	CmdRehash           = "REHASH"            // reload gobnc.json + refresh networks (same as SIGHUP)
 	CmdShutdown         = "SHUTDOWN"          // graceful stop (same as SIGTERM)
+	CmdStatus           = "STATUS"            // live daemon/network status (OK <json>)
 )
 
 // Client sends a single command to a running daemon and returns the reply line.
@@ -45,24 +46,34 @@ func Client(socketPath, line string) (string, error) {
 // TryNotify dials the control socket; returns (notified, error).
 // If the daemon is not running, returns (false, nil).
 func TryNotify(socketPath, line string) (bool, error) {
+	_, ok, err := TryQuery(socketPath, line)
+	return ok, err
+}
+
+// TryQuery dials the control socket and returns an optional OK payload.
+// Replies: "OK", "OK <payload>", or "ERR …". If the daemon is not running, returns ("", false, nil).
+func TryQuery(socketPath, line string) (payload string, ok bool, err error) {
 	resp, err := Client(socketPath, line)
 	if err != nil {
 		if os.IsNotExist(err) || isConnRefused(err) {
-			return false, nil
+			return "", false, nil
 		}
 		// Dial errors when socket missing
 		if _, ok := err.(*net.OpError); ok {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
 	if strings.HasPrefix(resp, "ERR ") {
-		return true, fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR "))
+		return "", true, fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR "))
 	}
-	if resp != "OK" && !strings.HasPrefix(resp, "OK ") {
-		return true, fmt.Errorf("unexpected reply: %s", resp)
+	if resp == "OK" {
+		return "", true, nil
 	}
-	return true, nil
+	if strings.HasPrefix(resp, "OK ") {
+		return strings.TrimPrefix(resp, "OK "), true, nil
+	}
+	return "", true, fmt.Errorf("unexpected reply: %s", resp)
 }
 
 func isConnRefused(err error) bool {

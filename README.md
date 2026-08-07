@@ -22,6 +22,7 @@ With `"log_level": "debug"`, the console shows colored, columnized logs includin
 # ./bin/gobnc network add libera irc.libera.chat 6697
 ./bin/gobnc serve -config gobnc.json           # backgrounds by default
 ./bin/gobnc serve -config gobnc.json -debug    # foreground (developer mode)
+./bin/gobnc status -config gobnc.json
 ./bin/gobnc stop -config gobnc.json
 ```
 
@@ -42,6 +43,12 @@ Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--tls-noverify=true
 Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS libera/s3cret`). The password may contain `/`; the network name is everything before the first `/`. For client-cert auth without a password, use `PASS libera/` or `PASS libera`. Nick is your normal IRC nick.
 
 Channels are remembered when you `JOIN` (including channel keys) and forgotten when you `PART`; they are auto-rejoined on uplink reconnect.
+
+## In-band `BNC` command
+
+From an attached client, send the IRC command `BNC` (e.g. `/quote BNC help`, or a client alias). Replies are `NOTICE` from `gobnc`. Supported: `help`, `status`, `rehash`, and `network` add/mod/list/delete/reconnect. `serve`, `auth`, and `stop` remain CLI-only. For SASL over `BNC`, use `--sasl-pass=secret` (the CLI still prompts on a TTY and rejects `--sasl-pass=`).
+
+`gobnc status` / `BNC status` shows the listen address, attached client count, and each network’s uplink state (`connected` / `connecting` / `stopped` / `disabled`) with nick and host.
 
 ## Rehash (SIGHUP / `gobnc rehash`)
 

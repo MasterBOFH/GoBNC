@@ -46,6 +46,8 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 	case "PONG":
 		// Reply to bouncer keepalive (or client stray PONG) — never forward upstream.
 		return nil
+	case "BNC":
+		return s.handleBNC(d, msg.Params)
 	case "AUTHENTICATE":
 		return s.forwardClientAuthenticate(d, msg)
 	case "MARKREAD":
