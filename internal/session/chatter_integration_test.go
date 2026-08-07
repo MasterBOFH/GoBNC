@@ -87,6 +87,7 @@ func TestHighChatterMultiClientPlayback(t *testing.T) {
 				"chathistory":  true,
 			},
 		}
+		sess.SetRegisteredForTest(true)
 		if err := sess.Attach(clients[i]); err != nil {
 			t.Fatal(err)
 		}

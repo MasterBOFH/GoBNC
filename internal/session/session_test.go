@@ -632,6 +632,7 @@ func TestPersistJoinPart(t *testing.T) {
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
 	s := New(netw, db, nil, nil)
+	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	_ = s.Attach(d)
 
@@ -689,6 +690,7 @@ func TestSelfPrefix(t *testing.T) {
 		t.Fatalf("after 396=%q", got)
 	}
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	s.registered = true
 	_ = s.Attach(d)
 	var join irc.Message
 	for _, m := range d.sent {
@@ -704,6 +706,7 @@ func TestSelfPrefix(t *testing.T) {
 
 func TestAttachWelcomeBurst(t *testing.T) {
 	s := New(store.Network{Name: "ircu2", Nick: "me"}, nil, nil, nil)
+	s.registered = true
 	s.isupport.Parse005([]string{"me", "CHANMODES=b,k,l,imnpst", "PREFIX=(ov)@+", "WHOX", "NETWORK=upstream", "are supported by this server"})
 	s.rpl002 = []string{"Your host is ircu2.example"}
 	s.rpl003 = []string{"This server was created yesterday"}
@@ -761,6 +764,7 @@ func TestAttachWelcomeBurst(t *testing.T) {
 
 func TestFanOutTwoClients(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
 	d1 := &fakeDL{id: "a", caps: map[string]bool{"server-time": true, "message-tags": true}}
 	d2 := &fakeDL{id: "b", caps: map[string]bool{}}
 	_ = s.Attach(d1)

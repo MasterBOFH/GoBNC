@@ -352,6 +352,7 @@ func TestBouncerOwnedSASLOnlyEmitsLoggedIn(t *testing.T) {
 func TestAttachReplaysLoggedIn(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil)
 	s.mu.Lock()
+	s.registered = true
 	s.self.Account = "acct"
 	s.self.Host = "h"
 	s.loggedIn = true
@@ -385,6 +386,7 @@ func TestAttachReplaysLoggedIn(t *testing.T) {
 
 func TestAttachOmitsLoggedInAfterLogout(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
 	s.routeSASLTraffic(irc.Message{
 		Command: "900",
 		Params:  []string{"me", "me!u@h", "acct", "You are now logged in as acct"},

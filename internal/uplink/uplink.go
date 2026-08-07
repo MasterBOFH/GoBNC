@@ -54,6 +54,9 @@ type Handler interface {
 	OnRegistered(u *Uplink)
 	OnMessage(u *Uplink, msg irc.Message)
 	OnDisconnect(u *Uplink, err error)
+	// OnRegistrationLine is called for client-visible lines during register()
+	// (before Registered is true), e.g. NOTICE AUTH and welcome numerics.
+	OnRegistrationLine(u *Uplink, msg irc.Message)
 	// OnCapsChanged is called after registration when uplink caps are ACK'd or DEL'd.
 	OnCapsChanged(u *Uplink, added, removed []string)
 	// OnSASLOffer is called when uplink advertises or withdraws sasl availability
@@ -412,39 +415,72 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 			}
 			u.mu.Unlock()
 			gotWelcome = true
+			u.emitRegistrationLine(msg)
 		case "002":
 			u.storeWelcomeTail(&u.rpl002, msg.Params)
+			u.emitRegistrationLine(msg)
 		case "003":
 			u.storeWelcomeTail(&u.rpl003, msg.Params)
+			u.emitRegistrationLine(msg)
 		case "004":
 			u.storeWelcomeTail(&u.rpl004, msg.Params)
+			u.emitRegistrationLine(msg)
 		case "005":
 			u.mu.Lock()
 			u.isupport.Parse005(msg.Params)
 			u.mu.Unlock()
+			u.emitRegistrationLine(msg)
 		case "221":
 			u.applyUmodeParam(msg.Param(1))
+			u.emitRegistrationLine(msg)
 		case "MODE":
 			u.handleUserMode(msg)
+			u.emitRegistrationLine(msg)
 		case "PING":
 			_ = c.WriteLine("PONG :" + msg.Trailing())
-		case "376", "422": // end of MOTD / no MOTD — registration complete
-			if gotWelcome {
+		case "NOTICE":
+			u.emitRegistrationLine(msg)
+		case "375", "372", "376", "422":
+			u.emitRegistrationLine(msg)
+			if (msg.Command == "376" || msg.Command == "422") && gotWelcome {
 				return u.finishRegister(c)
 			}
 		case "432", "433": // erroneous/nick in use
+			u.emitRegistrationLine(msg)
 			return fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
 		case "ERROR":
 			return fmt.Errorf("server ERROR: %s", msg.Trailing())
-		}
-		// Some servers omit MOTD; finish after 004 once welcome was seen and we've
-		// had a chance to collect ISUPPORT (common when 005 arrives before 001).
-		if gotWelcome && msg.Command == "004" {
-			// peek briefly: if next lines are only MOTD-ish we continue; otherwise
-			// fall through — still prefer 376/422. Soft fallback below via idle is hard;
-			// keep reading until 376/422.
+		default:
+			if isRegistrationVisible(msg.Command) {
+				u.emitRegistrationLine(msg)
+			}
 		}
 	}
+}
+
+func (u *Uplink) emitRegistrationLine(msg irc.Message) {
+	if u.handler != nil {
+		u.handler.OnRegistrationLine(u, msg)
+	}
+}
+
+// isRegistrationVisible reports whether a command should be relayed to clients
+// waiting on uplink registration (excludes CAP/AUTHENTICATE/SASL/PING).
+func isRegistrationVisible(cmd string) bool {
+	switch strings.ToUpper(cmd) {
+	case "CAP", "AUTHENTICATE", "PING", "PONG",
+		"900", "901", "902", "903", "904", "905", "906", "907", "908":
+		return false
+	}
+	if len(cmd) == 3 {
+		for i := 0; i < 3; i++ {
+			if cmd[i] < '0' || cmd[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (u *Uplink) finishRegister(c *connio.Conn) error {

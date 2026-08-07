@@ -11,9 +11,34 @@ import (
 const ServerName = "gobnc"
 
 // Attach registers a downlink and replays welcome + channel state.
+//
+// If the uplink is already registered, sends the full cached burst.
+// Otherwise sends only a pending 001 so the client can finish local
+// registration, then relays live (and buffered) uplink registration traffic.
 func (s *Session) Attach(d Downlink) error {
 	s.mu.Lock()
 	s.downlinks[d.ID()] = d
+	registered := s.registered
+	if !registered {
+		nick := s.self.Nick
+		if nick == "" {
+			nick = s.Network.Nick
+		}
+		buf := append([]irc.Message(nil), s.regBuffer...)
+		s.awaitingUplink[d.ID()] = true
+		s.mu.Unlock()
+
+		_ = d.Send(s.rewriteFor(d, irc.Message{
+			Source:  ServerName,
+			Command: "001",
+			Params:  []string{nick, "Welcome pending uplink registration"},
+		}))
+		for _, m := range buf {
+			_ = d.Send(s.rewriteFor(d, m))
+		}
+		return nil
+	}
+
 	nick := s.self.Nick
 	rpl002 := append([]string(nil), s.rpl002...)
 	rpl003 := append([]string(nil), s.rpl003...)
@@ -29,6 +54,7 @@ func (s *Session) Attach(d Downlink) error {
 	for _, ch := range chans {
 		namesFor[ch.Name] = s.namesListLocked(ch)
 	}
+	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
 
 	send := func(msg irc.Message) {
@@ -58,11 +84,7 @@ func (s *Session) Attach(d Downlink) error {
 	send(irc.Message{Source: ServerName, Command: "372", Params: []string{nick, "- MOTD can be requested by typing /MOTD"}})
 	send(irc.Message{Source: ServerName, Command: "376", Params: []string{nick, "End of /MOTD command."}})
 
-	// After registration: if the uplink nick is still logged in, tell the client.
-	s.mu.RLock()
-	loggedIn, ok := s.rplLoggedInLocked()
-	s.mu.RUnlock()
-	if ok {
+	if haveLogin {
 		send(loggedIn)
 	}
 

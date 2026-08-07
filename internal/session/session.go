@@ -61,6 +61,13 @@ type Session struct {
 	rpl003         []string
 	rpl004         []string
 	ircd           string // detected IRCd family (irc.IRCd*)
+	registered     bool   // true after uplink OnRegistered until OnDisconnect
+	// awaitingUplink marks downlinks that attached before uplink registration
+	// finished and should receive live/buffered registration traffic.
+	awaitingUplink map[ClientID]bool
+	// regBuffer holds client-visible registration lines until uplink is registered
+	// (for mid-registration attach catch-up).
+	regBuffer []irc.Message
 }
 
 // New creates a session (uplink attached later via SetUplink / Run).
@@ -84,15 +91,23 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 		tracker:   NewRequestTracker(),
 		self:      self,
 		users:     users,
-		channels:  make(map[string]*ChannelState),
-		downlinks: make(map[ClientID]Downlink),
-		isupport:  irc.NewISUPPORT(),
-		upCaps:    make(map[string]bool),
+		channels:       make(map[string]*ChannelState),
+		downlinks:      make(map[ClientID]Downlink),
+		awaitingUplink: make(map[ClientID]bool),
+		isupport:       irc.NewISUPPORT(),
+		upCaps:         make(map[string]bool),
 	}
 }
 
 // SetUplink associates the uplink.
 func (s *Session) SetUplink(u *uplink.Uplink) { s.uplink = u }
+
+// SetRegisteredForTest marks the session as uplink-registered (tests only).
+func (s *Session) SetRegisteredForTest(v bool) {
+	s.mu.Lock()
+	s.registered = v
+	s.mu.Unlock()
+}
 
 // ApplyNetworkConfig stores network settings for the next uplink (re)connect.
 // Does not drop the current uplink connection.

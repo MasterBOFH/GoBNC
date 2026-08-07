@@ -29,11 +29,12 @@ func (h *regHandler) OnRegistered(u *Uplink) {
 	h.reg = true
 	h.mu.Unlock()
 }
-func (h *regHandler) OnMessage(u *Uplink, msg irc.Message)      {}
-func (h *regHandler) OnDisconnect(u *Uplink, err error)         {}
-func (h *regHandler) OnCapsChanged(u *Uplink, added, removed []string) {}
-func (h *regHandler) OnSASLOffer(u *Uplink, available bool)             {}
-func (h *regHandler) OnCapNAK(u *Uplink, names []string)                {}
+func (h *regHandler) OnMessage(u *Uplink, msg irc.Message)                 {}
+func (h *regHandler) OnDisconnect(u *Uplink, err error)                    {}
+func (h *regHandler) OnRegistrationLine(u *Uplink, msg irc.Message)        {}
+func (h *regHandler) OnCapsChanged(u *Uplink, added, removed []string)     {}
+func (h *regHandler) OnSASLOffer(u *Uplink, available bool)                {}
+func (h *regHandler) OnCapNAK(u *Uplink, names []string)                   {}
 
 func TestUplinkHappyPath(t *testing.T) {
 	client, server := net.Pipe()

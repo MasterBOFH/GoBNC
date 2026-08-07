@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -32,6 +33,17 @@ func (s *Session) OnRegistered(u *uplink.Uplink) {
 		s.self.Account = acct
 		s.loggedIn = true
 	}
+	s.registered = true
+	// Clients that watched live registration are done awaiting.
+	awaiting := make([]Downlink, 0, len(s.awaitingUplink))
+	for id := range s.awaitingUplink {
+		if d, ok := s.downlinks[id]; ok {
+			awaiting = append(awaiting, d)
+		}
+	}
+	s.awaitingUplink = make(map[ClientID]bool)
+	s.regBuffer = nil
+	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
 	_, nowSASL := s.refreshSASLOffer(u)
 	s.mu.Lock()
@@ -43,6 +55,34 @@ func (s *Session) OnRegistered(u *uplink.Uplink) {
 	s.log.Info("uplink registered", "nick", u.Nick())
 	if added := caps.Diff(prevOffer, nowOffer); len(added) > 0 {
 		s.broadcastCapNotify("NEW", added)
+	}
+	for _, d := range awaiting {
+		if haveLogin {
+			_ = d.Send(s.rewriteFor(d, loggedIn))
+		}
+		s.notifyAttachCaps(d)
+	}
+}
+
+// OnRegistrationLine implements uplink.Handler — relay pre-registration traffic
+// to clients that attached before uplink welcome completed.
+func (s *Session) OnRegistrationLine(u *uplink.Uplink, msg irc.Message) {
+	_ = u
+	s.mu.Lock()
+	if msg.Command == "001" && len(msg.Params) > 0 {
+		s.ensureSelfLocked(msg.Params[0])
+		s.self.Nick = msg.Params[0]
+	}
+	s.regBuffer = append(s.regBuffer, msg)
+	targets := make([]Downlink, 0, len(s.awaitingUplink))
+	for id := range s.awaitingUplink {
+		if d, ok := s.downlinks[id]; ok {
+			targets = append(targets, d)
+		}
+	}
+	s.mu.Unlock()
+	for _, d := range targets {
+		_ = d.Send(s.rewriteFor(d, msg))
 	}
 }
 
@@ -107,29 +147,67 @@ func (s *Session) broadcastCapNotify(sub string, names []string) {
 	}
 }
 
-// OnDisconnect implements uplink.Handler.
+// OnDisconnect implements uplink.Handler — ERROR+close all downlinks and clear state.
 func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	_ = u
 	s.log.Info("uplink down", "err", err)
+	reason := disconnectReason(err)
+	errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}
+
 	s.mu.Lock()
-	prevOffer := caps.Offered(s.upCaps)
-	if s.saslOffer != "" {
-		prevOffer = append(prevOffer, s.saslOffer)
+	clients := make([]Downlink, 0, len(s.downlinks))
+	for _, d := range s.downlinks {
+		clients = append(clients, d)
 	}
+	s.downlinks = make(map[ClientID]Downlink)
+	s.awaitingUplink = make(map[ClientID]bool)
+	s.regBuffer = nil
+	s.registered = false
 	s.upCaps = make(map[string]bool)
 	s.saslOffer = ""
 	s.saslWaiters = nil
 	s.saslReqPending = false
 	s.saslClient = ""
 	s.loggedIn = false
-	if s.self != nil {
-		s.self.Account = ""
+	s.rpl002, s.rpl003, s.rpl004 = nil, nil, nil
+	s.ircd = ""
+	s.channels = make(map[string]*ChannelState)
+	nick := s.Network.Nick
+	user := s.Network.Username
+	s.self = &User{Nick: nick, User: user, UModes: make(map[byte]bool)}
+	s.users = map[string]*User{
+		irc.CaseRFC1459.Canonical(nick): s.self,
 	}
-	nowOffer := caps.Offered(s.upCaps)
+	s.isupport = irc.NewISUPPORT()
+	s.tracker = NewRequestTracker()
 	s.mu.Unlock()
-	if lost := caps.Diff(nowOffer, prevOffer); len(lost) > 0 {
-		s.broadcastCapNotify("DEL", lost)
+
+	for _, d := range clients {
+		_ = d.Send(errMsg)
+		_ = d.Close()
 	}
+}
+
+func disconnectReason(err error) string {
+	if err == nil {
+		return "connection to the server was lost"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "connection to the server was lost"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "connection to the server was lost"
+	}
+	// Prefer the human text from "server ERROR: …".
+	const prefix = "server ERROR: "
+	if strings.HasPrefix(msg, prefix) {
+		msg = strings.TrimSpace(msg[len(prefix):])
+		if msg != "" {
+			return msg
+		}
+	}
+	return msg
 }
 
 // OnMessage implements uplink.Handler — update state, history, fan-out to downlinks.
