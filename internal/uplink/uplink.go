@@ -180,6 +180,13 @@ func (u *Uplink) SetNetwork(n store.Network) {
 	u.setFloodParams(n.FloodBurst, n.FloodRate)
 }
 
+// SetMaxFloodQueue updates the paced send-queue depth cap (0 = unlimited).
+func (u *Uplink) SetMaxFloodQueue(n int) {
+	u.mu.Lock()
+	u.cfg.MaxFloodQueue = n
+	u.mu.Unlock()
+}
+
 // HasCap reports whether a capability is enabled.
 func (u *Uplink) HasCap(name string) bool {
 	u.mu.RLock()

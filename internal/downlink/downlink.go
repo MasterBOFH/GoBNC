@@ -41,6 +41,7 @@ type Manager interface {
 
 // Listener is the TLS client listener.
 type Listener struct {
+	cfgMu   sync.RWMutex
 	cfg     config.Config
 	store   *store.Store
 	mgr     Manager
@@ -70,11 +71,25 @@ func NewListener(cfg config.Config, st *store.Store, mgr Manager, tlsCfg *tls.Co
 	}
 }
 
+// SetConfig updates runtime auth/limit settings (e.g. after SIGHUP rehash).
+func (l *Listener) SetConfig(cfg config.Config) {
+	l.cfgMu.Lock()
+	l.cfg = cfg
+	l.cfgMu.Unlock()
+}
+
+func (l *Listener) config() config.Config {
+	l.cfgMu.RLock()
+	defer l.cfgMu.RUnlock()
+	return l.cfg
+}
+
 func (l *Listener) maxClients() int {
-	if l.cfg.MaxClients <= 0 {
+	cfg := l.config()
+	if cfg.MaxClients <= 0 {
 		return config.DefaultMaxClients
 	}
-	return l.cfg.MaxClients
+	return cfg.MaxClients
 }
 
 // Serve accepts connections until ctx cancelled.
@@ -238,7 +253,8 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	}
 
 	fpOK := false
-	if l.cfg.AllowCertAuth {
+	cfg := l.config()
+	if cfg.AllowCertAuth {
 		if state := tc.ConnectionState(); len(state.PeerCertificates) > 0 {
 			sum := sha256.Sum256(state.PeerCertificates[0].Raw)
 			fp := hex.EncodeToString(sum[:])
@@ -251,7 +267,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	}
 	passOK := false
 	passSecret := stripNetworkFromPass(pass)
-	if l.cfg.AllowPasswordAuth && passSecret != "" {
+	if cfg.AllowPasswordAuth && passSecret != "" {
 		hash, err := l.store.PasswordHash(ctx)
 		if err != nil {
 			return false, "", err

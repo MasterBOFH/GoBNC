@@ -37,6 +37,12 @@ Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS 
 
 Channels are remembered when you `JOIN` (including channel keys) and forgotten when you `PART`; they are auto-rejoined on uplink reconnect.
 
+## Rehash (SIGHUP)
+
+Send `SIGHUP` to the running `serve` process to reload `gobnc.json` and refresh network rows from SQLite without dropping connected clients or reconnecting uplinks. Listener TLS certificates are hot-swapped: existing sessions keep their handshake; new connections use the reloaded cert/key.
+
+Ignored on rehash (require a full restart): `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
+
 ## Security notes
 
 - Network passwords, SASL credentials, and channel keys are stored **plaintext** in SQLite so the bouncer can reconnect unattended. GoBNC enforces mode `0600` on the DB and on `log_file` when set.

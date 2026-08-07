@@ -24,16 +24,19 @@ import (
 
 // Server is the bouncer process.
 type Server struct {
-	cfg    config.Config
-	log    *slog.Logger
-	store  *store.Store
-	hist   *history.Store
-	mu     sync.RWMutex
-	sess   map[string]*session.Session
+	cfg       config.Config
+	log       *slog.Logger
+	store     *store.Store
+	hist      *history.Store
+	mu        sync.RWMutex
+	sess      map[string]*session.Session
 	netCancel map[string]context.CancelFunc
-	runCtx context.Context
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
+	runCtx    context.Context
+	wg        sync.WaitGroup
+	cancel    context.CancelFunc
+
+	certs *certHolder
+	dl    *downlink.Listener
 }
 
 // New opens the DB and prepares sessions.
@@ -49,6 +52,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		hist:      history.NewWithLimits(st, 100, cfg.LegacyPlaybackMax),
 		sess:      make(map[string]*session.Session),
 		netCancel: make(map[string]context.CancelFunc),
+		certs:     &certHolder{},
 	}, nil
 }
 
@@ -103,19 +107,17 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	if s.cfg.HistoryRetentionDays > 0 {
-		go s.retentionLoop(ctx)
-	}
+	// Always run; pruneHistory no-ops when HistoryRetentionDays <= 0 (supports rehash enable).
+	go s.retentionLoop(ctx)
 
-	cert, err := tls.LoadX509KeyPair(s.cfg.TLSCert, s.cfg.TLSKey)
-	if err != nil {
+	if err := s.certs.Load(s.cfg.TLSCert, s.cfg.TLSKey); err != nil {
 		s.cancel()
-		return fmt.Errorf("load tls: %w", err)
+		return err
 	}
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequestClientCert,
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: s.certs.GetCertificate,
+		ClientAuth:     tls.RequestClientCert,
+		MinVersion:     tls.VersionTLS12,
 	}
 	ln, err := tls.Listen("tcp", s.cfg.ListenAddr, tlsCfg)
 	if err != nil {
@@ -125,6 +127,9 @@ func (s *Server) Run(ctx context.Context) error {
 	defer ln.Close()
 
 	dl := downlink.NewListener(s.cfg, s.store, s, tlsCfg, s.log)
+	s.mu.Lock()
+	s.dl = dl
+	s.mu.Unlock()
 	errCh := make(chan error, 1)
 	go func() { errCh <- dl.Serve(ctx, ln) }()
 
@@ -149,7 +154,9 @@ func (s *Server) gracefulShutdown() {
 	timeout := config.ShutdownTimeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	s.mu.RLock()
 	reason := s.cfg.QuitReason()
+	s.mu.RUnlock()
 	s.log.Info("graceful shutdown", "quit", reason, "timeout", timeout)
 
 	s.mu.RLock()
@@ -211,7 +218,9 @@ func (s *Server) retentionLoop(ctx context.Context) {
 }
 
 func (s *Server) pruneHistory(ctx context.Context) {
+	s.mu.RLock()
 	days := s.cfg.HistoryRetentionDays
+	s.mu.RUnlock()
 	if days <= 0 {
 		return
 	}
@@ -399,6 +408,80 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 	}
 	sess.ApplyNetworkConfig(n)
 	s.log.Info("network config reloaded", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
+	return nil
+}
+
+// Rehash reloads gobnc.json and refreshes running network rows from SQLite.
+// Existing downlink/uplink connections are not dropped. Listener TLS certs are
+// hot-swapped for new handshakes via GetCertificate.
+func (s *Server) Rehash(cfgPath string) error {
+	if s.runCtx == nil {
+		return fmt.Errorf("server not running")
+	}
+	newCfg, err := config.LoadJSON(cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := newCfg.Validate(); err != nil {
+		return err
+	}
+
+	s.mu.RLock()
+	old := s.cfg
+	s.mu.RUnlock()
+
+	if newCfg.ListenAddr != old.ListenAddr {
+		s.log.Warn("rehash: listen_addr change ignored (restart required)", "old", old.ListenAddr, "new", newCfg.ListenAddr)
+		newCfg.ListenAddr = old.ListenAddr
+	}
+	if newCfg.DBPath != old.DBPath {
+		s.log.Warn("rehash: db_path change ignored (restart required)", "old", old.DBPath, "new", newCfg.DBPath)
+		newCfg.DBPath = old.DBPath
+	}
+	if newCfg.ResolvedControlSocket() != old.ResolvedControlSocket() {
+		s.log.Warn("rehash: control_socket change ignored (restart required)",
+			"old", old.ResolvedControlSocket(), "new", newCfg.ResolvedControlSocket())
+		newCfg.ControlSocket = old.ControlSocket
+	}
+	if newCfg.LogFile != old.LogFile {
+		s.log.Warn("rehash: log_file change ignored (restart required)", "old", old.LogFile, "new", newCfg.LogFile)
+		newCfg.LogFile = old.LogFile
+	}
+	if newCfg.LogLevel != old.LogLevel {
+		s.log.Warn("rehash: log_level change ignored (restart required)", "old", old.LogLevel, "new", newCfg.LogLevel)
+		newCfg.LogLevel = old.LogLevel
+	}
+
+	if err := s.certs.Load(newCfg.TLSCert, newCfg.TLSKey); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.cfg = newCfg
+	dl := s.dl
+	names := make([]string, 0, len(s.sess))
+	sessions := make([]*session.Session, 0, len(s.sess))
+	for name, sess := range s.sess {
+		names = append(names, name)
+		sessions = append(sessions, sess)
+	}
+	s.mu.Unlock()
+
+	if dl != nil {
+		dl.SetConfig(newCfg)
+	}
+	s.hist.SetLegacyPlaybackMax(newCfg.LegacyPlaybackMax)
+	for _, sess := range sessions {
+		if u := sess.Uplink(); u != nil {
+			u.SetMaxFloodQueue(newCfg.MaxFloodQueue)
+		}
+	}
+	for _, name := range names {
+		if err := s.ReloadNetworkConfig(name); err != nil {
+			s.log.Warn("rehash: network reload failed", "name", name, "err", err)
+		}
+	}
+	s.log.Info("rehash complete", "tls_cert", newCfg.TLSCert, "networks", len(names))
 	return nil
 }
 

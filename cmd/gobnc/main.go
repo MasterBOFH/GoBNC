@@ -66,6 +66,23 @@ func runServe() {
 	}
 	defer srv.Close()
 
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				logger.Info("SIGHUP received; rehashing")
+				if err := srv.Rehash(*cfgPath); err != nil {
+					logger.Error("rehash failed", "err", err)
+				}
+			}
+		}
+	}()
+
 	logger.Info("gobnc starting", "listen", cfg.ListenAddr, "db", cfg.DBPath, "log_file", cfg.LogFile)
 	if err := srv.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Error("server stopped", "err", err)
