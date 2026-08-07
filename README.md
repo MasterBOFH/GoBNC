@@ -37,9 +37,9 @@ Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS 
 
 Channels are remembered when you `JOIN` (including channel keys) and forgotten when you `PART`; they are auto-rejoined on uplink reconnect.
 
-## Rehash (SIGHUP)
+## Rehash (SIGHUP / `gobnc rehash`)
 
-Send `SIGHUP` to the running `serve` process to reload `gobnc.json` and refresh network rows from SQLite without dropping connected clients or reconnecting uplinks. Listener TLS certificates are hot-swapped: existing sessions keep their handshake; new connections use the reloaded cert/key.
+Send `SIGHUP` to the running `serve` process, or run `./bin/gobnc rehash`, to reload `gobnc.json` and refresh network rows from SQLite without dropping connected clients or reconnecting uplinks. Listener TLS certificates are hot-swapped: existing sessions keep their handshake; new connections use the reloaded cert/key.
 
 Ignored on rehash (require a full restart): `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
 
@@ -48,7 +48,7 @@ Ignored on rehash (require a full restart): `listen_addr`, `db_path`, `control_s
 - Network passwords, SASL credentials, and channel keys are stored **plaintext** in SQLite so the bouncer can reconnect unattended. GoBNC enforces mode `0600` on the DB and on `log_file` when set.
 - On shared hosts, keep `db_path`, `log_file`, and any explicit `control_socket` under a private directory you own. Avoid placing the control socket in a shared-writable path (CWD on a shared machine, `/tmp`, etc.).
 - Client IRC lines are capped at 4608 bytes (IRCv3 client tags + 512-byte message); oversize input gets `ERR_INPUTTOOLONG` (`417`). Uplink lines are capped at 8703 bytes and dropped if longer. Concurrent clients default to `max_clients` 32; password checks are concurrency-limited.
-- Tunables (see comments in `gobnc.json.example`): `max_flood_queue` (default 16384, `0` = unlimited), `legacy_playback_max` (default 50000, `0` = unlimited), `history_retention_days` (default `0` = no prune).
+- Tunables (see comments in `gobnc.json.example`): `max_flood_queue` (default 16384, `0` = unlimited), `legacy_playback_max` (default 50000, `0` = unlimited attach backlog), `chathistory_max` (default 100; ISUPPORT `CHATHISTORY=N` / per-query cap), `history_retention_days` (default `0` = no prune).
 - Legacy attach playback uses a **shared** per-network/per-target cursor by design: one client's attach advances the watermark for other devices on the same network.
 
 ## Tests

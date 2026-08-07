@@ -128,6 +128,7 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	cfg.MaxClients = 7
 	cfg.MaxFloodQueue = 42
 	cfg.LegacyPlaybackMax = 99
+	cfg.ChatHistoryMax = 250
 	cfg.HistoryRetentionDays = 3
 	cfg.QuitMessage = "rehashed"
 	// Immutable-looking change should be ignored.
@@ -158,8 +159,11 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	if got.MaxClients != 7 {
 		t.Fatalf("MaxClients=%d", got.MaxClients)
 	}
-	if got.MaxFloodQueue != 42 || got.LegacyPlaybackMax != 99 || got.HistoryRetentionDays != 3 {
+	if got.MaxFloodQueue != 42 || got.LegacyPlaybackMax != 99 || got.ChatHistoryMax != 250 || got.HistoryRetentionDays != 3 {
 		t.Fatalf("limits not applied: %+v", got)
+	}
+	if s.hist.MaxLimit() != 250 {
+		t.Fatalf("hist MaxLimit=%d want 250", s.hist.MaxLimit())
 	}
 	if got.QuitMessage != "rehashed" {
 		t.Fatalf("QuitMessage=%q", got.QuitMessage)

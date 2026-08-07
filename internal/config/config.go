@@ -22,6 +22,9 @@ const DefaultMaxFloodQueue = 16384
 // DefaultLegacyPlaybackMax is the default max PRIVMSG/NOTICE lines per target on attach.
 const DefaultLegacyPlaybackMax = 50000
 
+// DefaultChatHistoryMax is the default max lines per CHATHISTORY query (ISUPPORT CHATHISTORY=N).
+const DefaultChatHistoryMax = 100
+
 // Config is process bootstrap configuration.
 type Config struct {
 	ListenAddr    string `json:"listen_addr"`
@@ -40,6 +43,11 @@ type Config struct {
 
 	// LegacyPlaybackMax caps PRIVMSG/NOTICE lines per target on legacy attach (0 = unlimited).
 	LegacyPlaybackMax int `json:"legacy_playback_max"`
+
+	// ChatHistoryMax is the max lines returned per CHATHISTORY query and advertised
+	// as ISUPPORT CHATHISTORY=N. Distinct from LegacyPlaybackMax (attach backlog).
+	// 0 or negative uses DefaultChatHistoryMax.
+	ChatHistoryMax int `json:"chathistory_max"`
 
 	// HistoryRetentionDays prunes stored messages older than N days (0 = no prune).
 	HistoryRetentionDays int `json:"history_retention_days"`
@@ -66,6 +74,7 @@ func Default() Config {
 		MaxClients:           DefaultMaxClients,
 		MaxFloodQueue:        DefaultMaxFloodQueue,
 		LegacyPlaybackMax:    DefaultLegacyPlaybackMax,
+		ChatHistoryMax:       DefaultChatHistoryMax,
 		HistoryRetentionDays: 0,
 		QuitMessage:          version.QuitMessage(),
 		AllowPasswordAuth:    true,
@@ -125,6 +134,9 @@ func LoadJSON(path string) (Config, error) {
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.ChatHistoryMax <= 0 {
+		cfg.ChatHistoryMax = DefaultChatHistoryMax
 	}
 	return cfg, nil
 }

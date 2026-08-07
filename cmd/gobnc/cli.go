@@ -19,6 +19,7 @@ func runCLI(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Println(`gobnc commands:
   serve [-config gobnc.json]
+  rehash [-config gobnc.json]
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
@@ -33,6 +34,7 @@ auth set-password asks whether to generate a random password (default yes); othe
 When the daemon is running, network add/delete also notify it via the control socket
 (control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
 so uplinks start/stop immediately.
+rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL apply on the next reconnect.
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
@@ -49,6 +51,11 @@ a password, you are prompted automatically.`)
 		}
 	}
 	cfg, _ := config.LoadJSON(cfgPath)
+
+	if args[0] == "rehash" {
+		return cmdRehash(cfg)
+	}
+
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return err
@@ -64,6 +71,18 @@ a password, you are prompted automatically.`)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func cmdRehash(cfg config.Config) error {
+	notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdRehash)
+	if err != nil {
+		return err
+	}
+	if !notified {
+		return fmt.Errorf("daemon not running (no control socket at %s)", cfg.ResolvedControlSocket())
+	}
+	fmt.Fprintln(os.Stderr, "Rehash complete.")
+	return nil
 }
 
 func cmdAuth(ctx context.Context, st *store.Store, args []string) error {

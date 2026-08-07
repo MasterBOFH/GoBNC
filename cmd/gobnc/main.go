@@ -20,7 +20,7 @@ func main() {
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 			runServe()
 			return
-		case "network", "auth", "help", "-h", "--help":
+		case "network", "auth", "rehash", "help", "-h", "--help":
 			if err := runCLI(os.Args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
@@ -65,6 +65,7 @@ func runServe() {
 		os.Exit(1)
 	}
 	defer srv.Close()
+	srv.SetConfigPath(*cfgPath)
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

@@ -42,16 +42,19 @@ type Store struct {
 	log               *slog.Logger
 }
 
+// DefaultChatHistoryMax is the default max lines per CHATHISTORY query.
+const DefaultChatHistoryMax = 100
+
 // New creates a history store with default CHATHISTORY and legacy playback limits.
 func New(db *store.Store) *Store {
-	return NewWithLimits(db, 100, DefaultLegacyPlaybackMax)
+	return NewWithLimits(db, DefaultChatHistoryMax, DefaultLegacyPlaybackMax)
 }
 
 // NewWithLimits creates a history store.
 // legacyPlaybackMax 0 means unlimited attach playback; positive caps per target.
 func NewWithLimits(db *store.Store, chathistoryMax, legacyPlaybackMax int) *Store {
 	if chathistoryMax <= 0 {
-		chathistoryMax = 100
+		chathistoryMax = DefaultChatHistoryMax
 	}
 	return &Store{db: db, maxLimit: chathistoryMax, legacyPlaybackMax: legacyPlaybackMax}
 }
@@ -68,6 +71,18 @@ func (h *Store) SetLegacyPlaybackMax(n int) {
 	if h != nil {
 		h.legacyPlaybackMax = n
 	}
+}
+
+// SetMaxLimit sets the max lines per CHATHISTORY query (and ISUPPORT CHATHISTORY=N).
+// Non-positive values become DefaultChatHistoryMax.
+func (h *Store) SetMaxLimit(n int) {
+	if h == nil {
+		return
+	}
+	if n <= 0 {
+		n = DefaultChatHistoryMax
+	}
+	h.maxLimit = n
 }
 
 // MaxLimit returns the configured max lines per CHATHISTORY query.

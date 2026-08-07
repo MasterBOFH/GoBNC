@@ -25,6 +25,7 @@ import (
 // Server is the bouncer process.
 type Server struct {
 	cfg       config.Config
+	cfgPath   string // bootstrap JSON path for REHASH / SIGHUP
 	log       *slog.Logger
 	store     *store.Store
 	hist      *history.Store
@@ -45,7 +46,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	hist := history.NewWithLimits(st, 100, cfg.LegacyPlaybackMax)
+	hist := history.NewWithLimits(st, cfg.ChatHistoryMax, cfg.LegacyPlaybackMax)
 	hist.SetLogger(log)
 	return &Server{
 		cfg:       cfg,
@@ -56,6 +57,13 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		netCancel: make(map[string]context.CancelFunc),
 		certs:     &certHolder{},
 	}, nil
+}
+
+// SetConfigPath records the bootstrap JSON path used by Rehash (SIGHUP / REHASH).
+func (s *Server) SetConfigPath(path string) {
+	s.mu.Lock()
+	s.cfgPath = path
+	s.mu.Unlock()
 }
 
 // Store returns the DB.
@@ -323,6 +331,17 @@ func (s *Server) handleControl(c net.Conn) {
 			} else {
 				reply = "OK"
 			}
+		case control.CmdRehash:
+			s.mu.RLock()
+			path := s.cfgPath
+			s.mu.RUnlock()
+			if path == "" {
+				reply = "ERR no config path (SetConfigPath required)"
+			} else if err := s.Rehash(path); err != nil {
+				reply = "ERR " + err.Error()
+			} else {
+				reply = "OK"
+			}
 		}
 	}
 	_, _ = c.Write([]byte(reply + "\n"))
@@ -472,6 +491,7 @@ func (s *Server) Rehash(cfgPath string) error {
 	if dl != nil {
 		dl.SetConfig(newCfg)
 	}
+	s.hist.SetMaxLimit(newCfg.ChatHistoryMax)
 	s.hist.SetLegacyPlaybackMax(newCfg.LegacyPlaybackMax)
 	for _, sess := range sessions {
 		if u := sess.Uplink(); u != nil {

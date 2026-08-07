@@ -25,6 +25,10 @@
   // Max PRIVMSG/NOTICE lines replayed per channel/query on legacy attach (0 = unlimited).
   "legacy_playback_max": 50000,
 
+  // Max lines per CHATHISTORY query; advertised as ISUPPORT CHATHISTORY=N (default 100).
+  // Not the same as legacy_playback_max (attach backlog for non-CHATHISTORY clients).
+  "chathistory_max": 100,
+
   // Delete stored messages older than N days (0 = never prune).
   "history_retention_days": 0,
 

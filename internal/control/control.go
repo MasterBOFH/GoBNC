@@ -16,6 +16,7 @@ const (
 	CmdStartNetwork  = "START_NETWORK"
 	CmdStopNetwork   = "STOP_NETWORK"
 	CmdReloadNetwork = "RELOAD_NETWORK" // refresh config for next reconnect; do not drop uplink
+	CmdRehash        = "REHASH"         // reload gobnc.json + refresh networks (same as SIGHUP)
 )
 
 // Client sends a single command to a running daemon and returns the reply line.
