@@ -208,11 +208,29 @@ func (h *Store) sendBatch(s Sender, target string, msgs []store.Message) error {
 		if _, ok := parsed.Tag("time"); !ok {
 			parsed.Tags["time"] = m.Time.UTC().Format("2006-01-02T15:04:05.000Z")
 		}
+		h.ensurePlaybackMsgID(&parsed, &m)
+		parsed.Raw = "" // tags changed; rebuild wire form
 		if err := s.Send(parsed); err != nil {
 			return err
 		}
 	}
 	return s.Send(irc.Message{Command: "BATCH", Params: []string{"-" + id}})
+}
+
+// ensurePlaybackMsgID restores msgid from the messages.msgid column when the
+// stored Raw lacked the tag. Never invents a new ID — playback must match the
+// msgid that was (or would have been) on the wire when the line was stored.
+func (h *Store) ensurePlaybackMsgID(msg *irc.Message, m *store.Message) {
+	if _, ok := msg.Tag("msgid"); ok {
+		return
+	}
+	if m.MsgID == "" {
+		return
+	}
+	if msg.Tags == nil {
+		msg.Tags = map[string]string{}
+	}
+	msg.Tags["msgid"] = m.MsgID
 }
 
 func parseSelector(s string) (time.Time, error) {

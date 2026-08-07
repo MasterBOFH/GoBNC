@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,100 @@ func containsCmd(ss []string, want string) bool {
 	return false
 }
 
+
+func TestCHATHISTORYMsgIDMatchesStoredWire(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	netID, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db)
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	wireID := "wire-msgid-abc123"
+	// Same encoding path as live fan-out after ensureMessageID (Raw rebuilt with msgid).
+	live := irc.Message{
+		Tags: map[string]string{
+			"time":  ts.Format("2006-01-02T15:04:05.000Z"),
+			"msgid": wireID,
+		},
+		Source:  "bob!u@h",
+		Command: "PRIVMSG",
+		Params:  []string{"#c", "hello"},
+	}
+	wire := live.Encode()
+	if !strings.Contains(wire, "msgid="+wireID) {
+		t.Fatalf("wire form missing msgid: %q", wire)
+	}
+	if err := h.Store(ctx, Record{
+		NetworkID: netID, Target: "#c", Time: ts, MsgID: wireID,
+		Command: "PRIVMSG", Source: live.Source, Raw: wire, Text: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &fakeSender{caps: map[string]bool{"chathistory": true, "message-tags": true, "batch": true}}
+	if err := h.HandleCHATHISTORY(s, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"LATEST", "#c", "*", "5"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range s.sent {
+		if m.Command != "PRIVMSG" {
+			continue
+		}
+		found = true
+		got, ok := m.Tag("msgid")
+		if !ok || got != wireID {
+			t.Fatalf("CHATHISTORY msgid=%q want wire %q tags=%v", got, wireID, m.Tags)
+		}
+		if m.Wire() != "" && !strings.Contains(m.Wire(), "msgid="+wireID) {
+			t.Fatalf("playback wire missing msgid: %q", m.Wire())
+		}
+	}
+	if !found {
+		t.Fatal("no PRIVMSG in CHATHISTORY reply")
+	}
+}
+
+func TestCHATHISTORYMsgIDFromColumnWhenRawLacksTag(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	netID, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db)
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	wireID := "column-only-id"
+	// Raw without msgid tag, but column has the wire id (ingestion recorded it).
+	if err := h.Store(ctx, Record{
+		NetworkID: netID, Target: "#c", Time: ts, MsgID: wireID,
+		Command: "PRIVMSG", Source: "a!b@c",
+		Raw: ":a!b@c PRIVMSG #c :hi", Text: "hi",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &fakeSender{caps: map[string]bool{"chathistory": true}}
+	_ = h.HandleCHATHISTORY(s, netID, irc.Message{
+		Command: "CHATHISTORY", Params: []string{"LATEST", "#c", "*", "5"},
+	})
+	for _, m := range s.sent {
+		if m.Command == "PRIVMSG" && m.Tags["msgid"] != wireID {
+			t.Fatalf("got %q want %q", m.Tags["msgid"], wireID)
+		}
+	}
+}
 
 func TestCHATHISTORYLatestBefore(t *testing.T) {
 	h, id, t0 := seedHistory(t)

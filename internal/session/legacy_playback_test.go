@@ -301,3 +301,58 @@ func TestLegacyPlaybackNOTICEIncluded(t *testing.T) {
 		t.Fatalf("notice=%d priv=%d", countCmds(d.sent, "NOTICE"), countCmds(d.sent, "PRIVMSG"))
 	}
 }
+
+func TestLiveFanoutMsgIDMatchesCHATHISTORY(t *testing.T) {
+	db, hist, id := openLegacyFixture(t)
+	s := sessionWithChan(t, db, hist, id)
+	// Clear pre-seeded channel so the live JOIN is the first history line for #join.
+	s.mu.Lock()
+	delete(s.channels, "#c")
+	s.mu.Unlock()
+
+	d := &fakeDL{id: "d", caps: map[string]bool{
+		"message-tags": true, "chathistory": true, "batch": true,
+		"event-playback": true, "server-time": true,
+	}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	s.OnMessage(nil, irc.Message{
+		Source:  "me!u@h",
+		Command: "JOIN",
+		Params:  []string{"#join"},
+	})
+	var joinMsgID string
+	for _, m := range d.snapshot() {
+		if m.Command == "JOIN" && len(m.Params) > 0 && m.Params[0] == "#join" {
+			joinMsgID = m.Tags["msgid"]
+			break
+		}
+	}
+	if joinMsgID == "" {
+		t.Fatalf("self-JOIN missing msgid: %+v", d.snapshot())
+	}
+
+	ch := &fakeDL{id: "ch", caps: map[string]bool{
+		"chathistory": true, "message-tags": true, "batch": true, "event-playback": true,
+	}}
+	if err := hist.HandleCHATHISTORY(ch, id, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"LATEST", "#join", "*", "10"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range ch.snapshot() {
+		if m.Command != "JOIN" {
+			continue
+		}
+		found = true
+		if m.Tags["msgid"] != joinMsgID {
+			t.Fatalf("CHATHISTORY JOIN msgid=%q want live self-JOIN msgid %q", m.Tags["msgid"], joinMsgID)
+		}
+	}
+	if !found {
+		t.Fatal("CHATHISTORY returned no JOIN (need event-playback)")
+	}
+}

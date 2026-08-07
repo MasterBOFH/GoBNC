@@ -51,6 +51,11 @@ func ParseStoredLine(m store.Message) (irc.Message, bool) {
 	return parsed, true
 }
 
+// EnsureLineMsgID ensures msgid on a stored line for legacy/CHATHISTORY playback.
+func (h *Store) EnsureLineMsgID(msg *irc.Message, m *store.Message) {
+	h.ensurePlaybackMsgID(msg, m)
+}
+
 // IsLegacyReplayCommand reports whether cmd is sent on legacy attach replay.
 func IsLegacyReplayCommand(cmd string) bool {
 	switch cmd {

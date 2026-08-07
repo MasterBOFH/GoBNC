@@ -338,6 +338,16 @@ func (s *Store) InsertMessage(ctx context.Context, m Message) error {
 	return err
 }
 
+// SetMessageMsgID sets msgid for a row when it was previously empty (playback backfill).
+func (s *Store) SetMessageMsgID(ctx context.Context, id int64, msgid string) error {
+	if msgid == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE messages SET msgid=? WHERE id=? AND (msgid='' OR msgid IS NULL)`, id, msgid)
+	return err
+}
+
 // HistoryQuery parameters for CHATHISTORY-style queries.
 type HistoryQuery struct {
 	NetworkID int64

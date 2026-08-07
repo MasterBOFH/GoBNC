@@ -33,14 +33,17 @@ func (s *Session) playLegacyHistory(d Downlink, target string) {
 		return
 	}
 	var lastTS string
-	for _, m := range msgs {
+	for i := range msgs {
+		m := &msgs[i]
 		if !history.IsLegacyReplayCommand(m.Command) {
 			continue
 		}
-		parsed, ok := history.ParseStoredLine(m)
+		parsed, ok := history.ParseStoredLine(*m)
 		if !ok {
 			continue
 		}
+		s.hist.EnsureLineMsgID(&parsed, m)
+		parsed.Raw = ""
 		out := s.rewriteFor(d, parsed)
 		if out.Command == "" || !history.IsLegacyReplayCommand(out.Command) {
 			continue
