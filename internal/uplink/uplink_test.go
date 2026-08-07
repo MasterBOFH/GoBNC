@@ -461,3 +461,18 @@ func mustB64(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
+func TestWriteRawUTF8Only(t *testing.T) {
+	u := New(Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
+	u.isupport.UTF8Only = true
+	err := u.WriteRaw("PRIVMSG #c :bad\xff")
+	if err != errInvalidUTF8 {
+		t.Fatalf("got %v, want errInvalidUTF8", err)
+	}
+	// Without the token, nil conn → not connected (past UTF-8 check).
+	u.isupport.UTF8Only = false
+	err = u.WriteRaw("PRIVMSG #c :bad\xff")
+	if err != errNotConnected {
+		t.Fatalf("got %v, want errNotConnected", err)
+	}
+}
+

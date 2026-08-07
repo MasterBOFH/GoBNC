@@ -58,3 +58,20 @@ func TestUserModes(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestParse005UTF8Only(t *testing.T) {
+	is := NewISUPPORT()
+	if is.UTF8Only {
+		t.Fatal("default should be false")
+	}
+	is.Parse005([]string{"nick", "WHOX", "UTF8ONLY", "NETWORK=test", "are supported by this server"})
+	if !is.UTF8Only {
+		t.Fatal("UTF8ONLY not set")
+	}
+	if _, ok := is.Raw["UTF8ONLY"]; !ok {
+		t.Fatal("UTF8ONLY missing from Raw")
+	}
+	if !is.WHOX {
+		t.Fatal("WHOX cleared")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/history"
@@ -1122,6 +1123,39 @@ func TestHandleClientMessageRejectsCRLF(t *testing.T) {
 	}
 	if d.sent[0].Param(0) != "me" {
 		t.Fatalf("nick=%q", d.sent[0].Param(0))
+	}
+}
+
+func TestHandleClientMessageUTF8Only(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	s.isupport.UTF8Only = true
+	s.uplink = nil // must not reach WriteMessage
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+
+	bad := irc.Message{Command: "PRIVMSG", Params: []string{"#c", "bad\xffutf8"}}
+	if utf8.ValidString(bad.Encode()) {
+		t.Fatal("precondition: message must be invalid UTF-8")
+	}
+	if err := s.HandleClientMessage(d, bad); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) != 1 || d.sent[0].Command != "FAIL" {
+		t.Fatalf("want FAIL, got %+v", d.sent)
+	}
+	if d.sent[0].Param(0) != "PRIVMSG" || d.sent[0].Param(1) != "INVALID_UTF8" {
+		t.Fatalf("FAIL params: %+v", d.sent[0].Params)
+	}
+
+	d.sent = nil
+	s.isupport.UTF8Only = false
+	// Without UTF8ONLY, nil uplink errors on forward — proves we no longer reject early.
+	err := s.HandleClientMessage(d, bad)
+	if err == nil {
+		t.Fatal("expected uplink error when UTF8ONLY off")
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("must not FAIL without UTF8ONLY: %+v", d.sent)
 	}
 }
 

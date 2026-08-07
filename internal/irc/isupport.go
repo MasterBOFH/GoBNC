@@ -8,6 +8,7 @@ type ISUPPORT struct {
 	CaseMapping CaseMapping
 	Modes       *ModeSet
 	WHOX        bool
+	UTF8Only    bool // IRCv3 UTF8ONLY: network accepts/relays UTF-8 only
 	Prefix      string
 	ChanModes   string
 }
@@ -50,6 +51,8 @@ func (is *ISUPPORT) Parse005(params []string) {
 			_ = is.Modes.ParsePREFIX(val)
 		case "WHOX":
 			is.WHOX = true
+		case "UTF8ONLY":
+			is.UTF8Only = true
 		}
 	}
 }

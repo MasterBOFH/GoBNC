@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/flood"
@@ -21,7 +22,10 @@ import (
 	"github.com/xdg-go/scram"
 )
 
-var errNotConnected = fmt.Errorf("not connected")
+var (
+	errNotConnected = fmt.Errorf("not connected")
+	errInvalidUTF8  = fmt.Errorf("invalid UTF-8 under UTF8ONLY")
+)
 
 // DesiredCaps requested when available.
 var DesiredCaps = []string{
@@ -233,6 +237,10 @@ func (u *Uplink) WriteRaw(line string) error {
 // writeImmediate sends a line now, bypassing the flood queue and bucket.
 // Used for PONG (and when flood pacing is disabled).
 func (u *Uplink) writeImmediate(line string) error {
+	if u.utf8Only() && !utf8.ValidString(line) {
+		u.log.Warn("refusing non-UTF-8 uplink write under UTF8ONLY")
+		return errInvalidUTF8
+	}
 	u.writeMu.Lock()
 	defer u.writeMu.Unlock()
 	u.mu.RLock()
@@ -242,6 +250,12 @@ func (u *Uplink) writeImmediate(line string) error {
 		return errNotConnected
 	}
 	return c.WriteLine(line)
+}
+
+func (u *Uplink) utf8Only() bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.isupport != nil && u.isupport.UTF8Only
 }
 
 // RequestCap sends CAP REQ for the given capability names (post-registration).

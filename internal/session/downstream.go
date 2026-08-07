@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
@@ -33,6 +34,10 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 			nick = "*"
 		}
 		return d.Send(irc.InputTooLong(nick))
+	}
+	// IRCv3 UTF8ONLY: once advertised by the network, do not send non-UTF-8 upstream.
+	if s.isupport != nil && s.isupport.UTF8Only && !utf8.ValidString(msg.Encode()) {
+		return s.failInvalidUTF8(d, msg.Command)
 	}
 	cmd := strings.ToUpper(msg.Command)
 	switch cmd {
@@ -326,6 +331,18 @@ func isSILENCEEnquiry(params []string) bool {
 		}
 	}
 	return true
+}
+
+func (s *Session) failInvalidUTF8(d Downlink, cmd string) error {
+	cmd = strings.ToUpper(cmd)
+	if cmd == "" {
+		cmd = "*"
+	}
+	return d.Send(irc.Message{
+		Source:  ServerName,
+		Command: "FAIL",
+		Params:  []string{cmd, "INVALID_UTF8", "Message rejected, your IRC software MUST use UTF-8 encoding on this network"},
+	})
 }
 
 // injectWHOXToken keeps the client's WHOX flags/fields intact, ensures querytype 't'
