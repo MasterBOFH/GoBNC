@@ -301,6 +301,24 @@ func TestIsMODEEnquiry(t *testing.T) {
 	if !isMODEEnquiry([]string{"#c", "eI"}) {
 		t.Fatal("MODE #c eI")
 	}
+	if !isMODEEnquiry([]string{"#c", "+b"}) {
+		t.Fatal("MODE #c +b is a banlist query")
+	}
+	if !isMODEEnquiry([]string{"#c", "+e"}) {
+		t.Fatal("MODE #c +e")
+	}
+	if !isMODEEnquiry([]string{"#c", "+I"}) {
+		t.Fatal("MODE #c +I")
+	}
+	if !isMODEEnquiry([]string{"#c", "+q"}) {
+		t.Fatal("MODE #c +q")
+	}
+	if !isMODEEnquiry([]string{"#c", "-b"}) {
+		t.Fatal("MODE #c -b without mask is still a list query on many ircds")
+	}
+	if !isMODEEnquiry([]string{"#c", "+beI"}) {
+		t.Fatal("MODE #c +beI")
+	}
 	if !isMODEEnquiry([]string{"me"}) {
 		t.Fatal("MODE nick")
 	}
@@ -308,10 +326,54 @@ func TestIsMODEEnquiry(t *testing.T) {
 		t.Fatal("MODE +o is a change")
 	}
 	if isMODEEnquiry([]string{"#c", "-b", "*!*@x"}) {
-		t.Fatal("MODE -b is a change")
+		t.Fatal("MODE -b with mask is a change")
+	}
+	if isMODEEnquiry([]string{"#c", "+b", "*!*@x"}) {
+		t.Fatal("MODE +b with mask is a change")
+	}
+	if isMODEEnquiry([]string{"#c", "+nt"}) {
+		t.Fatal("MODE +nt is a flag change, not a list query")
 	}
 	if isMODEEnquiry(nil) {
 		t.Fatal("empty")
+	}
+
+	// ircu-like CHANMODES: only b is type A; +b still enquiry, +e falls back to defaults.
+	ms := irc.DefaultModeSet()
+	_ = ms.ParseCHANMODES("b,k,l,imnpst")
+	if !isMODEEnquiryWith([]string{"#c", "+b"}, ms) {
+		t.Fatal("CHANMODES b: +b enquiry")
+	}
+	if !isMODEEnquiryWith([]string{"#c", "+e"}, ms) {
+		t.Fatal("+e still enquiry via common defaults when unknown in CHANMODES")
+	}
+	if isMODEEnquiryWith([]string{"#c", "+l"}, ms) {
+		t.Fatal("+l without arg is not a list enquiry")
+	}
+}
+
+func TestMODEPlusBBanlistRoutedToRequester(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	_ = s.isupport.Modes.ParseCHANMODES("b,k,l,imnpst")
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	s.mu.Lock()
+	s.downlinks[a.ID()] = a
+	s.downlinks[b.ID()] = b
+	s.mu.Unlock()
+
+	if !isMODEEnquiryWith([]string{"#undernet", "+b"}, s.isupport.Modes) {
+		t.Fatal("precondition: +b must be enquiry")
+	}
+	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "MODE", EnquiryTarget: "#undernet"})
+
+	s.OnMessage(nil, irc.Message{Command: "368", Params: []string{"me", "#undernet", "End of Channel Ban List"}})
+	if countCmds(a.snapshot(), "368") != 1 {
+		t.Fatalf("requester missing 368: %+v", a.snapshot())
+	}
+	if countCmds(b.snapshot(), "368") != 0 {
+		t.Fatalf("other client must not see banlist end: %+v", b.snapshot())
 	}
 }
 
@@ -321,6 +383,75 @@ func TestIsTOPICEnquiry(t *testing.T) {
 	}
 	if isTOPICEnquiry([]string{"#c", "new topic"}) {
 		t.Fatal("set")
+	}
+}
+
+func TestIsSILENCEEnquiry(t *testing.T) {
+	if !isSILENCEEnquiry(nil) {
+		t.Fatal("SILENCE with no params is list query")
+	}
+	if !isSILENCEEnquiry([]string{""}) {
+		t.Fatal("empty param is list query")
+	}
+	if !isSILENCEEnquiry([]string{"othernick"}) {
+		t.Fatal("nick is list query")
+	}
+	if isSILENCEEnquiry([]string{"+*!*@evil.example"}) {
+		t.Fatal("+mask is change")
+	}
+	if isSILENCEEnquiry([]string{"-*!*@evil.example"}) {
+		t.Fatal("-mask is change")
+	}
+	if isSILENCEEnquiry([]string{"*!*@evil.example"}) {
+		t.Fatal("hostmask without +/- is change")
+	}
+	if isSILENCEEnquiry([]string{"+a!*@x,-b!*@y"}) {
+		t.Fatal("comma updates are change")
+	}
+}
+
+func TestSILENCEEnquiryRoutedToRequester(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	s.mu.Lock()
+	s.downlinks[a.ID()] = a
+	s.downlinks[b.ID()] = b
+	s.mu.Unlock()
+
+	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "SILENCE"})
+
+	s.OnMessage(nil, irc.Message{Command: "271", Params: []string{"me", "me", "*!*@spam.example"}})
+	s.OnMessage(nil, irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
+
+	if countCmds(a.snapshot(), "271") != 1 || countCmds(a.snapshot(), "272") != 1 {
+		t.Fatalf("requester a got %+v", a.snapshot())
+	}
+	if countCmds(b.snapshot(), "271") != 0 || countCmds(b.snapshot(), "272") != 0 {
+		t.Fatalf("other client must not see silence list: %+v", b.snapshot())
+	}
+}
+
+func TestSILENCEEmptyListEndRoutedToRequester(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	s.mu.Lock()
+	s.downlinks[a.ID()] = a
+	s.downlinks[b.ID()] = b
+	s.mu.Unlock()
+
+	// Empty silence list still ends with 272 only (no 271 rows).
+	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "SILENCE"})
+	s.OnMessage(nil, irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
+
+	if countCmds(a.snapshot(), "272") != 1 {
+		t.Fatalf("requester missing 272: %+v", a.snapshot())
+	}
+	if countCmds(b.snapshot(), "272") != 0 {
+		t.Fatalf("other client must not see end of silence: %+v", b.snapshot())
 	}
 }
 

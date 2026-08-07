@@ -118,6 +118,9 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	case "TOPIC":
 		// 331 = no topic; 332 then 333 (333 ends). Errors clear the enquiry.
 		return map[string]bool{"331": true, "333": true, "403": true, "442": true, "461": true}
+	case "SILENCE":
+		// ircu2: 271 RPL_SILELIST, 272 RPL_ENDOFSILELIST (always sent, even if empty).
+		return map[string]bool{"272": true}
 	default:
 		return map[string]bool{}
 	}
@@ -159,6 +162,8 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 		}
 	case "TOPIC":
 		return map[string]bool{"331": true, "332": true, "333": true, "403": true, "442": true, "461": true}
+	case "SILENCE":
+		return map[string]bool{"271": true, "272": true}
 	default:
 		return endCodesFor(cmd, ircd)
 	}

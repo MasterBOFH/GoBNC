@@ -87,7 +87,7 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		if isMODEEnquiry(msg.Params) {
+		if isMODEEnquiryWith(msg.Params, s.isupport.Modes) {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
@@ -96,6 +96,14 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 			return fmt.Errorf("uplink not ready")
 		}
 		if isTOPICEnquiry(msg.Params) {
+			return s.forwardSolicitous(d, msg)
+		}
+		return s.uplink.WriteMessage(s.toUplink(msg))
+	case "SILENCE":
+		if s.uplink == nil {
+			return fmt.Errorf("uplink not ready")
+		}
+		if isSILENCEEnquiry(msg.Params) {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
@@ -235,24 +243,89 @@ func isWHOXParam(p string) bool {
 
 // isMODEEnquiry reports whether MODE expects numeric replies (view/list) rather
 // than a mode change that should fan out as a MODE command to all clients.
+// List queries include both "MODE #c b" and "MODE #c +b" (no mode arguments).
 func isMODEEnquiry(params []string) bool {
+	return isMODEEnquiryWith(params, nil)
+}
+
+func isMODEEnquiryWith(params []string, ms *irc.ModeSet) bool {
 	if len(params) == 0 || params[0] == "" {
 		return false
 	}
 	if len(params) == 1 {
 		return true // MODE #chan | MODE nick
 	}
+	if len(params) > 2 {
+		// Mode arguments present → set/unset (e.g. +b *!*@host), not a list query.
+		return false
+	}
 	modes := params[1]
 	if modes == "" {
 		return true
 	}
-	// Changes always include + or -; bare letters are list queries (b/e/I/q/…).
-	return !strings.ContainsAny(modes, "+-")
+	// Bare list letters, or +/- list letters with no args: MODE #c b | MODE #c +b
+	return isListModesOnly(modes, ms)
+}
+
+// isListModesOnly reports whether modestring is only +/− and type-A list mode letters.
+func isListModesOnly(modes string, ms *irc.ModeSet) bool {
+	saw := false
+	for i := 0; i < len(modes); i++ {
+		c := modes[i]
+		if c == '+' || c == '-' {
+			continue
+		}
+		if !isListModeChar(c, ms) {
+			return false
+		}
+		saw = true
+	}
+	return saw
+}
+
+func isListModeChar(c byte, ms *irc.ModeSet) bool {
+	if ms != nil {
+		switch ms.Classify(c) {
+		case irc.ModeList:
+			return true
+		case irc.ModeUnknown:
+			// fall through to common defaults (e/I/q may be absent from ircu CHANMODES)
+		default:
+			return false
+		}
+	}
+	switch c {
+	case 'b', 'e', 'I', 'q':
+		return true
+	default:
+		return false
+	}
 }
 
 // isTOPICEnquiry reports TOPIC #chan (fetch) vs TOPIC #chan :text (set).
 func isTOPICEnquiry(params []string) bool {
 	return len(params) == 1 && params[0] != ""
+}
+
+// isSILENCEEnquiry reports a silence list query vs an add/remove update.
+// ircu2: omitted/empty param or a nick → 271* + 272; +mask/-mask (or hostmasks) → change.
+func isSILENCEEnquiry(params []string) bool {
+	if len(params) == 0 || params[0] == "" {
+		return true
+	}
+	for _, part := range strings.Split(params[0], ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.HasPrefix(part, "+") || strings.HasPrefix(part, "-") {
+			return false
+		}
+		if strings.ContainsAny(part, "!@") {
+			return false
+		}
+	}
+	return true
 }
 
 // injectWHOXToken keeps the client's WHOX flags/fields intact, ensures querytype 't'
