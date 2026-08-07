@@ -654,9 +654,14 @@ func TestRequestTrackerWHOISNosuchNick(t *testing.T) {
 	if !only || c != "c1" {
 		t.Fatal(c, only)
 	}
-	_, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "311", Params: []string{"me", "ghost"}}, cm)
+	// ircu sends 401 then 318; 401 must not clear the waiter.
+	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "318", Params: []string{"me", "ghost", "End of /WHOIS list."}}, cm)
+	if !only || c != "c1" {
+		t.Fatalf("318 after 401 -> %s only=%v", c, only)
+	}
+	_, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "318", Params: []string{"me", "ghost"}}, cm)
 	if only {
-		t.Fatal("401 should have cleared pending")
+		t.Fatal("318 should have cleared pending")
 	}
 }
 

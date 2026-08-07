@@ -90,7 +90,8 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	case "WHO", "WHOX":
 		return map[string]bool{"315": true}
 	case "WHOIS":
-		return map[string]bool{"318": true, "401": true}
+		// 401 is mid-exchange on ircu (401 then 318); only 318 ends the waiter.
+		return map[string]bool{"318": true}
 	case "STATS":
 		return map[string]bool{"219": true}
 	case "LIST":
