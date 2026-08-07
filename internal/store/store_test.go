@@ -111,6 +111,35 @@ func TestNetworkNickRecoveryFields(t *testing.T) {
 	}
 }
 
+func TestNetworkTLSNoVerify(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	_, err := s.UpsertNetwork(ctx, Network{
+		Name: "n", Host: "h", Port: 6697, Nick: "me", TLS: true, TLSNoVerify: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.TLSNoVerify {
+		t.Fatal("expected tls_noverify=true")
+	}
+	n.TLSNoVerify = false
+	if _, err := s.UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.TLSNoVerify {
+		t.Fatal("expected tls_noverify=false after clear")
+	}
+}
+
 func TestNetworkCRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

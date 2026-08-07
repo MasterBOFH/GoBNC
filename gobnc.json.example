@@ -38,6 +38,12 @@
   // QUIT reason sent to all uplinks on process shutdown.
   "quit_message": "GoBNC 0.1.0",
 
+  // Defaults for `network add` when nick / identity flags are omitted.
+  "default_nick": "",
+  "default_username": "gobnc",
+  "default_realname": "GoBNC",
+  "default_alt_nick": "",
+
   // At least one auth mode must be true.
   "allow_password_auth": true,
   "allow_cert_auth": true

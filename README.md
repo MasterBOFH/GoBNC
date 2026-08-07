@@ -18,6 +18,8 @@ With `"log_level": "debug"`, the console shows colored, columnized logs includin
 ./bin/gobnc auth set-password          # asks to generate a random password (or enter one)
 ./bin/gobnc auth add-fingerprint <sha256-hex>
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
+# or with defaults from gobnc.json (default_nick / default_username / …):
+# ./bin/gobnc network add libera irc.libera.chat 6697
 ./bin/gobnc serve -config gobnc.json           # backgrounds by default
 ./bin/gobnc serve -config gobnc.json -debug    # foreground (developer mode)
 ./bin/gobnc stop -config gobnc.json
@@ -28,13 +30,14 @@ With `"log_level": "debug"`, the console shows colored, columnized logs includin
 
 You can also run `network add` / `network delete` while the daemon is already running: the CLI writes SQLite and notifies the process over `control_socket` so the uplink starts or stops immediately. When unset (or the legacy value `gobnc.sock`), the socket defaults to `$XDG_RUNTIME_DIR/gobnc/gobnc.sock`, or `~/.gobnc/gobnc.sock` if `XDG_RUNTIME_DIR` is unset. The daemon creates the parent directory mode `0700` and the socket mode `0600`, and accepts connections only from the same Unix UID.
 
-Update an existing network without dropping the current uplink (`network mod`); new settings apply on the next reconnect:
+Update an existing network without dropping the current uplink (`network mod`); new settings apply on the next reconnect. Force an immediate uplink reconnect with `network reconnect <name>` (reloads DB settings first; clients stay attached):
 
 ```bash
 ./bin/gobnc network mod libera --host=irc.libera.chat --port=6667 --tls=false
+./bin/gobnc network reconnect libera
 ```
 
-Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--user=` / `--username=`, `--realname=`, `--sasl-user=`, `--sasl-pass`
+Flags: `--host=`, `--port=`, `--nick=`, `--tls=true|false`, `--tls-noverify=true|false`, `--user=` / `--username=`, `--realname=`, `--sasl-user=`, `--sasl-pass`
 
 Connect with TLS. Select a network via `PASS` as `network/password` (e.g. `PASS libera/s3cret`). The password may contain `/`; the network name is everything before the first `/`. For client-cert auth without a password, use `PASS libera/` or `PASS libera`. Nick is your normal IRC nick.
 

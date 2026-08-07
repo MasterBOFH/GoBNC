@@ -26,10 +26,11 @@ func runCLI(args []string) error {
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
+  network reconnect <name>
 
 serve backgrounds by default (re-exec + pid file). Use -debug/-d or -foreground/-f
 to stay attached (required under systemd/rc.d). Daemon mode defaults log_file to
@@ -45,9 +46,13 @@ rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
 stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL apply on the next reconnect.
+network reconnect reloads DB settings and drops the uplink so it dials again now
+(downlinks stay attached).
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
 --alt-nick= sets a fallback nick when the primary is taken; --nick-recovery= (default true)
 enables the nick ladder and ISON reclaim of the primary/alt nick.
+network add uses default_nick / default_username / default_realname / default_alt_nick
+from gobnc.json when those fields are omitted.
 Pass --sasl-pass (no value) to prompt for a SASL password; if --sasl-user= is set without
 a password, you are prompted automatically.`)
 		return nil
@@ -181,9 +186,23 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			return err
 		}
 		for _, n := range nets {
-			fmt.Printf("%s\t%s:%d\ttls=%v\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g\n",
-				n.Name, n.Host, n.Port, n.TLS, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate)
+			fmt.Printf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g\n",
+				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate)
 		}
+		return nil
+	case "reconnect":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: network reconnect <name>")
+		}
+		name := args[1]
+		notified, err := control.TryNotify(cfg.ResolvedControlSocket(), control.CmdReconnectNetwork+" "+name)
+		if err != nil {
+			return err
+		}
+		if !notified {
+			return fmt.Errorf("daemon not running (no control socket at %s)", cfg.ResolvedControlSocket())
+		}
+		fmt.Printf("reconnect requested for %s\n", name)
 		return nil
 	case "delete":
 		if len(args) < 2 {
@@ -204,16 +223,22 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		}
 		return nil
 	case "add":
-		if len(args) < 5 {
-			return fmt.Errorf("usage: network add <name> <host> <port> <nick> [--tls=true] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		if len(args) < 4 {
+			return fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 		}
+		defNick, defUser, defReal, defAlt := cfg.NetworkIdentityDefaults()
 		n := store.Network{
-			Name: args[1], Host: args[2], Nick: args[4], TLS: true, Enabled: true, Username: "gobnc", Realname: "GoBNC",
-			NickRecovery: true,
+			Name: args[1], Host: args[2], Nick: defNick, TLS: true, Enabled: true,
+			Username: defUser, Realname: defReal, AltNick: defAlt, NickRecovery: true,
 		}
 		fmt.Sscanf(args[3], "%d", &n.Port)
+		i := 4
+		if len(args) > 4 && !strings.HasPrefix(args[4], "-") {
+			n.Nick = args[4]
+			i = 5
+		}
 		wantSASLPass := false
-		for i := 5; i < len(args); i++ {
+		for ; i < len(args); i++ {
 			a := args[i]
 			if a == "-config" {
 				i++ // skip path
@@ -223,8 +248,12 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				continue
 			}
 			switch {
+			case strings.HasPrefix(a, "--nick="):
+				n.Nick = strings.TrimPrefix(a, "--nick=")
 			case strings.HasPrefix(a, "--tls="):
 				n.TLS = a != "--tls=false"
+			case strings.HasPrefix(a, "--tls-noverify="):
+				n.TLSNoVerify = strings.TrimPrefix(a, "--tls-noverify=") != "false"
 			case strings.HasPrefix(a, "--user="):
 				n.Username = strings.TrimPrefix(a, "--user=")
 			case strings.HasPrefix(a, "--username="):
@@ -249,6 +278,9 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				return fmt.Errorf("unknown flag %q", a)
 			}
 		}
+		if n.Nick == "" {
+			return fmt.Errorf("nick required: pass [nick] / --nick=, or set default_nick in gobnc.json")
+		}
 		if wantSASLPass || (n.SASLUser != "" && n.SASLPass == "") {
 			pass, err := promptSecret("SASL password: ")
 			if err != nil {
@@ -271,7 +303,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 		return nil
 	case "mod":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+			return fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--user=] [--realname=] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 		}
 		n, err := st.NetworkByName(ctx, args[1])
 		if err != nil {
@@ -301,6 +333,9 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 				changed = true
 			case strings.HasPrefix(a, "--tls="):
 				n.TLS = strings.TrimPrefix(a, "--tls=") != "false"
+				changed = true
+			case strings.HasPrefix(a, "--tls-noverify="):
+				n.TLSNoVerify = strings.TrimPrefix(a, "--tls-noverify=") != "false"
 				changed = true
 			case strings.HasPrefix(a, "--sasl-user="):
 				n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
@@ -345,7 +380,7 @@ func cmdNetwork(ctx context.Context, st *store.Store, cfg config.Config, args []
 			changed = true
 		}
 		if !changed {
-			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
+			return fmt.Errorf("network mod: no changes; pass at least one --host/--port/--nick/--tls=/--tls-noverify=/--user=/--realname=/--sasl-*/--flood-*/--alt-nick=/--nick-recovery=")
 		}
 		if _, err := st.UpsertNetwork(ctx, n); err != nil {
 			return err

@@ -331,6 +331,14 @@ func (s *Server) handleControl(c net.Conn) {
 			} else {
 				reply = "OK"
 			}
+		case control.CmdReconnectNetwork:
+			if len(parts) < 2 {
+				reply = "ERR usage: RECONNECT_NETWORK <name>"
+			} else if err := s.ReconnectNetwork(parts[1]); err != nil {
+				reply = "ERR " + err.Error()
+			} else {
+				reply = "OK"
+			}
 		case control.CmdRehash:
 			s.mu.RLock()
 			path := s.cfgPath
@@ -442,6 +450,40 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 	}
 	sess.ApplyNetworkConfig(n)
 	s.log.Info("network config reloaded", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
+	return nil
+}
+
+// ReconnectNetwork reloads network settings from the DB and drops the uplink
+// connection so it dials again immediately. Downlinks stay attached.
+func (s *Server) ReconnectNetwork(name string) error {
+	if s.runCtx == nil {
+		return fmt.Errorf("server not running")
+	}
+	n, err := s.store.NetworkByName(s.runCtx, name)
+	if err != nil {
+		return err
+	}
+	if !n.Enabled {
+		return fmt.Errorf("network %q disabled", name)
+	}
+	s.mu.RLock()
+	sess := s.sess[name]
+	s.mu.RUnlock()
+	if sess == nil {
+		return fmt.Errorf("network %q not running", name)
+	}
+	sess.ApplyNetworkConfig(n)
+	if chs, err := s.store.ListChannels(s.runCtx, n.ID); err == nil {
+		if u := sess.Uplink(); u != nil {
+			u.SetChannels(chs)
+		}
+	}
+	u := sess.Uplink()
+	if u == nil {
+		return fmt.Errorf("network %q has no uplink", name)
+	}
+	u.ForceReconnect()
+	s.log.Info("network reconnect requested", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
 	return nil
 }
 

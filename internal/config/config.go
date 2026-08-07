@@ -57,10 +57,22 @@ type Config struct {
 	// Empty uses version.QuitMessage() ("GoBNC <version>").
 	QuitMessage string `json:"quit_message"`
 
+	// Defaults applied by `network add` when nick / identity flags are omitted.
+	DefaultNick     string `json:"default_nick,omitempty"`
+	DefaultUsername string `json:"default_username,omitempty"`
+	DefaultRealname string `json:"default_realname,omitempty"`
+	DefaultAltNick  string `json:"default_alt_nick,omitempty"`
+
 	// Auth modes: either or both may be enabled. If neither, fail closed.
 	AllowPasswordAuth bool `json:"allow_password_auth"`
 	AllowCertAuth     bool `json:"allow_cert_auth"`
 }
+
+// DefaultUsername / DefaultRealnameFallback are used when config defaults are empty.
+const (
+	DefaultUsernameFallback = "gobnc"
+	DefaultRealnameFallback = "GoBNC"
+)
 
 // Default returns sensible defaults for local development.
 // ControlSocket empty means ResolvedControlSocket picks a private per-user path.
@@ -78,6 +90,8 @@ func Default() Config {
 		ChatHistoryMax:       DefaultChatHistoryMax,
 		HistoryRetentionDays: 0,
 		QuitMessage:          version.QuitMessage(),
+		DefaultUsername:      DefaultUsernameFallback,
+		DefaultRealname:      DefaultRealnameFallback,
 		AllowPasswordAuth:    true,
 		AllowCertAuth:        true,
 	}
@@ -92,6 +106,22 @@ func (c Config) QuitReason() string {
 		return version.QuitMessage()
 	}
 	return c.QuitMessage
+}
+
+// NetworkIdentityDefaults returns nick/username/realname/alt_nick for `network add`
+// when those fields are not set on the command line.
+func (c Config) NetworkIdentityDefaults() (nick, username, realname, altNick string) {
+	nick = c.DefaultNick
+	username = c.DefaultUsername
+	if username == "" {
+		username = DefaultUsernameFallback
+	}
+	realname = c.DefaultRealname
+	if realname == "" {
+		realname = DefaultRealnameFallback
+	}
+	altNick = c.DefaultAltNick
+	return nick, username, realname, altNick
 }
 
 // ResolvedControlSocket returns the Unix control socket path.

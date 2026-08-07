@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,5 +121,62 @@ func TestControlReloadNetworkConfig(t *testing.T) {
 	}
 	if sess.Network.TLS || sess.Network.Port != 4443 {
 		t.Fatalf("session network not updated: tls=%v port=%d", sess.Network.TLS, sess.Network.Port)
+	}
+}
+
+func TestControlReconnectNetwork(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "r.sock")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "t.db")
+	cfg.ControlSocket = sock
+
+	s, err := New(cfg, gobnclog.New("error", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = ctx
+	s.cancel = cancel
+	if err := s.serveControl(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = s.Store().UpsertNetwork(ctx, store.Network{
+		Name: "net1", Host: "127.0.0.1", Port: 1, Nick: "n", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := control.Client(sock, control.CmdReconnectNetwork+" net1"); err != nil {
+		t.Fatal(err)
+	} else if !strings.HasPrefix(resp, "ERR ") {
+		t.Fatalf("reconnect while stopped: %q", resp)
+	}
+
+	if resp, err := control.Client(sock, control.CmdStartNetwork+" net1"); err != nil || resp != "OK" {
+		t.Fatalf("start: %q %v", resp, err)
+	}
+	n, err := s.Store().NetworkByName(ctx, "net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.Port = 9999
+	if _, err := s.Store().UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := control.Client(sock, control.CmdReconnectNetwork+" net1"); err != nil || resp != "OK" {
+		t.Fatalf("reconnect: %q %v", resp, err)
+	}
+	sess, err := s.Session("net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Network.Port != 9999 {
+		t.Fatalf("config not reloaded before reconnect: port=%d", sess.Network.Port)
 	}
 }

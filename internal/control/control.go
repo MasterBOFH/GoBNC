@@ -15,9 +15,10 @@ const (
 	CmdPing          = "PING"
 	CmdStartNetwork  = "START_NETWORK"
 	CmdStopNetwork   = "STOP_NETWORK"
-	CmdReloadNetwork = "RELOAD_NETWORK" // refresh config for next reconnect; do not drop uplink
-	CmdRehash        = "REHASH"         // reload gobnc.json + refresh networks (same as SIGHUP)
-	CmdShutdown      = "SHUTDOWN"       // graceful stop (same as SIGTERM)
+	CmdReloadNetwork    = "RELOAD_NETWORK"    // refresh config for next reconnect; do not drop uplink
+	CmdReconnectNetwork = "RECONNECT_NETWORK" // reload config and drop uplink to force reconnect
+	CmdRehash           = "REHASH"            // reload gobnc.json + refresh networks (same as SIGHUP)
+	CmdShutdown         = "SHUTDOWN"          // graceful stop (same as SIGTERM)
 )
 
 // Client sends a single command to a running daemon and returns the reply line.

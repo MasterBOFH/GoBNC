@@ -115,6 +115,9 @@ type Uplink struct {
 	nickRecStop             chan struct{}
 	isonPending             bool
 	nickRecoveryUserStopped bool
+
+	// reconnectKick wakes Run's backoff wait for an immediate reconnect.
+	reconnectKick chan struct{}
 }
 
 // New creates an uplink (not yet connected).
@@ -130,13 +133,14 @@ func New(cfg Config, h Handler) *Uplink {
 		cfg.MaxBackoff = 60 * time.Second
 	}
 	u := &Uplink{
-		cfg:      cfg,
-		log:      log,
-		handler:  h,
-		nick:     cfg.Network.Nick,
-		isupport: irc.NewISUPPORT(),
-		caps:     make(map[string]bool),
-		umodes:   make(map[byte]bool),
+		cfg:           cfg,
+		log:           log,
+		handler:       h,
+		nick:          cfg.Network.Nick,
+		isupport:      irc.NewISUPPORT(),
+		caps:          make(map[string]bool),
+		umodes:        make(map[byte]bool),
+		reconnectKick: make(chan struct{}, 1),
 	}
 	u.initFlood()
 	return u
@@ -291,6 +295,21 @@ func (u *Uplink) OwnsSASL() bool {
 	return u.saslWanted()
 }
 
+// ForceReconnect closes the current uplink connection so Run dials again.
+// The next reconnect skips the usual backoff wait.
+func (u *Uplink) ForceReconnect() {
+	u.mu.RLock()
+	c := u.conn
+	u.mu.RUnlock()
+	if c != nil {
+		_ = c.Close()
+	}
+	select {
+	case u.reconnectKick <- struct{}{}:
+	default:
+	}
+}
+
 // Run connects and reconnects until ctx is cancelled.
 func (u *Uplink) Run(ctx context.Context) error {
 	backoff := u.cfg.MinBackoff
@@ -305,15 +324,28 @@ func (u *Uplink) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		immediate := false
+		select {
+		case <-u.reconnectKick:
+			immediate = true
+		default:
+		}
+		if immediate {
+			backoff = u.cfg.MinBackoff
+			u.log.Info("uplink disconnected; reconnecting now", "err", err)
+			continue
+		}
 		u.log.Info("uplink disconnected; reconnecting", "err", err, "backoff", backoff)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-u.reconnectKick:
+			backoff = u.cfg.MinBackoff
 		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > u.cfg.MaxBackoff {
-			backoff = u.cfg.MaxBackoff
+			backoff *= 2
+			if backoff > u.cfg.MaxBackoff {
+				backoff = u.cfg.MaxBackoff
+			}
 		}
 	}
 }
@@ -416,7 +448,11 @@ func (u *Uplink) dial(ctx context.Context) (net.Conn, error) {
 	d := net.Dialer{Timeout: 30 * time.Second}
 	if n.TLS {
 		if tlsConf == nil {
-			tlsConf = &tls.Config{ServerName: n.Host, MinVersion: tls.VersionTLS12}
+			tlsConf = &tls.Config{
+				ServerName:         n.Host,
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: n.TLSNoVerify,
+			}
 		}
 		return tls.DialWithDialer(&d, "tcp", addr, tlsConf)
 	}

@@ -96,6 +96,28 @@ func TestDefaultQuitMessage(t *testing.T) {
 	}
 }
 
+func TestNetworkIdentityDefaults(t *testing.T) {
+	cfg := Default()
+	nick, user, real, alt := cfg.NetworkIdentityDefaults()
+	if nick != "" || user != "gobnc" || real != "GoBNC" || alt != "" {
+		t.Fatalf("defaults: nick=%q user=%q real=%q alt=%q", nick, user, real, alt)
+	}
+	cfg.DefaultNick = "alice"
+	cfg.DefaultUsername = "auser"
+	cfg.DefaultRealname = "Alice"
+	cfg.DefaultAltNick = "alice_"
+	nick, user, real, alt = cfg.NetworkIdentityDefaults()
+	if nick != "alice" || user != "auser" || real != "Alice" || alt != "alice_" {
+		t.Fatalf("custom: nick=%q user=%q real=%q alt=%q", nick, user, real, alt)
+	}
+	cfg.DefaultUsername = ""
+	cfg.DefaultRealname = ""
+	_, user, real, _ = cfg.NetworkIdentityDefaults()
+	if user != DefaultUsernameFallback || real != DefaultRealnameFallback {
+		t.Fatalf("empty fallbacks: user=%q real=%q", user, real)
+	}
+}
+
 func TestResolvedControlSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	cfg := Default()
