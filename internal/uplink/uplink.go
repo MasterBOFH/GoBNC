@@ -16,6 +16,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/flood"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/xdg-go/scram"
 )
@@ -345,7 +346,7 @@ func (u *Uplink) session(ctx context.Context) error {
 		line, err := c.ReadLine(time.Now().Add(5 * time.Minute))
 		if err != nil {
 			if errors.Is(err, irc.ErrLineTooLong) {
-				u.log.Debug("uplink line too long; dropped")
+				u.log.Warn("uplink line too long; dropped", "phase", "runtime")
 				continue
 			}
 			if ctx.Err() != nil {
@@ -356,7 +357,7 @@ func (u *Uplink) session(ctx context.Context) error {
 		u.noteRX()
 		msg, err := irc.Parse(line)
 		if err != nil {
-			u.log.Debug("parse error", "line", line, "err", err)
+			u.log.Warn("parse error", "phase", "runtime", "line", gobnclog.RedactIRC(line), "err", err)
 			continue
 		}
 		if err := u.handle(ctx, c, msg); err != nil {
@@ -431,7 +432,7 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 		line, err := c.ReadLine(time.Now().Add(60 * time.Second))
 		if err != nil {
 			if errors.Is(err, irc.ErrLineTooLong) {
-				u.log.Debug("uplink line too long during register; dropped")
+				u.log.Warn("uplink line too long; dropped", "phase", "register")
 				continue
 			}
 			return err
@@ -439,6 +440,7 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 		u.noteRX()
 		msg, err := irc.Parse(line)
 		if err != nil {
+			u.log.Warn("parse error", "phase", "register", "line", gobnclog.RedactIRC(line), "err", err)
 			continue
 		}
 		switch msg.Command {

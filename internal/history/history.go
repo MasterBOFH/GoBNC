@@ -4,12 +4,14 @@ package history
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
 
@@ -37,6 +39,7 @@ type Store struct {
 	batchSeq          uint64
 	maxLimit          int
 	legacyPlaybackMax int // 0 = unlimited; <0 treated as DefaultLegacyPlaybackMax
+	log               *slog.Logger
 }
 
 // New creates a history store with default CHATHISTORY and legacy playback limits.
@@ -51,6 +54,13 @@ func NewWithLimits(db *store.Store, chathistoryMax, legacyPlaybackMax int) *Stor
 		chathistoryMax = 100
 	}
 	return &Store{db: db, maxLimit: chathistoryMax, legacyPlaybackMax: legacyPlaybackMax}
+}
+
+// SetLogger sets an optional logger for history playback diagnostics.
+func (h *Store) SetLogger(l *slog.Logger) {
+	if h != nil {
+		h.log = l
+	}
 }
 
 // SetLegacyPlaybackMax sets the per-target legacy attach cap (0 = unlimited). For tests.
@@ -216,6 +226,14 @@ func (h *Store) sendBatch(s Sender, target string, msgs []store.Message) error {
 		}
 		parsed, err := irc.Parse(raw)
 		if err != nil {
+			if h.log != nil {
+				h.log.Warn("history parse skip",
+					"target", target,
+					"msgid", m.MsgID,
+					"time", m.Time.UTC().Format(time.RFC3339Nano),
+					"line", gobnclog.RedactIRC(raw),
+					"err", err)
+			}
 			continue
 		}
 		if parsed.Tags == nil {

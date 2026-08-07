@@ -45,11 +45,13 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	hist := history.NewWithLimits(st, 100, cfg.LegacyPlaybackMax)
+	hist.SetLogger(log)
 	return &Server{
 		cfg:       cfg,
 		log:       log,
 		store:     st,
-		hist:      history.NewWithLimits(st, 100, cfg.LegacyPlaybackMax),
+		hist:      hist,
 		sess:      make(map[string]*session.Session),
 		netCancel: make(map[string]context.CancelFunc),
 		certs:     &certHolder{},

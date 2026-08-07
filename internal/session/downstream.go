@@ -26,6 +26,8 @@ func (s *Session) Detach(id ClientID) {
 // HandleClientMessage processes a message from a downlink toward the uplink.
 func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 	if irc.HasRawCRLF(msg) {
+		s.log.Warn("client message contains raw CR/LF; rejected",
+			"client", d.ID(), "command", msg.Command)
 		nick := s.Nick()
 		if nick == "" {
 			nick = "*"

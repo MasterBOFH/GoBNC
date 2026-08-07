@@ -190,6 +190,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		line, err := cl.readLine(5 * time.Minute)
 		if err != nil {
 			if errors.Is(err, irc.ErrLineTooLong) {
+				l.log.Warn("downlink line too long", "client", cl.id, "phase", "runtime")
 				_ = cl.Send(irc.InputTooLong(cl.inputNick()))
 				continue
 			}
@@ -198,6 +199,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		cl.touch()
 		msg, err := irc.Parse(line)
 		if err != nil {
+			l.log.Warn("parse error", "client", cl.id, "phase", "runtime", "line", gobnclog.RedactIRC(line), "err", err)
 			continue
 		}
 		if err := l.dispatch(cl, sess, msg); err != nil {
@@ -215,6 +217,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		line, err := cl.readLine(time.Until(deadline))
 		if err != nil {
 			if errors.Is(err, irc.ErrLineTooLong) {
+				l.log.Warn("downlink line too long", "client", cl.id, "phase", "auth")
 				_ = cl.Send(irc.InputTooLong(cl.inputNick()))
 				continue
 			}
@@ -222,6 +225,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		}
 		msg, err := irc.Parse(line)
 		if err != nil {
+			l.log.Warn("parse error", "client", cl.id, "phase", "auth", "line", gobnclog.RedactIRC(line), "err", err)
 			continue
 		}
 		switch strings.ToUpper(msg.Command) {

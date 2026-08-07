@@ -6,6 +6,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 )
 
 func hasChathistory(d Downlink) bool {
@@ -38,8 +39,14 @@ func (s *Session) playLegacyHistory(d Downlink, target string) {
 		if !history.IsLegacyReplayCommand(m.Command) {
 			continue
 		}
-		parsed, ok := history.ParseStoredLine(*m)
-		if !ok {
+		parsed, err := history.ParseStoredLine(*m)
+		if err != nil {
+			s.log.Warn("history parse skip",
+				"target", target,
+				"msgid", m.MsgID,
+				"time", m.Time.UTC().Format(time.RFC3339Nano),
+				"line", gobnclog.RedactIRC(m.Raw),
+				"err", err)
 			continue
 		}
 		s.hist.EnsureLineMsgID(&parsed, m)

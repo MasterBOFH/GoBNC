@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
@@ -43,15 +44,12 @@ func (h *Store) QueryLegacyAfter(ctx context.Context, networkID int64, target st
 }
 
 // ParseStoredLine turns a stored Raw into an IRC message for downlink send.
-func ParseStoredLine(m store.Message) (irc.Message, bool) {
+// Returns an error when Raw is empty or does not parse.
+func ParseStoredLine(m store.Message) (irc.Message, error) {
 	if m.Raw == "" {
-		return irc.Message{}, false
+		return irc.Message{}, fmt.Errorf("empty raw")
 	}
-	parsed, err := irc.Parse(m.Raw)
-	if err != nil {
-		return irc.Message{}, false
-	}
-	return parsed, true
+	return irc.Parse(m.Raw)
 }
 
 // EnsureLineMsgID ensures msgid on a stored line for legacy/CHATHISTORY playback.
