@@ -66,6 +66,21 @@ func (u *Uplink) clearSASLExchange() {
 	u.mu.Unlock()
 }
 
+// noteAccountFrom900 stores the account from RPL_LOGGEDIN.
+// Format: 900 <nick> <nick>!<user>@<host> <account> :You are now logged in as …
+func (u *Uplink) noteAccountFrom900(msg irc.Message) {
+	if len(msg.Params) < 3 {
+		return
+	}
+	acct := msg.Params[2]
+	if acct == "" || acct == "*" {
+		return
+	}
+	u.mu.Lock()
+	u.account = acct
+	u.mu.Unlock()
+}
+
 // startSASL begins AUTHENTICATE with a mechanism we can complete.
 func (u *Uplink) startSASL(c *connio.Conn) error {
 	mech, ok := u.pickSASLMech()

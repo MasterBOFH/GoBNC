@@ -77,6 +77,7 @@ type Uplink struct {
 	saslMechs     []string // from CAP 302 sasl=PLAIN,EXTERNAL (empty = unspecified)
 	saslMech      string   // mechanism in progress (bouncer-owned SASL)
 	scramConv     *scram.ClientConversation
+	account       string // services account from RPL_LOGGEDIN (900)
 	reg           bool
 	// Welcome numerics from uplink (params after nick).
 	rpl002 []string
@@ -110,6 +111,13 @@ func New(cfg Config, h Handler) *Uplink {
 		caps:     make(map[string]bool),
 		umodes:   make(map[byte]bool),
 	}
+}
+
+// Account returns the services account from the last RPL_LOGGEDIN (900), or "".
+func (u *Uplink) Account() string {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.account
 }
 
 // Nick returns the current nick.
@@ -256,6 +264,7 @@ func (u *Uplink) session(ctx context.Context) error {
 	u.saslMechs = nil
 	u.saslMech = ""
 	u.scramConv = nil
+	u.account = ""
 	u.isupport = irc.NewISUPPORT()
 	u.nick = u.cfg.Network.Nick
 	u.rpl002, u.rpl003, u.rpl004 = nil, nil, nil
@@ -389,6 +398,7 @@ func (u *Uplink) register(ctx context.Context, c *connio.Conn) error {
 			}
 		case "900":
 			// Logged-in notification; wait for 903 before CAP END.
+			u.noteAccountFrom900(msg)
 		case "903", "904", "905", "906", "907": // SASL outcomes
 			u.clearSASLExchange()
 			if msg.Command != "903" && msg.Command != "907" && n.SASLRequired {
@@ -685,6 +695,12 @@ func (u *Uplink) handle(ctx context.Context, c *connio.Conn, msg irc.Message) er
 	case "AUTHENTICATE":
 		return u.handleAuthenticate(c, msg)
 	case "900":
+		u.noteAccountFrom900(msg)
+		return u.handleSASLOutcome(msg)
+	case "901":
+		u.mu.Lock()
+		u.account = ""
+		u.mu.Unlock()
 		return u.handleSASLOutcome(msg)
 	case "903", "904", "905", "906", "907":
 		u.clearSASLExchange()
@@ -705,6 +721,8 @@ func (u *Uplink) handleSASLOutcome(msg irc.Message) error {
 	switch msg.Command {
 	case "900", "903":
 		u.log.Info("SASL authentication successful")
+	case "901":
+		u.log.Info("logged out of services account")
 	case "907":
 		u.log.Debug("SASL already authenticated")
 	default:

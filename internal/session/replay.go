@@ -58,6 +58,14 @@ func (s *Session) Attach(d Downlink) error {
 	send(irc.Message{Source: ServerName, Command: "372", Params: []string{nick, "- MOTD can be requested by typing /MOTD"}})
 	send(irc.Message{Source: ServerName, Command: "376", Params: []string{nick, "End of /MOTD command."}})
 
+	// After registration: if the uplink nick is still logged in, tell the client.
+	s.mu.RLock()
+	loggedIn, ok := s.rplLoggedInLocked()
+	s.mu.RUnlock()
+	if ok {
+		send(loggedIn)
+	}
+
 	for _, ch := range chans {
 		send(irc.Message{Source: prefix, Command: "JOIN", Params: []string{ch.Name}})
 		if ch.Topic != "" {

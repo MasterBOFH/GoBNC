@@ -28,6 +28,10 @@ func (s *Session) OnRegistered(u *uplink.Uplink) {
 	if um := u.UserModes(); um != "" {
 		s.self.ApplyUModes(um)
 	}
+	if acct := u.Account(); acct != "" {
+		s.self.Account = acct
+		s.loggedIn = true
+	}
 	s.mu.Unlock()
 	_, nowSASL := s.refreshSASLOffer(u)
 	s.mu.Lock()
@@ -117,6 +121,10 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.saslWaiters = nil
 	s.saslReqPending = false
 	s.saslClient = ""
+	s.loggedIn = false
+	if s.self != nil {
+		s.self.Account = ""
+	}
 	nowOffer := caps.Offered(s.upCaps)
 	s.mu.Unlock()
 	if lost := caps.Diff(nowOffer, prevOffer); len(lost) > 0 {
@@ -131,9 +139,11 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 		return
 	}
 	if msg.Command == "AUTHENTICATE" ||
-		msg.Command == "900" || msg.Command == "903" || msg.Command == "904" ||
-		msg.Command == "905" || msg.Command == "906" || msg.Command == "907" {
-		_ = s.routeSASLPassthrough(msg)
+		msg.Command == "900" || msg.Command == "901" ||
+		msg.Command == "903" || msg.Command == "904" ||
+		msg.Command == "905" || msg.Command == "906" || msg.Command == "907" ||
+		msg.Command == "908" {
+		s.routeSASLTraffic(msg)
 		return
 	}
 	msg = ensureMessageTime(msg)

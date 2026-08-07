@@ -149,25 +149,35 @@ func (s *Session) finishSASLWaiters(ok bool) {
 	}
 }
 
-func (s *Session) routeSASLPassthrough(msg irc.Message) bool {
-	if bouncerOwnsSASL(s.Network, s.uplink) {
-		return false
+// routeSASLTraffic handles AUTHENTICATE and SASL numerics from the uplink.
+// Always consumes them (do not fan out via the normal broadcast path).
+//
+// Bouncer-owned SASL: never emit AUTHENTICATE or outcome numerics; only
+// RPL_LOGGEDIN / RPL_LOGGEDOUT (900/901) go to attached clients.
+// Client-initiated SASL: AUTHENTICATE and 903–908 go only to saslClient;
+// RPL_LOGGEDIN / RPL_LOGGEDOUT are broadcast so every client learns login state.
+func (s *Session) routeSASLTraffic(msg irc.Message) {
+	s.applyAccountFromSASL(msg)
+
+	switch msg.Command {
+	case "900", "901":
+		// Login state is session-wide regardless of who drove AUTHENTICATE.
+		s.broadcastToDownlinks(msg)
+		return
 	}
+
+	if bouncerOwnsSASL(s.Network, s.uplink) {
+		// AUTHENTICATE and 903–908 stay uplink-only.
+		return
+	}
+
 	s.mu.RLock()
 	id := s.saslClient
 	d, ok := s.downlinks[id]
-	if !ok {
-		for _, dl := range s.downlinks {
-			if dl.HasCap("sasl") {
-				d = dl
-				ok = true
-				break
-			}
-		}
-	}
 	s.mu.RUnlock()
 	if !ok {
-		return true
+		// No initiating client — swallow (do not leak to other downlinks).
+		return
 	}
 	_ = d.Send(msg)
 	switch msg.Command {
@@ -178,14 +188,77 @@ func (s *Session) routeSASLPassthrough(msg irc.Message) bool {
 		}
 		s.mu.Unlock()
 	}
-	return true
+}
+
+func (s *Session) applyAccountFromSASL(msg irc.Message) {
+	switch msg.Command {
+	case "900":
+		if len(msg.Params) < 3 {
+			return
+		}
+		acct := msg.Params[2]
+		if acct == "*" {
+			acct = ""
+		}
+		s.mu.Lock()
+		s.loggedIn = acct != ""
+		if s.self != nil {
+			s.self.Account = acct
+			if len(msg.Params) > 1 {
+				s.self.UpdateFromPrefix(msg.Params[1])
+			}
+		}
+		s.mu.Unlock()
+	case "901":
+		s.mu.Lock()
+		s.loggedIn = false
+		if s.self != nil {
+			s.self.Account = ""
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *Session) broadcastToDownlinks(msg irc.Message) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, d := range s.downlinks {
+		_ = d.Send(s.rewriteFor(d, msg))
+	}
+}
+
+// rplLoggedIn builds RPL_LOGGEDIN for attach replay when the uplink nick is
+// still logged in (900 seen, no subsequent 901).
+func (s *Session) rplLoggedInLocked() (irc.Message, bool) {
+	if !s.loggedIn || s.self == nil || s.self.Account == "" {
+		return irc.Message{}, false
+	}
+	nick := s.self.Nick
+	prefix := s.self.Prefix()
+	if prefix == "" {
+		prefix = nick
+	}
+	acct := s.self.Account
+	return irc.Message{
+		Source:  ServerName,
+		Command: "900",
+		Params:  []string{nick, prefix, acct, "You are now logged in as " + acct},
+	}, true
 }
 
 func (s *Session) forwardClientAuthenticate(d Downlink, msg irc.Message) error {
+	if bouncerOwnsSASL(s.Network, s.uplink) {
+		// Bouncer handles SASL; clients never drive AUTHENTICATE.
+		return nil
+	}
 	if !d.HasCap("sasl") || s.uplink == nil {
 		return nil
 	}
 	s.mu.Lock()
+	if s.saslClient != "" && s.saslClient != d.ID() {
+		s.mu.Unlock()
+		return nil
+	}
 	s.saslClient = d.ID()
 	s.mu.Unlock()
 	return s.uplink.WriteMessage(msg)

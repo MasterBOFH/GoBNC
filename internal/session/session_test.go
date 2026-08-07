@@ -901,14 +901,12 @@ func TestPassthroughSASLRoute(t *testing.T) {
 	s.mu.Unlock()
 
 	msg := irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}}
-	if !s.routeSASLPassthrough(msg) {
-		t.Fatal("expected route")
-	}
+	s.routeSASLTraffic(msg)
 	if len(d.sent) != 1 || d.sent[0].Command != "AUTHENTICATE" {
 		t.Fatalf("sent=%+v", d.sent)
 	}
 	d.sent = nil
-	_ = s.routeSASLPassthrough(irc.Message{Command: "903", Params: []string{"me", "ok"}})
+	s.routeSASLTraffic(irc.Message{Command: "903", Params: []string{"me", "ok"}})
 	if len(d.sent) != 1 || d.sent[0].Command != "903" {
 		t.Fatalf("903: %+v", d.sent)
 	}

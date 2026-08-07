@@ -270,11 +270,28 @@ func TestSASLMultiClientRouting(t *testing.T) {
 	s.saslClient = a.id
 	s.mu.Unlock()
 
-	_ = s.routeSASLPassthrough(irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
+	s.routeSASLTraffic(irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
 	if len(a.sent) != 1 || len(b.sent) != 0 {
 		t.Fatalf("a=%+v b=%+v", a.sent, b.sent)
 	}
-	_ = s.routeSASLPassthrough(irc.Message{Command: "903", Params: []string{"me", "ok"}})
+	a.clearSent()
+	b.clearSent()
+	s.routeSASLTraffic(irc.Message{
+		Command: "900",
+		Params:  []string{"me", "me!u@h", "acct", "You are now logged in as acct"},
+	})
+	if len(a.sent) != 1 || a.sent[0].Command != "900" {
+		t.Fatalf("initiator should get 900: %+v", a.sent)
+	}
+	if len(b.sent) != 1 || b.sent[0].Command != "900" {
+		t.Fatalf("other client should get 900 only: %+v", b.sent)
+	}
+	a.clearSent()
+	b.clearSent()
+	s.routeSASLTraffic(irc.Message{Command: "903", Params: []string{"me", "ok"}})
+	if len(a.sent) != 1 || a.sent[0].Command != "903" {
+		t.Fatalf("initiator should get 903: %+v", a.sent)
+	}
 	if len(b.sent) != 0 {
 		t.Fatalf("b should not get 903: %+v", b.sent)
 	}
@@ -283,6 +300,107 @@ func TestSASLMultiClientRouting(t *testing.T) {
 	s.mu.RUnlock()
 	if !cleared {
 		t.Fatal("saslClient not cleared")
+	}
+}
+
+func TestSASLNoFallbackWithoutClient(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	a := &fakeDL{id: "a", caps: map[string]bool{"sasl": true}}
+	s.mu.Lock()
+	s.downlinks[a.id] = a
+	s.saslOffer = "sasl=PLAIN"
+	s.saslClient = "" // no initiator
+	s.mu.Unlock()
+
+	s.routeSASLTraffic(irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
+	s.routeSASLTraffic(irc.Message{Command: "903", Params: []string{"me", "ok"}})
+	if len(a.sent) != 0 {
+		t.Fatalf("must not leak SASL without saslClient: %+v", a.sent)
+	}
+}
+
+func TestBouncerOwnedSASLOnlyEmitsLoggedIn(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	s.mu.Lock()
+	s.downlinks[a.id] = a
+	s.downlinks[b.id] = b
+	s.mu.Unlock()
+
+	s.routeSASLTraffic(irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
+	s.routeSASLTraffic(irc.Message{Command: "903", Params: []string{"me", "ok"}})
+	if len(a.sent) != 0 || len(b.sent) != 0 {
+		t.Fatalf("AUTHENTICATE/903 must not reach clients: a=%+v b=%+v", a.sent, b.sent)
+	}
+
+	s.routeSASLTraffic(irc.Message{
+		Command: "900",
+		Params:  []string{"me", "me!u@h", "acct", "You are now logged in as acct"},
+	})
+	if len(a.sent) != 1 || a.sent[0].Command != "900" {
+		t.Fatalf("want 900 to a: %+v", a.sent)
+	}
+	if len(b.sent) != 1 || b.sent[0].Command != "900" {
+		t.Fatalf("want 900 to b: %+v", b.sent)
+	}
+	if s.self.Account != "acct" {
+		t.Fatalf("account=%q", s.self.Account)
+	}
+}
+
+func TestAttachReplaysLoggedIn(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil)
+	s.mu.Lock()
+	s.self.Account = "acct"
+	s.self.Host = "h"
+	s.loggedIn = true
+	s.mu.Unlock()
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	var saw376, saw900 bool
+	for _, m := range d.sent {
+		switch m.Command {
+		case "376":
+			saw376 = true
+			if saw900 {
+				t.Fatal("900 must come after registration (376)")
+			}
+		case "900":
+			if !saw376 {
+				t.Fatal("900 before 376")
+			}
+			saw900 = true
+			if m.Param(2) != "acct" {
+				t.Fatalf("%+v", m)
+			}
+		}
+	}
+	if !saw900 {
+		t.Fatalf("want 900 after 376: %+v", d.sent)
+	}
+}
+
+func TestAttachOmitsLoggedInAfterLogout(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.routeSASLTraffic(irc.Message{
+		Command: "900",
+		Params:  []string{"me", "me!u@h", "acct", "You are now logged in as acct"},
+	})
+	s.routeSASLTraffic(irc.Message{
+		Command: "901",
+		Params:  []string{"me", "me!u@h", "You are now logged out"},
+	})
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range d.sent {
+		if m.Command == "900" {
+			t.Fatal("must not replay 900 after RPL_LOGGEDOUT")
+		}
 	}
 }
 

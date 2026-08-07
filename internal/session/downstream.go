@@ -15,6 +15,9 @@ func (s *Session) Detach(id ClientID) {
 		delete(s.downlinks, id)
 		_ = d.Close()
 	}
+	if s.saslClient == id {
+		s.saslClient = ""
+	}
 	s.mu.Unlock()
 	s.tracker.DropClient(id)
 }

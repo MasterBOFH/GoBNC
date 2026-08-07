@@ -56,6 +56,7 @@ type Session struct {
 	saslWaiters    []ClientID
 	saslReqPending bool
 	saslClient     ClientID // downlink mid AUTHENTICATE exchange
+	loggedIn       bool     // true after RPL_LOGGEDIN until RPL_LOGGEDOUT
 	rpl002         []string // params after nick
 	rpl003         []string
 	rpl004         []string
