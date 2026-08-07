@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/version"
@@ -30,6 +31,10 @@ type Config struct {
 	ListenAddr    string `json:"listen_addr"`
 	TLSCert       string `json:"tls_cert"`
 	TLSKey        string `json:"tls_key"`
+	// TLSClientCert / TLSClientKey are the global uplink client identity (CERTFP / SASL EXTERNAL).
+	// Empty means no global client cert; per-network paths override or inherit these.
+	TLSClientCert string `json:"tls_client_cert,omitempty"`
+	TLSClientKey  string `json:"tls_client_key,omitempty"`
 	DBPath        string `json:"db_path"`
 	ControlSocket string `json:"control_socket"`
 	PidFile       string `json:"pid_file,omitempty"`
@@ -122,6 +127,35 @@ func (c Config) NetworkIdentityDefaults() (nick, username, realname, altNick str
 	}
 	altNick = c.DefaultAltNick
 	return nick, username, realname, altNick
+}
+
+// ResolveTLSClientCert picks uplink client cert/key paths.
+// Network tls_cert/tls_key empty inherits global tls_client_*; "none" or "-" disables.
+// Both cert and key must be non-empty for ok=true.
+func ResolveTLSClientCert(netCert, netKey, globalCert, globalKey string) (cert, key string, ok bool) {
+	cert, key = netCert, netKey
+	if isTLSClientCertDisabled(cert) || isTLSClientCertDisabled(key) {
+		return "", "", false
+	}
+	if cert == "" && key == "" {
+		cert, key = globalCert, globalKey
+	}
+	if isTLSClientCertDisabled(cert) || isTLSClientCertDisabled(key) {
+		return "", "", false
+	}
+	if cert == "" || key == "" {
+		return "", "", false
+	}
+	return cert, key, true
+}
+
+func isTLSClientCertDisabled(p string) bool {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "none", "-":
+		return true
+	default:
+		return false
+	}
 }
 
 // ResolvedControlSocket returns the Unix control socket path.

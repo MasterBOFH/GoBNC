@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Generate self-signed server + client leaf certificates for GoBNC.
+# Generate self-signed TLS certificates for GoBNC:
+#   server.* — presented to your IRC client (listener)
+#   client.* — presented by GoBNC when it connects to an IRC network (CERTFP / SASL EXTERNAL)
 # Usage:
 #   ./scripts/gen-certs.sh [hostname]
 #   make cert HOST=bnc.example.com
@@ -49,31 +51,36 @@ gen_leaf() {
 	chmod 644 "$crt"
 }
 
-# Server: listener presented to IRC clients.
+# Server: certificate the bouncer presents to IRC clients connecting to it.
 gen_leaf server serverAuth "digitalSignature,keyAgreement"
-# Client: optional client-cert auth to the bouncer (register fingerprint below).
+# Client: certificate GoBNC presents when connecting to an IRC network
+# (NickServ CERTFP / SASL EXTERNAL). Not used for logging into the bouncer.
 gen_leaf client clientAuth "digitalSignature"
 
-# Combined PEM for clients that want cert+key in one file (e.g. WeeChat tls_cert).
+# Combined PEM (optional convenience).
 cat "$CERT_DIR/client.crt" "$CERT_DIR/client.key" >"$CERT_DIR/client.pem"
 chmod 600 "$CERT_DIR/client.pem"
 
 fp_sha256() {
 	openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -hex | awk '{print $2}'
 }
+fp_sha512() {
+	openssl x509 -in "$1" -outform DER | openssl dgst -sha512 -hex | awk '{print $2}'
+}
 
 SERVER_FP="$(fp_sha256 "$CERT_DIR/server.crt")"
-CLIENT_FP="$(fp_sha256 "$CERT_DIR/client.crt")"
+CLIENT_SHA256="$(fp_sha256 "$CERT_DIR/client.crt")"
+CLIENT_SHA512="$(fp_sha512 "$CERT_DIR/client.crt")"
 
 echo "wrote ${CERT_DIR}/server.crt + server.key  (CN=${HOST} SAN=${SAN})"
-echo "wrote ${CERT_DIR}/client.crt + client.key + client.pem  (clientAuth)"
-echo "server sha256: ${SERVER_FP}"
-echo "client sha256: ${CLIENT_FP}"
+echo "wrote ${CERT_DIR}/client.crt + client.key + client.pem  (IRC network client cert)"
+echo "server sha256 (pin in your IRC client / tls_verify): ${SERVER_FP}"
+echo "client sha512 (NickServ CERTFP): ${CLIENT_SHA512}"
+echo "client sha256 (optional gobnc auth add-fingerprint): ${CLIENT_SHA256}"
 echo
-echo "Register client cert for bouncer auth:"
-echo "  ./bin/gobnc auth add-fingerprint ${CLIENT_FP}"
-echo "WeeChat (example):"
-echo "  /set irc.server.NAME.tls_cert ${CERT_DIR}/client.pem"
-echo "  /set irc.server.NAME.tls_fingerprint ${SERVER_FP}"
-echo "  # or: /set irc.server.NAME.tls_verify off"
-echo "PASS for cert-only login: network/  or  network"
+echo "Use the client cert when GoBNC connects to IRC (or leave empty and set per-network):"
+echo "  \"tls_client_cert\": \"${CERT_DIR}/client.crt\","
+echo "  \"tls_client_key\": \"${CERT_DIR}/client.key\","
+echo "Then: ./bin/gobnc rehash   # or restart; network reconnect to redial"
+echo "NickServ: CERT ADD ${CLIENT_SHA512}"
+echo "Logging into the bouncer: password PASS, or any client cert + auth add-fingerprint."

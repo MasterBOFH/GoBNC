@@ -11,6 +11,8 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -80,6 +82,112 @@ func TestDialTLSNoVerifyMismatchedHostname(t *testing.T) {
 		t.Fatalf("tls_noverify dial: %v", err)
 	}
 	_ = c.Close()
+}
+
+func TestDialPresentsUplinkClientCert(t *testing.T) {
+	serverCert, err := selfSignedServerCert("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCert, clientKeyPEM, err := selfSignedClientCertPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "client.crt")
+	keyPath := filepath.Join(dir, "client.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientCert.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, clientKeyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotPeer := make(chan bool, 1)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAnyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			gotPeer <- false
+			return
+		}
+		defer c.Close()
+		tc := c.(*tls.Conn)
+		if err := tc.Handshake(); err != nil {
+			gotPeer <- false
+			return
+		}
+		st := tc.ConnectionState()
+		gotPeer <- len(st.PeerCertificates) > 0
+	}()
+
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	u := New(Config{
+		Network: store.Network{
+			Name: "t", Host: "127.0.0.1", Port: port, Nick: "n", TLS: true, TLSNoVerify: true,
+			TLSCert: certPath, TLSKey: keyPath,
+		},
+	}, &regHandler{})
+	c, err := u.dial(ctx)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = c.Close()
+
+	select {
+	case ok := <-gotPeer:
+		if !ok {
+			t.Fatal("server did not see client certificate")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for peer cert check")
+	}
+}
+
+func selfSignedClientCertPEM() (tls.Certificate, []byte, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "gobnc-uplink"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	return pair, keyPEM, err
 }
 
 func selfSignedServerCert(dnsName string) (tls.Certificate, error) {

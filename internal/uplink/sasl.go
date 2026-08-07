@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/xdg-go/scram"
 )
 
@@ -18,11 +20,12 @@ func (u *Uplink) saslWanted() bool {
 	u.mu.RLock()
 	n := u.cfg.Network
 	tlsConf := u.cfg.TLSConf
+	globalCert, globalKey := u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey
 	u.mu.RUnlock()
 	if n.SASLUser != "" && n.SASLPass != "" {
 		return true
 	}
-	return hasClientCert(tlsConf)
+	return hasClientCert(tlsConf) || clientCertPathsConfigured(n, globalCert, globalKey)
 }
 
 func hasClientCert(tc *tls.Config) bool {
@@ -33,6 +36,11 @@ func hasClientCert(tc *tls.Config) bool {
 		return true
 	}
 	return tc.GetClientCertificate != nil
+}
+
+func clientCertPathsConfigured(n store.Network, globalCert, globalKey string) bool {
+	_, _, ok := config.ResolveTLSClientCert(n.TLSCert, n.TLSKey, globalCert, globalKey)
+	return ok
 }
 
 func (u *Uplink) noteSASLOffer(val string, present bool) {
@@ -112,7 +120,8 @@ func (u *Uplink) pickSASLMech() (string, bool) {
 	defer u.mu.RUnlock()
 	n := u.cfg.Network
 	passwordOK := n.SASLUser != "" && n.SASLPass != ""
-	externalOK := hasClientCert(u.cfg.TLSConf)
+	externalOK := hasClientCert(u.cfg.TLSConf) ||
+		clientCertPathsConfigured(n, u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey)
 
 	var preferred []string
 	if passwordOK {

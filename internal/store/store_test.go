@@ -140,6 +140,37 @@ func TestNetworkTLSNoVerify(t *testing.T) {
 	}
 }
 
+func TestNetworkTLSCertPaths(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	_, err := s.UpsertNetwork(ctx, Network{
+		Name: "n", Host: "h", Port: 6697, Nick: "me", TLS: true, Enabled: true,
+		TLSCert: "certs/net.crt", TLSKey: "certs/net.key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.TLSCert != "certs/net.crt" || n.TLSKey != "certs/net.key" {
+		t.Fatalf("got cert=%q key=%q", n.TLSCert, n.TLSKey)
+	}
+	n.TLSCert = "none"
+	n.TLSKey = ""
+	if _, err := s.UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.TLSCert != "none" || n.TLSKey != "" {
+		t.Fatalf("after clear: cert=%q key=%q", n.TLSCert, n.TLSKey)
+	}
+}
+
 func TestNetworkCRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

@@ -4,6 +4,11 @@
   "tls_cert": "certs/server.crt",
   "tls_key": "certs/server.key",
 
+  // Certificate GoBNC presents when connecting to IRC networks (CERTFP / SASL EXTERNAL).
+  // Empty = none. Per-network --tls-cert=/--tls-key= override; none or - disables for one network.
+  "tls_client_cert": "",
+  "tls_client_key": "",
+
   // SQLite DB (mode 0600 enforced). Holds auth, networks, SASL secrets, history.
   "db_path": "gobnc.db",
 

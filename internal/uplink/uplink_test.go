@@ -199,6 +199,30 @@ func TestPickSASLMech(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("EXTERNAL via global cert paths", func(t *testing.T) {
+		u := New(Config{
+			Network:             store.Network{},
+			GlobalTLSClientCert: "certs/client.crt",
+			GlobalTLSClientKey:  "certs/client.key",
+		}, nil)
+		u.saslMechs = []string{"EXTERNAL"}
+		got, ok := u.pickSASLMech()
+		if !ok || got != "EXTERNAL" {
+			t.Fatalf("got %q,%v", got, ok)
+		}
+	})
+	t.Run("network none disables global", func(t *testing.T) {
+		u := New(Config{
+			Network:             store.Network{TLSCert: "none"},
+			GlobalTLSClientCert: "certs/client.crt",
+			GlobalTLSClientKey:  "certs/client.key",
+		}, nil)
+		u.saslMechs = []string{"EXTERNAL"}
+		if _, ok := u.pickSASLMech(); ok {
+			t.Fatal("expected no EXTERNAL when network disables cert")
+		}
+	})
 }
 
 func TestUplinkSASLExternal(t *testing.T) {

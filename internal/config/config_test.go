@@ -118,6 +118,33 @@ func TestNetworkIdentityDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveTLSClientCert(t *testing.T) {
+	cert, key, ok := ResolveTLSClientCert("", "", "", "")
+	if ok || cert != "" || key != "" {
+		t.Fatalf("empty: %q %q %v", cert, key, ok)
+	}
+	cert, key, ok = ResolveTLSClientCert("", "", "g.crt", "g.key")
+	if !ok || cert != "g.crt" || key != "g.key" {
+		t.Fatalf("inherit global: %q %q %v", cert, key, ok)
+	}
+	cert, key, ok = ResolveTLSClientCert("n.crt", "n.key", "g.crt", "g.key")
+	if !ok || cert != "n.crt" || key != "n.key" {
+		t.Fatalf("network override: %q %q %v", cert, key, ok)
+	}
+	cert, key, ok = ResolveTLSClientCert("none", "", "g.crt", "g.key")
+	if ok {
+		t.Fatalf("none should disable: %q %q", cert, key)
+	}
+	cert, key, ok = ResolveTLSClientCert("-", "-", "g.crt", "g.key")
+	if ok {
+		t.Fatalf("dash should disable: %q %q", cert, key)
+	}
+	_, _, ok = ResolveTLSClientCert("only.crt", "", "g.crt", "g.key")
+	if ok {
+		t.Fatal("incomplete network pair must not fall back partially")
+	}
+}
+
 func TestResolvedControlSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	cfg := Default()

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/flood"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
@@ -52,7 +53,11 @@ type Config struct {
 	Channels []store.Channel
 	Dial     func(ctx context.Context, network, addr string) (net.Conn, error) // optional override
 	TLSConf  *tls.Config
-	Logger   *slog.Logger
+	// GlobalTLSClientCert / GlobalTLSClientKey come from gobnc.json; used when
+	// Network.TLSCert/TLSKey are empty (inherit). See config.ResolveTLSClientCert.
+	GlobalTLSClientCert string
+	GlobalTLSClientKey  string
+	Logger              *slog.Logger
 	// MaxFloodQueue caps paced outbound queue depth (0 = unlimited).
 	MaxFloodQueue int
 	// Backoff for reconnect tests
@@ -204,6 +209,15 @@ func (u *Uplink) SetNetwork(n store.Network) {
 	} else {
 		u.maybeStartNickRecovery()
 	}
+}
+
+// SetGlobalTLSClient updates gobnc.json uplink client cert paths used when the
+// network has no tls_cert/tls_key override. Applies on the next dial.
+func (u *Uplink) SetGlobalTLSClient(cert, key string) {
+	u.mu.Lock()
+	u.cfg.GlobalTLSClientCert = cert
+	u.cfg.GlobalTLSClientKey = key
+	u.mu.Unlock()
 }
 
 // SetMaxFloodQueue updates the paced send-queue depth cap (0 = unlimited).
@@ -446,6 +460,7 @@ func (u *Uplink) dial(ctx context.Context) (net.Conn, error) {
 	n := u.cfg.Network
 	customDial := u.cfg.Dial
 	tlsConf := u.cfg.TLSConf
+	globalCert, globalKey := u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey
 	u.mu.RUnlock()
 
 	addr := net.JoinHostPort(n.Host, strconv.Itoa(n.Port))
@@ -459,6 +474,25 @@ func (u *Uplink) dial(ctx context.Context) (net.Conn, error) {
 				ServerName:         n.Host,
 				MinVersion:         tls.VersionTLS12,
 				InsecureSkipVerify: n.TLSNoVerify,
+			}
+			if certPath, keyPath, ok := config.ResolveTLSClientCert(n.TLSCert, n.TLSKey, globalCert, globalKey); ok {
+				pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+				if err != nil {
+					return nil, fmt.Errorf("uplink tls client cert: %w", err)
+				}
+				tlsConf.Certificates = []tls.Certificate{pair}
+			}
+		} else {
+			// Clone so we don't mutate a shared test/config TLSConf.
+			tlsConf = tlsConf.Clone()
+			if len(tlsConf.Certificates) == 0 && tlsConf.GetClientCertificate == nil {
+				if certPath, keyPath, ok := config.ResolveTLSClientCert(n.TLSCert, n.TLSKey, globalCert, globalKey); ok {
+					pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+					if err != nil {
+						return nil, fmt.Errorf("uplink tls client cert: %w", err)
+					}
+					tlsConf.Certificates = []tls.Certificate{pair}
+				}
 			}
 		}
 		return tls.DialWithDialer(&d, "tcp", addr, tlsConf)

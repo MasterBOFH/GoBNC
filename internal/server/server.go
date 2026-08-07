@@ -399,10 +399,12 @@ func (s *Server) startNetworkLocked(n store.Network) error {
 	nctx, cancel := context.WithCancel(context.Background())
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name))
 	u := uplink.New(uplink.Config{
-		Network:       n,
-		Channels:      chs,
-		Logger:        s.log.With("uplink", n.Name),
-		MaxFloodQueue: s.cfg.MaxFloodQueue,
+		Network:             n,
+		Channels:            chs,
+		Logger:              s.log.With("uplink", n.Name),
+		MaxFloodQueue:       s.cfg.MaxFloodQueue,
+		GlobalTLSClientCert: s.cfg.TLSClientCert,
+		GlobalTLSClientKey:  s.cfg.TLSClientKey,
 	}, sess)
 	sess.SetUplink(u)
 	s.attachAdmin(sess)
@@ -554,6 +556,7 @@ func (s *Server) Rehash(cfgPath string) error {
 	for _, sess := range sessions {
 		if u := sess.Uplink(); u != nil {
 			u.SetMaxFloodQueue(newCfg.MaxFloodQueue)
+			u.SetGlobalTLSClient(newCfg.TLSClientCert, newCfg.TLSClientKey)
 		}
 	}
 	for _, name := range names {
