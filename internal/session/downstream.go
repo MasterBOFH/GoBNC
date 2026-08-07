@@ -183,14 +183,19 @@ func (s *Session) echoSelfLocally(msg irc.Message) {
 	s.maybeStoreHistory(echo)
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	legacyHit := false
 	for _, d := range s.downlinks {
 		out := s.rewriteMessage(d, echo, true)
 		if out.Command == "" {
 			continue
 		}
 		_ = d.Send(out)
+		if !hasChathistory(d) {
+			legacyHit = true
+		}
 	}
+	s.mu.RUnlock()
+	s.advanceLegacyPlaybackIfDelivered(echo, legacyHit)
 }
 
 // isWHOXParam reports whether a WHO second argument uses WHOX (%fields) syntax.

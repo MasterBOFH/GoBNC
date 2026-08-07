@@ -102,6 +102,12 @@ func (s *Store) migrate() error {
 			time TEXT NOT NULL,
 			UNIQUE(network_id, target)
 		)`,
+		`CREATE TABLE IF NOT EXISTS playback_cursors (
+			network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+			target TEXT NOT NULL,
+			time TEXT NOT NULL,
+			UNIQUE(network_id, target)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -110,9 +116,15 @@ func (s *Store) migrate() error {
 	}
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO auth (id, password_hash, updated_at) VALUES (1, '', ?)`, time.Now().UTC().Format(time.RFC3339Nano))
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO bouncer_meta (key, value) VALUES ('schema_version', '1')`)
-	// Existing DBs created before flood columns.
+	// Existing DBs created before flood / playback columns.
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN flood_burst INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN flood_rate REAL NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS playback_cursors (
+		network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+		target TEXT NOT NULL,
+		time TEXT NOT NULL,
+		UNIQUE(network_id, target)
+	)`)
 	return nil
 }
 
@@ -519,6 +531,45 @@ func (s *Store) SetReadMarkerIfNewer(ctx context.Context, networkID int64, targe
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO read_markers (network_id, target, time) VALUES (?, ?, ?)
+		ON CONFLICT(network_id, target) DO UPDATE SET time=excluded.time`,
+		networkID, target, ts)
+	if err != nil {
+		return "", false, err
+	}
+	return ts, true, nil
+}
+
+// GetPlaybackCursor returns the legacy attach-playback watermark for target.
+func (s *Store) GetPlaybackCursor(ctx context.Context, networkID int64, target string) (ts string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT time FROM playback_cursors WHERE network_id=? AND target=?`,
+		networkID, target).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return ts, true, nil
+}
+
+// SetPlaybackCursorIfNewer advances the legacy playback watermark when ts is newer.
+func (s *Store) SetPlaybackCursorIfNewer(ctx context.Context, networkID int64, target, ts string) (stored string, updated bool, err error) {
+	cur, ok, err := s.GetPlaybackCursor(ctx, networkID, target)
+	if err != nil {
+		return "", false, err
+	}
+	if ok {
+		cmp, err := compareMessageTimes(cur, ts)
+		if err != nil {
+			return "", false, err
+		}
+		if cmp >= 0 {
+			return cur, false, nil
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO playback_cursors (network_id, target, time) VALUES (?, ?, ?)
 		ON CONFLICT(network_id, target) DO UPDATE SET time=excluded.time`,
 		networkID, target, ts)
 	if err != nil {

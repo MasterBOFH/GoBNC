@@ -100,6 +100,9 @@ func (s *Session) Attach(d Downlink) error {
 			send(irc.Message{Source: ServerName, Command: "353", Params: []string{nick, "=", ch.Name, strings.Join(names, " ")}})
 		}
 		send(irc.Message{Source: ServerName, Command: "366", Params: []string{nick, ch.Name, "End of /NAMES list."}})
+		if !hasChathistory(d) {
+			s.playLegacyHistory(d, ch.Name)
+		}
 	}
 	s.notifyAttachCaps(d)
 	return nil

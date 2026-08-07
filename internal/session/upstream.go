@@ -259,18 +259,26 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 				out.Tags["label"] = echoLabel
 			}
 			_ = d.Send(out)
+			if out.Command != "" && legacyPlaybackCommands(msg) && !hasChathistory(d) {
+				s.advanceLegacyPlaybackIfDelivered(msg, true)
+			}
 		}
 		s.mu.RUnlock()
 		return
 	}
+	legacyHit := false
 	for _, d := range s.downlinks {
 		out := s.rewriteFor(d, msg)
 		if out.Command == "" {
 			continue
 		}
 		_ = d.Send(out)
+		if legacyPlaybackCommands(msg) && !hasChathistory(d) {
+			legacyHit = true
+		}
 	}
 	s.mu.RUnlock()
+	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 	s.maybeSendMarkReadOnSelfJOIN(msg)
 }
 

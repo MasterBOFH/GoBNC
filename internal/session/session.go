@@ -70,6 +70,8 @@ type Session struct {
 	regBuffer []irc.Message
 	// readMarkers is an in-memory fallback when store is nil or network ID unset.
 	readMarkers map[string]string
+	// playbackCursors is an in-memory fallback for legacy attach playback watermarks.
+	playbackCursors map[string]string
 }
 
 // New creates a session (uplink attached later via SetUplink / Run).
