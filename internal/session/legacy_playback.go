@@ -50,7 +50,6 @@ func (s *Session) playLegacyHistory(d Downlink, target string) {
 			continue
 		}
 		s.hist.EnsureLineMsgID(&parsed, m)
-		parsed.Raw = ""
 		out := s.rewriteFor(d, parsed)
 		if out.Command == "" || !history.IsLegacyReplayCommand(out.Command) {
 			continue

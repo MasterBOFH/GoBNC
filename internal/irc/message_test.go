@@ -51,6 +51,23 @@ func TestEncodeTrailingColon(t *testing.T) {
 	}
 }
 
+func TestWirePreservesBodyWhenTagsChange(t *testing.T) {
+	// Server sent a one-word QUIT reason with a colon; keep that body when injecting tags.
+	line := ":nick!u@h QUIT :Quit"
+	msg, err := Parse(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.Tags = map[string]string{"msgid": "abc", "time": "2026-08-07T12:00:00.000Z"}
+	got := msg.Wire()
+	if !strings.HasSuffix(got, " QUIT :Quit") {
+		t.Fatalf("body mangled: %q", got)
+	}
+	if !strings.Contains(got, "msgid=abc") {
+		t.Fatalf("missing msgid: %q", got)
+	}
+}
+
 func TestParseSimple(t *testing.T) {
 	msg, err := Parse("PRIVMSG #chan :hello world")
 	if err != nil {

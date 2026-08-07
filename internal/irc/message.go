@@ -253,7 +253,8 @@ func formatTagPrefix(tags map[string]string) string {
 
 // needsTrailingColon reports whether the final parameter must be colon-encoded.
 // PRIVMSG/NOTICE text is always trailing (even a single word). Other commands
-// only require it when empty, spaced, or starting with ':'.
+// only require it when empty, spaced, or starting with ':'. Prefer keeping Raw
+// and using Wire() when relaying so server colonation is preserved verbatim.
 func needsTrailingColon(command, param string) bool {
 	switch strings.ToUpper(command) {
 	case "PRIVMSG", "NOTICE":

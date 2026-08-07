@@ -169,6 +169,192 @@ func TestRequestTrackerSerialize(t *testing.T) {
 	}
 }
 
+func TestRequestTrackerMODEEnquiry(t *testing.T) {
+	cm := irc.CaseRFC1459
+
+	t.Run("channel modes 324+329", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
+		if w1 != nil {
+			t.Fatal("first should not wait")
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "329", Params: []string{"me", "#c", "123"}}, cm)
+		if !only || c != "c1" {
+			t.Fatalf("329 sticky -> %s only=%v", c, only)
+		}
+	})
+
+	t.Run("concurrent different channels", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#a"})
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "MODE", EnquiryTarget: "#b"})
+		if w1 != nil || w2 != nil {
+			t.Fatal("different targets must not hold", w1, w2)
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#b", "+n"}}, cm)
+		if !only || c != "c2" {
+			t.Fatalf("#b -> %s only=%v", c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#a", "+t"}}, cm)
+		if !only || c != "c1" {
+			t.Fatalf("#a -> %s only=%v", c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "329", Params: []string{"me", "#a", "1"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "329", Params: []string{"me", "#b", "2"}}, cm)
+		if !only || c != "c2" {
+			t.Fatal(c, only)
+		}
+	})
+
+	t.Run("same channel holds", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "MODE", EnquiryTarget: "#c"})
+		if w1 != nil || w2 == nil {
+			t.Fatal(w1, w2)
+		}
+		rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}}, cm)
+		select {
+		case <-w2:
+		default:
+			t.Fatal("c2 should release after c1's 324")
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "367", Params: []string{"me", "#c", "*!*@x"}}, cm)
+		if !only || c != "c2" {
+			t.Fatalf("c2 banlist mid -> %s only=%v", c, only)
+		}
+	})
+
+	t.Run("banlist", func(t *testing.T) {
+		rt := NewRequestTracker()
+		rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "367", Params: []string{"me", "#c", "*!*@x", "setter", "1"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "368", Params: []string{"me", "#c", "End"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+	})
+
+	t.Run("mode change still broadcasts", func(t *testing.T) {
+		rt := NewRequestTracker()
+		rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
+		_, only, _, _, _ := rt.RouteMessage(irc.Message{
+			Source: "op!u@h", Command: "MODE", Params: []string{"#c", "+v", "nick"},
+		}, cm)
+		if only {
+			t.Fatal("live MODE echo must broadcast while enquiry pending")
+		}
+	})
+}
+
+func TestRequestTrackerTOPICEnquiry(t *testing.T) {
+	cm := irc.CaseRFC1459
+
+	t.Run("332+333", func(t *testing.T) {
+		rt := NewRequestTracker()
+		rt.Begin(BeginOpts{Client: "c1", Cmd: "TOPIC", EnquiryTarget: "#c"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "332", Params: []string{"me", "#c", "hello"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "333", Params: []string{"me", "#c", "setter", "1"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+	})
+
+	t.Run("concurrent with MODE same channel", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, wm := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
+		_, _, wt := rt.Begin(BeginOpts{Client: "c2", Cmd: "TOPIC", EnquiryTarget: "#c"})
+		if wm != nil || wt != nil {
+			t.Fatal("MODE vs TOPIC must not hold each other", wm, wt)
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "332", Params: []string{"me", "#c", "t"}}, cm)
+		if !only || c != "c2" {
+			t.Fatalf("332 -> %s only=%v", c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+n"}}, cm)
+		if !only || c != "c1" {
+			t.Fatalf("324 -> %s only=%v", c, only)
+		}
+	})
+}
+
+func TestIsMODEEnquiry(t *testing.T) {
+	if !isMODEEnquiry([]string{"#c"}) {
+		t.Fatal("MODE #c")
+	}
+	if !isMODEEnquiry([]string{"#c", "b"}) {
+		t.Fatal("MODE #c b")
+	}
+	if !isMODEEnquiry([]string{"#c", "eI"}) {
+		t.Fatal("MODE #c eI")
+	}
+	if !isMODEEnquiry([]string{"me"}) {
+		t.Fatal("MODE nick")
+	}
+	if isMODEEnquiry([]string{"#c", "+o", "bob"}) {
+		t.Fatal("MODE +o is a change")
+	}
+	if isMODEEnquiry([]string{"#c", "-b", "*!*@x"}) {
+		t.Fatal("MODE -b is a change")
+	}
+	if isMODEEnquiry(nil) {
+		t.Fatal("empty")
+	}
+}
+
+func TestIsTOPICEnquiry(t *testing.T) {
+	if !isTOPICEnquiry([]string{"#c"}) {
+		t.Fatal("query")
+	}
+	if isTOPICEnquiry([]string{"#c", "new topic"}) {
+		t.Fatal("set")
+	}
+}
+
+func TestMODEEnquiryRoutedToRequester(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	s.mu.Lock()
+	s.downlinks[a.ID()] = a
+	s.downlinks[b.ID()] = b
+	s.mu.Unlock()
+
+	// As HandleClientMessage does for MODE #c enquiry.
+	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "MODE", EnquiryTarget: "#c"})
+
+	s.OnMessage(nil, irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}})
+	s.OnMessage(nil, irc.Message{Command: "329", Params: []string{"me", "#c", "99"}})
+
+	if countCmds(a.snapshot(), "324") != 1 || countCmds(a.snapshot(), "329") != 1 {
+		t.Fatalf("requester a got %+v", a.snapshot())
+	}
+	if countCmds(b.snapshot(), "324") != 0 || countCmds(b.snapshot(), "329") != 0 {
+		t.Fatalf("other client must not see enquiry numerics: %+v", b.snapshot())
+	}
+
+	a.clearSent()
+	b.clearSent()
+	s.OnMessage(nil, irc.Message{Source: "op!u@h", Command: "MODE", Params: []string{"#c", "+v", "x"}})
+	if countCmds(a.snapshot(), "MODE") != 1 || countCmds(b.snapshot(), "MODE") != 1 {
+		t.Fatalf("MODE change fan-out a=%v b=%v", a.snapshot(), b.snapshot())
+	}
+}
+
 func TestRequestTrackerSTATSbyLetter(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
@@ -834,8 +1020,12 @@ func TestEnsureMessageID(t *testing.T) {
 	if !ok || id == "" {
 		t.Fatal("expected generated msgid")
 	}
-	if got.Raw != "" {
-		t.Fatal("Raw must be cleared when tags change")
+	if got.Raw != bare.Raw {
+		t.Fatal("Raw body must be kept so Wire preserves uplink colonation")
+	}
+	wire := got.Wire()
+	if !strings.Contains(wire, "msgid="+id) || !strings.HasSuffix(wire, " PRIVMSG #c :hi") {
+		t.Fatalf("wire=%q", wire)
 	}
 	// Upstream ID preserved.
 	up := irc.Message{
@@ -893,6 +1083,31 @@ func TestFanOutMsgID(t *testing.T) {
 	})
 	if withTags.sent[0].Tags["msgid"] != "net-xyz" || withTags2.sent[0].Tags["msgid"] != "net-xyz" {
 		t.Fatalf("must pass through uplink msgid: %v / %v", withTags.sent[0].Tags, withTags2.sent[0].Tags)
+	}
+}
+
+func TestQUITPreservesTrailingColon(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.registered = true
+	d := &fakeDL{id: "a", caps: map[string]bool{"message-tags": true, "server-time": true}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	raw := ":PsychoMantis!~Psycho@host QUIT :Quit"
+	msg, err := irc.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.OnMessage(nil, msg)
+	if len(d.sent) != 1 {
+		t.Fatalf("sent=%+v", d.sent)
+	}
+	wire := d.sent[0].Wire()
+	if !strings.HasSuffix(wire, " QUIT :Quit") {
+		t.Fatalf("expected server body preserved, got %q", wire)
+	}
+	if d.sent[0].Tags["msgid"] == "" {
+		t.Fatal("expected msgid tag")
 	}
 }
 

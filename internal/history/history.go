@@ -244,7 +244,7 @@ func (h *Store) sendBatch(s Sender, target string, msgs []store.Message) error {
 			parsed.Tags["time"] = m.Time.UTC().Format("2006-01-02T15:04:05.000Z")
 		}
 		h.ensurePlaybackMsgID(&parsed, &m)
-		parsed.Raw = "" // tags changed; rebuild wire form
+		// Keep Raw body; Wire() replaces only the tag prefix (batch/msgid/time).
 		if err := s.Send(parsed); err != nil {
 			return err
 		}

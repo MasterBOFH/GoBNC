@@ -284,6 +284,8 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 
 // ensureMessageTime adds @time= when the uplink did not provide server-time.
 // Used for live fan-out and for history Raw stored in the DB.
+// Keeps Raw so Wire() can reuse the uplink body (colonation, spacing) and only
+// replace the tag prefix.
 func ensureMessageTime(msg irc.Message) irc.Message {
 	if _, ok := msg.Tag("time"); ok {
 		return msg
@@ -293,7 +295,6 @@ func ensureMessageTime(msg irc.Message) irc.Message {
 		msg.Tags = map[string]string{}
 	}
 	msg.Tags["time"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	msg.Raw = "" // tags changed; cannot reuse uplink wire form
 	return msg
 }
 
@@ -302,6 +303,7 @@ func ensureMessageTime(msg irc.Message) irc.Message {
 // with typical ircd formats. Spec MAY attach on any event (SHOULD on PRIVMSG/
 // NOTICE); we assign on all live traffic so history and clients stay consistent.
 // See https://ircv3.net/specs/extensions/message-ids
+// Keeps Raw so Wire() preserves the uplink body verbatim.
 func ensureMessageID(msg irc.Message) irc.Message {
 	if msg.Command == "" {
 		return msg
@@ -314,7 +316,6 @@ func ensureMessageID(msg irc.Message) irc.Message {
 		msg.Tags = map[string]string{}
 	}
 	msg.Tags["msgid"] = uuid.NewString()
-	msg.Raw = ""
 	return msg
 }
 
@@ -335,10 +336,8 @@ func (s *Session) maybeStoreHistory(msg irc.Message) {
 		}
 	}
 	msgid, _ := msg.Tag("msgid")
-	raw := msg.Raw
-	if raw == "" {
-		raw = msg.Encode()
-	}
+	// Wire keeps the uplink body (from Raw) and applies our tags — verbatim relay.
+	raw := msg.Wire()
 	text := msg.Trailing()
 	for _, target := range targets {
 		_ = s.hist.Store(context.Background(), history.Record{

@@ -83,7 +83,23 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 			s.echoSelfLocally(msg)
 		}
 		return nil
-	case "MODE", "TOPIC", "INVITE", "KICK", "NICK":
+	case "MODE":
+		if s.uplink == nil {
+			return fmt.Errorf("uplink not ready")
+		}
+		if isMODEEnquiry(msg.Params) {
+			return s.forwardSolicitous(d, msg)
+		}
+		return s.uplink.WriteMessage(s.toUplink(msg))
+	case "TOPIC":
+		if s.uplink == nil {
+			return fmt.Errorf("uplink not ready")
+		}
+		if isTOPICEnquiry(msg.Params) {
+			return s.forwardSolicitous(d, msg)
+		}
+		return s.uplink.WriteMessage(s.toUplink(msg))
+	case "INVITE", "KICK", "NICK":
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
@@ -140,15 +156,20 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 	if cmd == "STATS" && !preferLabel {
 		statsLetter = ParseStatsLetter(msg.Params)
 	}
+	enquiryTarget := ""
+	if cmd == "MODE" || cmd == "TOPIC" {
+		enquiryTarget = cm.Canonical(msg.Param(0))
+	}
 	label, token, wait := s.tracker.Begin(BeginOpts{
-		Client:       d.ID(),
-		Cmd:          cmd,
-		ClientLabel:  clientLabel,
-		PreferLabel:  preferLabel,
-		PreferWHOX:   preferWHOX && clientWHOX,
-		WhoisTargets: whoisTargets,
-		WHOMask:      whoMask,
-		StatsLetter:  statsLetter,
+		Client:        d.ID(),
+		Cmd:           cmd,
+		ClientLabel:   clientLabel,
+		PreferLabel:   preferLabel,
+		PreferWHOX:    preferWHOX && clientWHOX,
+		WhoisTargets:  whoisTargets,
+		WHOMask:       whoMask,
+		StatsLetter:   statsLetter,
+		EnquiryTarget: enquiryTarget,
 	})
 	out := s.toUplink(msg)
 	if label != "" {
@@ -210,6 +231,28 @@ func (s *Session) echoSelfLocally(msg irc.Message) {
 // isWHOXParam reports whether a WHO second argument uses WHOX (%fields) syntax.
 func isWHOXParam(p string) bool {
 	return strings.Contains(p, "%")
+}
+
+// isMODEEnquiry reports whether MODE expects numeric replies (view/list) rather
+// than a mode change that should fan out as a MODE command to all clients.
+func isMODEEnquiry(params []string) bool {
+	if len(params) == 0 || params[0] == "" {
+		return false
+	}
+	if len(params) == 1 {
+		return true // MODE #chan | MODE nick
+	}
+	modes := params[1]
+	if modes == "" {
+		return true
+	}
+	// Changes always include + or -; bare letters are list queries (b/e/I/q/…).
+	return !strings.ContainsAny(modes, "+-")
+}
+
+// isTOPICEnquiry reports TOPIC #chan (fetch) vs TOPIC #chan :text (set).
+func isTOPICEnquiry(params []string) bool {
+	return len(params) == 1 && params[0] != ""
 }
 
 // injectWHOXToken keeps the client's WHOX flags/fields intact, ensures querytype 't'

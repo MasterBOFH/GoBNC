@@ -32,6 +32,14 @@ type pendingRequest struct {
 	gate chan struct{}
 }
 
+// stickyRoute delivers one follow-up numeric (e.g. 329 after MODE 324) to the
+// same client after the target enquiry has already ended.
+type stickyRoute struct {
+	Client ClientID
+	Echo   string
+	Code   string
+}
+
 // RequestTracker routes solicitous replies to the originating downlink.
 type RequestTracker struct {
 	mu      sync.Mutex
@@ -39,8 +47,11 @@ type RequestTracker struct {
 	whox    map[string]*pendingRequest   // token -> req
 	whois   map[string][]*pendingRequest // folded nick -> waiters (oldest first)
 	stats   map[string][]*pendingRequest // stats letter -> waiters (oldest first)
+	mode    map[string][]*pendingRequest // folded MODE target (chan/nick) -> waiters
+	topic   map[string][]*pendingRequest // folded TOPIC channel -> waiters
 	queue   []*pendingRequest            // serialized (no demux key)
 	active  *pendingRequest              // head of serialized exchange
+	sticky  map[string]*stickyRoute      // folded target -> one-shot follow-up (MODE 329)
 	ircd    string                       // detected IRCd family (irc.IRCd*)
 	nextLbl uint64
 	nextTok uint64
@@ -53,6 +64,9 @@ func NewRequestTracker() *RequestTracker {
 		whox:    make(map[string]*pendingRequest),
 		whois:   make(map[string][]*pendingRequest),
 		stats:   make(map[string][]*pendingRequest),
+		mode:    make(map[string][]*pendingRequest),
+		topic:   make(map[string][]*pendingRequest),
+		sticky:  make(map[string]*stickyRoute),
 	}
 }
 
@@ -93,6 +107,17 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	case "ADMIN":
 		// RFC 2812: 256–259; 259 is last. 402 = no such server.
 		return map[string]bool{"259": true, "402": true}
+	case "MODE":
+		// Channel modes: 324 (329 follows via sticky). Lists: *68/*49/*47/*29.
+		// User modes: 221. Errors clear a stuck enquiry.
+		return map[string]bool{
+			"221": true, "324": true,
+			"368": true, "349": true, "347": true, "729": true,
+			"401": true, "403": true, "442": true, "461": true, "472": true, "482": true,
+		}
+	case "TOPIC":
+		// 331 = no topic; 332 then 333 (333 ends). Errors clear the enquiry.
+		return map[string]bool{"331": true, "333": true, "403": true, "442": true, "461": true}
 	default:
 		return map[string]bool{}
 	}
@@ -122,6 +147,18 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 		return map[string]bool{"704": true, "705": true, "706": true, "524": true}
 	case "ADMIN":
 		return map[string]bool{"256": true, "257": true, "258": true, "259": true, "402": true}
+	case "MODE":
+		return map[string]bool{
+			"221": true,
+			"324": true, "329": true,
+			"367": true, "368": true,
+			"348": true, "349": true,
+			"346": true, "347": true,
+			"728": true, "729": true,
+			"401": true, "403": true, "442": true, "461": true, "472": true, "482": true,
+		}
+	case "TOPIC":
+		return map[string]bool{"331": true, "332": true, "333": true, "403": true, "442": true, "461": true}
 	default:
 		return endCodesFor(cmd, ircd)
 	}
@@ -141,14 +178,15 @@ func IsSolicitous(cmd string) bool {
 
 // BeginOpts configures registration of an outbound solicitous command.
 type BeginOpts struct {
-	Client       ClientID
-	Cmd          string
-	ClientLabel  string
-	PreferLabel  bool
-	PreferWHOX   bool
-	WhoisTargets []string // folded nicks
-	WHOMask      string   // WHO mask (for 315 matching)
-	StatsLetter  string   // folded STATS query letter ("" if none)
+	Client        ClientID
+	Cmd           string
+	ClientLabel   string
+	PreferLabel   bool
+	PreferWHOX    bool
+	WhoisTargets  []string // folded nicks
+	WHOMask       string   // WHO mask (for 315 matching)
+	StatsLetter   string   // folded STATS query letter ("" if none)
+	EnquiryTarget string   // folded MODE/TOPIC target (channel or nick)
 }
 
 // Begin registers an outbound solicitous command.
@@ -162,6 +200,7 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, wait <
 		Client:      opts.Client,
 		ClientLabel: opts.ClientLabel,
 		Command:     cmd,
+		Target:      opts.EnquiryTarget,
 		EndCodes:    endCodesFor(cmd, rt.ircd),
 		ReplyCodes:  replyCodesFor(cmd, rt.ircd),
 		Created:     time.Now(),
@@ -214,6 +253,21 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, wait <
 		// Same letter already in flight — hold until prior 219.
 		req.gate = make(chan struct{})
 		rt.stats[letter] = append(waiters, req)
+		return "", "", req.gate
+	}
+	// MODE/TOPIC enquiries: demux by channel/nick (concurrent across targets).
+	if opts.EnquiryTarget != "" && (cmd == "MODE" || cmd == "TOPIC") {
+		queues := rt.mode
+		if cmd == "TOPIC" {
+			queues = rt.topic
+		}
+		waiters := queues[opts.EnquiryTarget]
+		if len(waiters) == 0 {
+			queues[opts.EnquiryTarget] = []*pendingRequest{req}
+			return "", "", nil
+		}
+		req.gate = make(chan struct{})
+		queues[opts.EnquiryTarget] = append(waiters, req)
 		return "", "", req.gate
 	}
 	// Serialize everything else (plain WHO, LIST, NAMES, letter-less STATS, …).
@@ -269,9 +323,42 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 	if lbl, ok := msg.Tag("label"); ok && lbl != "" {
 		if req, ok := rt.labeled[lbl]; ok {
 			if req.EndCodes[msg.Command] {
+				// MODE 324 is often followed by 329; keep a per-target sticky.
+				if req.Command == "MODE" && msg.Command == "324" && req.ReplyCodes["329"] {
+					target := req.Target
+					if target == "" && len(msg.Params) > 1 {
+						target = cm.Canonical(msg.Params[1])
+					}
+					if target != "" {
+						rt.sticky[target] = &stickyRoute{Client: req.Client, Echo: req.ClientLabel, Code: "329"}
+					}
+				}
 				delete(rt.labeled, lbl)
 			}
 			return req.Client, true, req.ClientLabel, false, ""
+		}
+	}
+
+	// One-shot follow-up (RPL_CREATIONTIME after channel MODE enquiry).
+	if msg.Command == "329" && len(msg.Params) > 1 {
+		target := cm.Canonical(msg.Params[1])
+		if s := rt.sticky[target]; s != nil && s.Code == "329" {
+			delete(rt.sticky, target)
+			return s.Client, true, s.Echo, false, ""
+		}
+	}
+
+	// MODE enquiry numerics: demux by channel/nick in params.
+	if target := modeEnquiryNumericTarget(msg, cm); target != "" {
+		if c, only, echo, ok := rt.routeTargetQueue(rt.mode, target, msg.Command, true); ok {
+			return c, only, echo, false, ""
+		}
+	}
+
+	// TOPIC enquiry numerics: demux by channel.
+	if target := topicEnquiryNumericTarget(msg, cm); target != "" {
+		if c, only, echo, ok := rt.routeTargetQueue(rt.topic, target, msg.Command, false); ok {
+			return c, only, echo, false, ""
 		}
 	}
 
@@ -372,6 +459,62 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 	return "", false, "", false, ""
 }
 
+// routeTargetQueue delivers a numeric to the oldest waiter for target.
+// sticky324 enables per-target 329 sticky when ending a MODE enquiry on 324.
+func (rt *RequestTracker) routeTargetQueue(queues map[string][]*pendingRequest, target, cmd string, sticky324 bool) (ClientID, bool, string, bool) {
+	waiters := queues[target]
+	if len(waiters) == 0 {
+		return "", false, "", false
+	}
+	req := waiters[0]
+	if len(req.ReplyCodes) > 0 && !req.ReplyCodes[cmd] {
+		return "", false, "", false
+	}
+	if req.EndCodes[cmd] {
+		if sticky324 && req.Command == "MODE" && cmd == "324" && req.ReplyCodes["329"] {
+			rt.sticky[target] = &stickyRoute{Client: req.Client, Echo: req.ClientLabel, Code: "329"}
+		}
+		queues[target] = waiters[1:]
+		if len(queues[target]) == 0 {
+			delete(queues, target)
+		} else {
+			rt.releaseGate(queues[target][0])
+		}
+	}
+	return req.Client, true, req.ClientLabel, true
+}
+
+// modeEnquiryNumericTarget extracts the folded channel/nick from a MODE enquiry reply.
+func modeEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
+	switch msg.Command {
+	case "221": // RPL_UMODEIS <nick> <modes>
+		if len(msg.Params) > 0 {
+			return cm.Canonical(msg.Params[0])
+		}
+	case "324", "329", "367", "368", "348", "349", "346", "347", "728", "729",
+		"403", "442", "472", "482":
+		if len(msg.Params) > 1 {
+			return cm.Canonical(msg.Params[1])
+		}
+	case "401", "461":
+		if len(msg.Params) > 1 {
+			return cm.Canonical(msg.Params[1])
+		}
+	}
+	return ""
+}
+
+// topicEnquiryNumericTarget extracts the folded channel from a TOPIC enquiry reply.
+func topicEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
+	switch msg.Command {
+	case "331", "332", "333", "403", "442", "461":
+		if len(msg.Params) > 1 {
+			return cm.Canonical(msg.Params[1])
+		}
+	}
+	return ""
+}
+
 func (rt *RequestTracker) whoxByMask(mask string) (*pendingRequest, string, bool) {
 	if mask == "" {
 		return nil, "", false
@@ -469,6 +612,32 @@ func (rt *RequestTracker) DropClient(client ClientID) {
 			if droppedHead {
 				rt.releaseGate(kept[0])
 			}
+		}
+	}
+	for _, queues := range []map[string][]*pendingRequest{rt.mode, rt.topic} {
+		for target, waiters := range queues {
+			var kept []*pendingRequest
+			droppedHead := len(waiters) > 0 && waiters[0].Client == client
+			for _, req := range waiters {
+				if req.Client == client {
+					rt.releaseGate(req)
+					continue
+				}
+				kept = append(kept, req)
+			}
+			if len(kept) == 0 {
+				delete(queues, target)
+			} else {
+				queues[target] = kept
+				if droppedHead {
+					rt.releaseGate(kept[0])
+				}
+			}
+		}
+	}
+	for target, s := range rt.sticky {
+		if s.Client == client {
+			delete(rt.sticky, target)
 		}
 	}
 	var nq []*pendingRequest
