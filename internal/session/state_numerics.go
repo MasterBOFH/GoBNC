@@ -11,6 +11,7 @@ func (s *Session) stateWelcomeNumericLocked(msg irc.Message) {
 	case "002":
 		if len(msg.Params) > 1 {
 			s.rpl002 = append([]string(nil), msg.Params[1:]...)
+			s.detectIRCdLocked()
 		}
 	case "003":
 		if len(msg.Params) > 1 {
@@ -19,10 +20,45 @@ func (s *Session) stateWelcomeNumericLocked(msg irc.Message) {
 	case "004":
 		if len(msg.Params) > 1 {
 			s.rpl004 = append([]string(nil), msg.Params[1:]...)
+			// Fallback when 002 did not identify the IRCd.
+			if s.ircd == "" && len(msg.Params) > 2 {
+				if d := irc.DetectIRCdFrom004(msg.Params[2]); d != "" {
+					s.ircd = d
+					s.tracker.SetIRCd(d)
+				}
+			}
 		}
 	case "005":
 		s.isupport.Parse005(msg.Params)
 	}
+}
+
+// detectIRCdLocked sets s.ircd from 002 trailing (preferred) then 004 version.
+// Caller must hold s.mu.
+func (s *Session) detectIRCdLocked() {
+	var text string
+	if len(s.rpl002) > 0 {
+		text = s.rpl002[len(s.rpl002)-1]
+	}
+	d := irc.DetectIRCd(text)
+	if d == "" && len(s.rpl004) > 1 {
+		d = irc.DetectIRCdFrom004(s.rpl004[1])
+	}
+	if d == "" {
+		return
+	}
+	if d != s.ircd {
+		s.ircd = d
+		s.log.Info("detected ircd", "ircd", d)
+	}
+	s.tracker.SetIRCd(d)
+}
+
+// IRCd returns the detected uplink IRCd family, or empty if unknown.
+func (s *Session) IRCd() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ircd
 }
 
 func (s *Session) state221Locked(msg irc.Message) {

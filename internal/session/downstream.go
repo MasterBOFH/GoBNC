@@ -104,20 +104,34 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 	preferWHOX := s.uplink != nil && s.uplink.ISUPPORT() != nil && s.uplink.ISUPPORT().WHOX
 	cmd := strings.ToUpper(msg.Command)
 	clientLabel, _ := msg.Tag("label")
-	// WHOX tokens only when the client already used WHOX syntax — upgrading a plain
-	// WHO to WHOX would turn 352 replies into 354 and break clients.
+	// WHOX tokens only when the client already used WHOX syntax — never upgrade plain
+	// WHO (that would turn 352 replies into 354).
 	clientWHOX := cmd == "WHO" && isWHOXParam(msg.Param(1))
+	cm := s.isupport.CaseMapping
 	var whoisTargets []string
 	if cmd == "WHOIS" && !preferLabel {
-		cm := s.isupport.CaseMapping
 		for _, n := range ParseWHOISTargets(msg.Params) {
 			whoisTargets = append(whoisTargets, cm.Canonical(n))
 		}
 	}
-	label, token, wait := s.tracker.Begin(d.ID(), cmd, clientLabel, preferLabel, preferWHOX && clientWHOX, whoisTargets)
-	if wait {
-		_ = d.Send(irc.Message{Source: ServerName, Command: "NOTICE", Params: []string{s.Nick(), "request queued behind another client's query"}})
+	whoMask := ""
+	if cmd == "WHO" || cmd == "WHOX" {
+		whoMask = cm.Canonical(msg.Param(0))
 	}
+	statsLetter := ""
+	if cmd == "STATS" && !preferLabel {
+		statsLetter = ParseStatsLetter(msg.Params)
+	}
+	label, token, wait := s.tracker.Begin(BeginOpts{
+		Client:       d.ID(),
+		Cmd:          cmd,
+		ClientLabel:  clientLabel,
+		PreferLabel:  preferLabel,
+		PreferWHOX:   preferWHOX && clientWHOX,
+		WhoisTargets: whoisTargets,
+		WHOMask:      whoMask,
+		StatsLetter:  statsLetter,
+	})
 	out := s.toUplink(msg)
 	if label != "" {
 		if out.Tags == nil {
@@ -133,6 +147,9 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 			Command: "WHO",
 			Params:  []string{msg.Param(0), spec},
 		}
+	}
+	if wait != nil {
+		<-wait // hold until prior exchange's end-numeric
 	}
 	return s.uplink.WriteMessage(out)
 }

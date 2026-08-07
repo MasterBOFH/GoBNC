@@ -18,26 +18,32 @@ type pendingRequest struct {
 	ClientLabel string // label from the downlink to echo on replies
 	Command     string
 	Label       string // uplink label if any
-	Target      string // folded nick for WHOIS nick-routing
+	Target      string // folded nick (WHOIS), WHO mask, or STATS letter
 	WHOXToken   string // token we sent upstream
 	// WHOXStripToken: we injected 't'; remove querytype from 354 before the client.
 	WHOXStripToken bool
 	// WHOXClientToken: client's original querytype to restore on 354 (when they sent one).
 	WHOXClientToken string
 	EndCodes        map[string]bool
+	ReplyCodes      map[string]bool // numerics that belong to this exchange (serialized path)
 	Created         time.Time
+	// gate is closed when this request may be written upstream (hold-until-end).
+	// nil means already clear to send.
+	gate chan struct{}
 }
 
 // RequestTracker routes solicitous replies to the originating downlink.
 type RequestTracker struct {
-	mu       sync.Mutex
-	labeled  map[string]*pendingRequest   // label -> req
-	whox     map[string]*pendingRequest   // token -> req
-	whois    map[string][]*pendingRequest // folded nick -> waiters (oldest first)
-	queue    []*pendingRequest            // serialized (no label/token/whois)
-	active   *pendingRequest              // head of serialized exchange
-	nextLbl  uint64
-	nextTok  uint64
+	mu      sync.Mutex
+	labeled map[string]*pendingRequest   // label -> req
+	whox    map[string]*pendingRequest   // token -> req
+	whois   map[string][]*pendingRequest // folded nick -> waiters (oldest first)
+	stats   map[string][]*pendingRequest // stats letter -> waiters (oldest first)
+	queue   []*pendingRequest            // serialized (no demux key)
+	active  *pendingRequest              // head of serialized exchange
+	ircd    string                       // detected IRCd family (irc.IRCd*)
+	nextLbl uint64
+	nextTok uint64
 }
 
 // NewRequestTracker creates an empty tracker.
@@ -46,11 +52,26 @@ func NewRequestTracker() *RequestTracker {
 		labeled: make(map[string]*pendingRequest),
 		whox:    make(map[string]*pendingRequest),
 		whois:   make(map[string][]*pendingRequest),
+		stats:   make(map[string][]*pendingRequest),
 	}
 }
 
+// SetIRCd records the detected uplink IRCd family for numeric demux (e.g. MAP).
+func (rt *RequestTracker) SetIRCd(ircd string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.ircd = ircd
+}
+
+// IRCd returns the detected IRCd family.
+func (rt *RequestTracker) IRCd() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.ircd
+}
+
 // endCodes for common solicitous commands.
-func endCodesFor(cmd string) map[string]bool {
+func endCodesFor(cmd, ircd string) map[string]bool {
 	switch cmd {
 	case "WHO", "WHOX":
 		return map[string]bool{"315": true}
@@ -64,78 +85,145 @@ func endCodesFor(cmd string) map[string]bool {
 		return map[string]bool{"366": true}
 	case "LINKS":
 		return map[string]bool{"365": true}
+	case "MAP":
+		return irc.MAPEndCodes(ircd)
+	case "HELP":
+		// RatBox / modern: 704 start, 705 text, 706 end.
+		return map[string]bool{"706": true, "524": true} // 524 = ERR_HELPNOTFOUND where used
+	case "ADMIN":
+		// RFC 2812: 256–259; 259 is last. 402 = no such server.
+		return map[string]bool{"259": true, "402": true}
 	default:
 		return map[string]bool{}
+	}
+}
+
+// replyCodesFor are numerics attributed to a serialized solicitous exchange.
+func replyCodesFor(cmd, ircd string) map[string]bool {
+	switch cmd {
+	case "WHO", "WHOX":
+		return map[string]bool{"352": true, "315": true, "354": true}
+	case "LIST":
+		return map[string]bool{"321": true, "322": true, "323": true}
+	case "NAMES":
+		return map[string]bool{"353": true, "366": true}
+	case "LINKS":
+		return map[string]bool{"364": true, "365": true}
+	case "STATS":
+		return map[string]bool{
+			"211": true, "212": true, "213": true, "214": true, "215": true,
+			"216": true, "217": true, "218": true, "219": true,
+			"241": true, "242": true, "243": true, "244": true, "245": true,
+			"246": true, "247": true, "248": true, "249": true, "250": true,
+		}
+	case "MAP":
+		return irc.MAPReplyCodes(ircd)
+	case "HELP":
+		return map[string]bool{"704": true, "705": true, "706": true, "524": true}
+	case "ADMIN":
+		return map[string]bool{"256": true, "257": true, "258": true, "259": true, "402": true}
+	default:
+		return endCodesFor(cmd, ircd)
 	}
 }
 
 // IsSolicitous reports whether cmd needs reply routing.
 func IsSolicitous(cmd string) bool {
 	switch cmd {
-	case "WHO", "WHOIS", "WHOWAS", "STATS", "LIST", "LINKS", "NAMES", "USERHOST", "ISON", "MONITOR", "WATCH":
+	case "WHO", "WHOIS", "WHOWAS", "STATS", "LIST", "LINKS", "NAMES",
+		"USERHOST", "ISON", "MONITOR", "WATCH",
+		"MAP", "HELP", "ADMIN":
 		return true
 	default:
 		return false
 	}
 }
 
+// BeginOpts configures registration of an outbound solicitous command.
+type BeginOpts struct {
+	Client       ClientID
+	Cmd          string
+	ClientLabel  string
+	PreferLabel  bool
+	PreferWHOX   bool
+	WhoisTargets []string // folded nicks
+	WHOMask      string   // WHO mask (for 315 matching)
+	StatsLetter  string   // folded STATS query letter ("" if none)
+}
+
 // Begin registers an outbound solicitous command.
-// clientLabel is an optional label from the downlink to echo on replies.
-// preferLabel / preferWHOX control uplink strategies.
-// whoisTargets are folded nicks for unlabeled WHOIS nick-routing (ignored otherwise).
+// wait is non-nil when the caller must block until it is closed before writing upstream.
 // For WHOX, the returned token is numeric 1–999 (ircu/IRCv3 requirement).
-func (rt *RequestTracker) Begin(client ClientID, cmd, clientLabel string, preferLabel, preferWHOX bool, whoisTargets []string) (label, whoxToken string, wait bool) {
+func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, wait <-chan struct{}) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	cmd := opts.Cmd
 	req := &pendingRequest{
-		Client:      client,
-		ClientLabel: clientLabel,
+		Client:      opts.Client,
+		ClientLabel: opts.ClientLabel,
 		Command:     cmd,
-		EndCodes:    endCodesFor(cmd),
+		EndCodes:    endCodesFor(cmd, rt.ircd),
+		ReplyCodes:  replyCodesFor(cmd, rt.ircd),
 		Created:     time.Now(),
 	}
-	if preferLabel {
+	if opts.PreferLabel {
 		rt.nextLbl++
 		label = formatID("L", rt.nextLbl)
 		req.Label = label
 		rt.labeled[label] = req
-		return label, "", false
+		return label, "", nil
 	}
-	if preferWHOX && (cmd == "WHO" || cmd == "WHOX") {
+	if opts.PreferWHOX && (cmd == "WHO" || cmd == "WHOX") {
 		rt.nextTok++
 		if rt.nextTok > 999 {
 			rt.nextTok = 1
 		}
 		whoxToken = strconv.FormatUint(rt.nextTok, 10)
 		req.WHOXToken = whoxToken
+		req.Target = opts.WHOMask
 		rt.whox[whoxToken] = req
-		return "", whoxToken, false
+		return "", whoxToken, nil
 	}
 	// Unlabeled WHOIS: route by target nick (handles remote/interleaved replies).
-	if cmd == "WHOIS" && len(whoisTargets) > 0 {
-		for _, nick := range whoisTargets {
+	if cmd == "WHOIS" && len(opts.WhoisTargets) > 0 {
+		for _, nick := range opts.WhoisTargets {
 			if nick == "" {
 				continue
 			}
 			w := &pendingRequest{
-				Client:      client,
-				ClientLabel: clientLabel,
+				Client:      opts.Client,
+				ClientLabel: opts.ClientLabel,
 				Command:     "WHOIS",
 				Target:      nick,
-				EndCodes:    endCodesFor("WHOIS"),
+				EndCodes:    endCodesFor("WHOIS", rt.ircd),
 				Created:     time.Now(),
 			}
 			rt.whois[nick] = append(rt.whois[nick], w)
 		}
-		return "", "", false
+		return "", "", nil
 	}
-	// Serialize everything else
+	// STATS: demux by query letter (y vs c may run concurrently).
+	if cmd == "STATS" && opts.StatsLetter != "" {
+		letter := opts.StatsLetter
+		req.Target = letter
+		waiters := rt.stats[letter]
+		if len(waiters) == 0 {
+			rt.stats[letter] = []*pendingRequest{req}
+			return "", "", nil
+		}
+		// Same letter already in flight — hold until prior 219.
+		req.gate = make(chan struct{})
+		rt.stats[letter] = append(waiters, req)
+		return "", "", req.gate
+	}
+	// Serialize everything else (plain WHO, LIST, NAMES, letter-less STATS, …).
 	rt.queue = append(rt.queue, req)
 	if rt.active == nil {
 		rt.active = req
-		return "", "", false
+		return "", "", nil
 	}
-	return "", "", true // caller should wait / queue at higher level
+	req.gate = make(chan struct{})
+	return "", "", req.gate
 }
 
 // SetWHOXClientFix records how to rewrite 354 replies for this uplink token:
@@ -188,7 +276,7 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 	}
 
 	// WHOIS numerics: route by target nick (params[1]), oldest waiter first.
-	if isWHOISNumeric(msg.Command) && len(msg.Params) > 1 {
+	if irc.IsWHOISReply(msg.Command, rt.ircd) && len(msg.Params) > 1 {
 		nick := cm.Canonical(msg.Params[1])
 		if waiters := rt.whois[nick]; len(waiters) > 0 {
 			req := waiters[0]
@@ -202,6 +290,28 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		}
 	}
 
+	// STATS: 219 carries the query letter in params[1].
+	if msg.Command == "219" && len(msg.Params) > 1 {
+		letter := foldStatsLetter(msg.Params[1])
+		if waiters := rt.stats[letter]; len(waiters) > 0 {
+			req := waiters[0]
+			rt.stats[letter] = waiters[1:]
+			if len(rt.stats[letter]) == 0 {
+				delete(rt.stats, letter)
+			} else {
+				rt.releaseGate(rt.stats[letter][0])
+			}
+			return req.Client, true, req.ClientLabel, false, ""
+		}
+	}
+	// Intermediate STATS numerics: only when a single letter is pending.
+	if isSTATSNumeric(msg.Command) && msg.Command != "219" {
+		if letter, req, ok := rt.singleStatsPending(); ok {
+			_ = letter
+			return req.Client, true, req.ClientLabel, false, ""
+		}
+	}
+
 	// WHOX: token is params[1] when 't' was requested (fixed field order).
 	if msg.Command == "354" && len(msg.Params) > 1 {
 		tok := msg.Params[1]
@@ -211,7 +321,15 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		}
 	}
 	if msg.Command == "315" {
-		// End-of-WHO without a token field — finish the oldest pending WHOX.
+		mask := ""
+		if len(msg.Params) > 1 {
+			mask = cm.Canonical(msg.Params[1])
+		}
+		if req, tok, ok := rt.whoxByMask(mask); ok {
+			delete(rt.whox, tok)
+			return req.Client, true, req.ClientLabel, false, ""
+		}
+		// Fallback: oldest pending WHOX.
 		var best *pendingRequest
 		var bestTok string
 		for tok, req := range rt.whox {
@@ -242,7 +360,7 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 
 	if rt.active != nil {
 		cmd := msg.Command
-		if isLikelyReply(cmd) {
+		if rt.active.ReplyCodes[cmd] || (len(rt.active.ReplyCodes) == 0 && isLikelyReply(cmd)) {
 			client := rt.active.Client
 			echo := rt.active.ClientLabel
 			if rt.active.EndCodes[cmd] {
@@ -254,6 +372,48 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 	return "", false, "", false, ""
 }
 
+func (rt *RequestTracker) whoxByMask(mask string) (*pendingRequest, string, bool) {
+	if mask == "" {
+		return nil, "", false
+	}
+	var best *pendingRequest
+	var bestTok string
+	for tok, req := range rt.whox {
+		if req.Target == "" || req.Target != mask {
+			continue
+		}
+		if best == nil || req.Created.Before(best.Created) {
+			best = req
+			bestTok = tok
+		}
+	}
+	if best == nil {
+		return nil, "", false
+	}
+	return best, bestTok, true
+}
+
+func (rt *RequestTracker) singleStatsPending() (letter string, req *pendingRequest, ok bool) {
+	for let, waiters := range rt.stats {
+		if len(waiters) == 0 {
+			continue
+		}
+		if ok {
+			return "", nil, false // more than one letter
+		}
+		letter, req, ok = let, waiters[0], true
+	}
+	return letter, req, ok
+}
+
+func (rt *RequestTracker) releaseGate(req *pendingRequest) {
+	if req == nil || req.gate == nil {
+		return
+	}
+	close(req.gate)
+	req.gate = nil
+}
+
 func (rt *RequestTracker) finishActive() {
 	if len(rt.queue) > 0 && rt.queue[0] == rt.active {
 		rt.queue = rt.queue[1:]
@@ -261,6 +421,7 @@ func (rt *RequestTracker) finishActive() {
 	rt.active = nil
 	if len(rt.queue) > 0 {
 		rt.active = rt.queue[0]
+		rt.releaseGate(rt.active)
 	}
 }
 
@@ -291,29 +452,48 @@ func (rt *RequestTracker) DropClient(client ClientID) {
 			rt.whois[nick] = kept
 		}
 	}
+	for letter, waiters := range rt.stats {
+		var kept []*pendingRequest
+		droppedHead := len(waiters) > 0 && waiters[0].Client == client
+		for _, req := range waiters {
+			if req.Client == client {
+				rt.releaseGate(req)
+				continue
+			}
+			kept = append(kept, req)
+		}
+		if len(kept) == 0 {
+			delete(rt.stats, letter)
+		} else {
+			rt.stats[letter] = kept
+			if droppedHead {
+				rt.releaseGate(kept[0])
+			}
+		}
+	}
 	var nq []*pendingRequest
 	for _, req := range rt.queue {
-		if req.Client != client {
-			nq = append(nq, req)
+		if req.Client == client {
+			rt.releaseGate(req)
+			continue
 		}
+		nq = append(nq, req)
 	}
 	rt.queue = nq
 	if rt.active != nil && rt.active.Client == client {
 		rt.active = nil
 		if len(rt.queue) > 0 {
 			rt.active = rt.queue[0]
+			rt.releaseGate(rt.active)
 		}
 	}
 }
 
-// isWHOISNumeric reports numerics that carry the WHOIS target nick in params[1].
-func isWHOISNumeric(cmd string) bool {
+// isSTATSNumeric reports numerics that commonly belong to a STATS exchange.
+func isSTATSNumeric(cmd string) bool {
 	switch cmd {
-	case "301", // RPL_AWAY (also unsolicited; only routed when a WHOIS is pending)
-		"276", "307", "311", "312", "313", "317", "318", "319", "320",
-		"325", "330", "335", "336", "337", "338", "378", "379",
-		"671", "672", "673", "674",
-		"401": // ERR_NOSUCHNICK
+	case "211", "212", "213", "214", "215", "216", "217", "218", "219",
+		"241", "242", "243", "244", "245", "246", "247", "248", "249", "250":
 		return true
 	default:
 		return false
@@ -342,6 +522,23 @@ func ParseWHOISTargets(params []string) []string {
 		}
 	}
 	return out
+}
+
+// ParseStatsLetter returns the folded STATS query letter, or "" if absent.
+func ParseStatsLetter(params []string) string {
+	if len(params) == 0 || params[0] == "" {
+		return ""
+	}
+	return foldStatsLetter(params[0])
+}
+
+func foldStatsLetter(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Only the first character is the query type on most ircds.
+	return strings.ToLower(s[:1])
 }
 
 func isLikelyReply(cmd string) bool {

@@ -59,6 +59,7 @@ type Session struct {
 	rpl002         []string // params after nick
 	rpl003         []string
 	rpl004         []string
+	ircd           string // detected IRCd family (irc.IRCd*)
 }
 
 // New creates a session (uplink attached later via SetUplink / Run).

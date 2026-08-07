@@ -23,6 +23,7 @@ func (s *Session) OnRegistered(u *uplink.Uplink) {
 	s.isupport = u.ISUPPORT()
 	s.upCaps = u.Caps()
 	s.rpl002, s.rpl003, s.rpl004 = u.Welcome()
+	s.detectIRCdLocked()
 	s.self.UModes = make(map[byte]bool)
 	if um := u.UserModes(); um != "" {
 		s.self.ApplyUModes(um)
