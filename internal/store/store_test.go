@@ -120,6 +120,41 @@ func TestMessagesQueryRetention(t *testing.T) {
 	}
 }
 
+func TestReadMarkerMonotonic(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	id, err := s.UpsertNetwork(ctx, Network{Name: "n", Host: "h", Port: 6667, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := s.GetReadMarker(ctx, id, "#c")
+	if err != nil || ok {
+		t.Fatalf("empty: ok=%v err=%v", ok, err)
+	}
+	t1 := "2019-01-04T14:33:26.123Z"
+	t2 := "2019-01-04T14:34:00.000Z"
+	stored, updated, err := s.SetReadMarkerIfNewer(ctx, id, "#c", t1)
+	if err != nil || !updated || stored != t1 {
+		t.Fatalf("first set: %q updated=%v err=%v", stored, updated, err)
+	}
+	stored, updated, err = s.SetReadMarkerIfNewer(ctx, id, "#c", t1)
+	if err != nil || updated || stored != t1 {
+		t.Fatalf("equal: %q updated=%v err=%v", stored, updated, err)
+	}
+	stored, updated, err = s.SetReadMarkerIfNewer(ctx, id, "#c", "2019-01-04T14:33:00.000Z")
+	if err != nil || updated || stored != t1 {
+		t.Fatalf("older: %q updated=%v err=%v", stored, updated, err)
+	}
+	stored, updated, err = s.SetReadMarkerIfNewer(ctx, id, "#c", t2)
+	if err != nil || !updated || stored != t2 {
+		t.Fatalf("newer: %q updated=%v err=%v", stored, updated, err)
+	}
+	got, ok, err := s.GetReadMarker(ctx, id, "#c")
+	if err != nil || !ok || got != t2 {
+		t.Fatalf("get: %q ok=%v err=%v", got, ok, err)
+	}
+}
+
 func openTemp(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "t.db"))

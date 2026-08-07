@@ -233,7 +233,6 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 	s.mu.RUnlock()
 	client, only, echoLabel, stripWHOX, restoreWHOX := s.tracker.RouteMessage(msg, cm)
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if only {
 		if d, ok := s.downlinks[client]; ok {
 			out := s.rewriteFor(d, msg)
@@ -255,6 +254,7 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 			}
 			_ = d.Send(out)
 		}
+		s.mu.RUnlock()
 		return
 	}
 	for _, d := range s.downlinks {
@@ -264,6 +264,8 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 		}
 		_ = d.Send(out)
 	}
+	s.mu.RUnlock()
+	s.maybeSendMarkReadOnSelfJOIN(msg)
 }
 
 // ensureMessageTime adds @time= when the uplink did not provide server-time.

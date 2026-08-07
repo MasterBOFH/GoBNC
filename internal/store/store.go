@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -93,6 +94,12 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_target_time ON messages(network_id, target, time)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(network_id, msgid)`,
+		`CREATE TABLE IF NOT EXISTS read_markers (
+			network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+			target TEXT NOT NULL,
+			time TEXT NOT NULL,
+			UNIQUE(network_id, target)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -467,6 +474,78 @@ func (s *Store) DeleteOlderThan(ctx context.Context, networkID int64, t time.Tim
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// GetReadMarker returns the stored last-read @time for target (already casefolded), if any.
+func (s *Store) GetReadMarker(ctx context.Context, networkID int64, target string) (ts string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT time FROM read_markers WHERE network_id=? AND target=?`,
+		networkID, target).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return ts, true, nil
+}
+
+// SetReadMarkerIfNewer stores ts when it is strictly newer than the existing marker.
+// Returns the marker that should be advertised (stored value) and whether it changed.
+func (s *Store) SetReadMarkerIfNewer(ctx context.Context, networkID int64, target, ts string) (stored string, updated bool, err error) {
+	cur, ok, err := s.GetReadMarker(ctx, networkID, target)
+	if err != nil {
+		return "", false, err
+	}
+	if ok {
+		cmp, err := compareMessageTimes(cur, ts)
+		if err != nil {
+			return "", false, err
+		}
+		if cmp >= 0 {
+			return cur, false, nil
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO read_markers (network_id, target, time) VALUES (?, ?, ?)
+		ON CONFLICT(network_id, target) DO UPDATE SET time=excluded.time`,
+		networkID, target, ts)
+	if err != nil {
+		return "", false, err
+	}
+	return ts, true, nil
+}
+
+// compareMessageTimes compares two message @time values. Returns -1 if a<b, 0 if equal, 1 if a>b.
+func compareMessageTimes(a, b string) (int, error) {
+	ta, err := parseMessageTime(a)
+	if err != nil {
+		return 0, err
+	}
+	tb, err := parseMessageTime(b)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case ta.Before(tb):
+		return -1, nil
+	case ta.After(tb):
+		return 1, nil
+	default:
+		return 0, nil
+	}
+}
+
+func parseMessageTime(s string) (time.Time, error) {
+	s = strings.TrimPrefix(s, "timestamp=")
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// Millisecond server-time without zone variants already covered by RFC3339.
+	return time.Time{}, fmt.Errorf("invalid time %q", s)
 }
 
 func boolInt(b bool) int {

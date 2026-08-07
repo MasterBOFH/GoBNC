@@ -68,6 +68,8 @@ type Session struct {
 	// regBuffer holds client-visible registration lines until uplink is registered
 	// (for mid-registration attach catch-up).
 	regBuffer []irc.Message
+	// readMarkers is an in-memory fallback when store is nil or network ID unset.
+	readMarkers map[string]string
 }
 
 // New creates a session (uplink attached later via SetUplink / Run).

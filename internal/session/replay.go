@@ -90,6 +90,9 @@ func (s *Session) Attach(d Downlink) error {
 
 	for _, ch := range chans {
 		send(irc.Message{Source: prefix, Command: "JOIN", Params: []string{ch.Name}})
+		if d.HasCap("draft/read-marker") {
+			s.sendMarkReadAfterJoin(d, ch.Name)
+		}
 		if ch.Topic != "" {
 			send(irc.Message{Source: ServerName, Command: "332", Params: []string{nick, ch.Name, ch.Topic}})
 		}

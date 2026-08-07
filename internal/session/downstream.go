@@ -31,6 +31,8 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		return d.Send(irc.Message{Command: "PONG", Params: msg.Params})
 	case "AUTHENTICATE":
 		return s.forwardClientAuthenticate(d, msg)
+	case "MARKREAD":
+		return s.handleMARKREAD(d, msg)
 	case "CHATHISTORY":
 		if s.hist != nil {
 			if len(msg.Params) >= 2 {

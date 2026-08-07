@@ -17,6 +17,7 @@ var AlwaysOffer = []string{
 	"draft/chathistory",
 	"event-playback",
 	"draft/event-playback",
+	"draft/read-marker",
 }
 
 // UplinkOffer is advertised to clients only while the uplink has the capability enabled.
