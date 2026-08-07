@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race
+        run: go test -race ./...
+
+      - name: Build release binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${VERSION#v}"
+          mkdir -p dist
+          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver}"
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              out="dist/gobnc_${ver}_${os}_${arch}"
+              echo "building $out"
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
+                go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/gobnc
+            done
+          done
+          (
+            cd dist
+            sha256sum gobnc_* | tee checksums.txt
+          )
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            dist/gobnc_* \
+            dist/checksums.txt
