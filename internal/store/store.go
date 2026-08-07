@@ -72,7 +72,9 @@ func (s *Store) migrate() error {
 			sasl_user TEXT NOT NULL DEFAULT '',
 			sasl_pass TEXT NOT NULL DEFAULT '',
 			sasl_required INTEGER NOT NULL DEFAULT 0,
-			enabled INTEGER NOT NULL DEFAULT 1
+			enabled INTEGER NOT NULL DEFAULT 1,
+			flood_burst INTEGER NOT NULL DEFAULT 0,
+			flood_rate REAL NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,24 +110,31 @@ func (s *Store) migrate() error {
 	}
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO auth (id, password_hash, updated_at) VALUES (1, '', ?)`, time.Now().UTC().Format(time.RFC3339Nano))
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO bouncer_meta (key, value) VALUES ('schema_version', '1')`)
+	// Existing DBs created before flood columns.
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN flood_burst INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN flood_rate REAL NOT NULL DEFAULT 0`)
 	return nil
 }
 
 // Network is a configured IRC network.
 type Network struct {
-	ID            int64
-	Name          string
-	Host          string
-	Port          int
-	TLS           bool
-	Nick          string
-	Username      string
-	Realname      string
-	Pass          string
-	SASLUser      string
-	SASLPass      string
-	SASLRequired  bool
-	Enabled       bool
+	ID           int64
+	Name         string
+	Host         string
+	Port         int
+	TLS          bool
+	Nick         string
+	Username     string
+	Realname     string
+	Pass         string
+	SASLUser     string
+	SASLPass     string
+	SASLRequired bool
+	Enabled      bool
+	// FloodBurst is max queued send burst in bytes (0 with FloodRate 0 = unlimited).
+	FloodBurst int
+	// FloodRate is sustained uplink send rate in bytes/sec (0 = pacing disabled).
+	FloodRate float64
 }
 
 // Channel is an auto-join channel.
@@ -152,15 +161,17 @@ type Message struct {
 // UpsertNetwork inserts or updates a network by name.
 func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			host=excluded.host, port=excluded.port, tls=excluded.tls, nick=excluded.nick,
 			username=excluded.username, realname=excluded.realname, pass=excluded.pass,
 			sasl_user=excluded.sasl_user, sasl_pass=excluded.sasl_pass,
-			sasl_required=excluded.sasl_required, enabled=excluded.enabled
+			sasl_required=excluded.sasl_required, enabled=excluded.enabled,
+			flood_burst=excluded.flood_burst, flood_rate=excluded.flood_rate
 	`, n.Name, n.Host, n.Port, boolInt(n.TLS), n.Nick, n.Username, n.Realname, n.Pass,
-		n.SASLUser, n.SASLPass, boolInt(n.SASLRequired), boolInt(n.Enabled))
+		n.SASLUser, n.SASLPass, boolInt(n.SASLRequired), boolInt(n.Enabled),
+		n.FloodBurst, n.FloodRate)
 	if err != nil {
 		return 0, err
 	}
@@ -174,7 +185,7 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 // ListNetworks returns all networks.
 func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate
 		FROM networks ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -185,7 +196,7 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 		var n Network
 		var tls, saslReq, en int
 		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
-			&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en); err != nil {
+			&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en, &n.FloodBurst, &n.FloodRate); err != nil {
 			return nil, err
 		}
 		n.TLS = tls != 0
@@ -201,10 +212,10 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error)
 	var n Network
 	var tls, saslReq, en int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl_required, enabled, flood_burst, flood_rate
 		FROM networks WHERE name=?`, name).Scan(
 		&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
-		&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en)
+		&n.Pass, &n.SASLUser, &n.SASLPass, &saslReq, &en, &n.FloodBurst, &n.FloodRate)
 	if err != nil {
 		return n, err
 	}

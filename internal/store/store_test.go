@@ -21,6 +21,28 @@ func TestMigrateIdempotent(t *testing.T) {
 	s2.Close()
 }
 
+func TestNetworkFloodFields(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	_, err := s.UpsertNetwork(ctx, Network{
+		Name: "n", Host: "h", Port: 6667, Nick: "me", Enabled: true,
+		FloodBurst: 4096, FloodRate: 512.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.FloodBurst != 4096 || n.FloodRate != 512.5 {
+		t.Fatalf("flood fields: burst=%d rate=%g", n.FloodBurst, n.FloodRate)
+	}
+	if list, err := s.ListNetworks(ctx); err != nil || len(list) != 1 || list[0].FloodBurst != 4096 {
+		t.Fatalf("%+v %v", list, err)
+	}
+}
+
 func TestNetworkCRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

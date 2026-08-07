@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/connio"
+	"github.com/MasterBOFH/GoBNC/internal/flood"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/xdg-go/scram"
 )
+
+var errNotConnected = fmt.Errorf("not connected")
 
 // DesiredCaps requested when available.
 var DesiredCaps = []string{
@@ -91,6 +94,12 @@ type Uplink struct {
 	handler Handler
 
 	writeMu sync.Mutex
+
+	flood     *flood.ByteBucket
+	floodMu   sync.Mutex
+	floodQ    []string
+	floodWake chan struct{}
+	floodStop chan struct{}
 }
 
 // New creates an uplink (not yet connected).
@@ -105,7 +114,7 @@ func New(cfg Config, h Handler) *Uplink {
 	if cfg.MaxBackoff == 0 {
 		cfg.MaxBackoff = 60 * time.Second
 	}
-	return &Uplink{
+	u := &Uplink{
 		cfg:      cfg,
 		log:      log,
 		handler:  h,
@@ -114,6 +123,8 @@ func New(cfg Config, h Handler) *Uplink {
 		caps:     make(map[string]bool),
 		umodes:   make(map[byte]bool),
 	}
+	u.initFlood()
+	return u
 }
 
 // Account returns the services account from the last RPL_LOGGEDIN (900), or "".
@@ -156,11 +167,12 @@ func (u *Uplink) SetChannels(chs []store.Channel) {
 }
 
 // SetNetwork updates dial/register settings used on the next (re)connect.
-// The current connection is left open.
+// The current connection is left open. Flood pacing applies immediately.
 func (u *Uplink) SetNetwork(n store.Network) {
 	u.mu.Lock()
 	u.cfg.Network = n
 	u.mu.Unlock()
+	u.setFloodParams(n.FloodBurst, n.FloodRate)
 }
 
 // HasCap reports whether a capability is enabled.
@@ -191,20 +203,30 @@ func (u *Uplink) UserModes() string {
 	return irc.UserModeString(u.umodes)
 }
 
-// WriteMessage encodes and sends a message.
+// WriteMessage encodes and sends a message (flood-paced when configured).
 func (u *Uplink) WriteMessage(msg irc.Message) error {
 	return u.WriteRaw(msg.Encode())
 }
 
-// WriteRaw sends a raw line.
+// WriteRaw queues a raw line for flood-paced send when pacing is enabled;
+// otherwise writes immediately. Never drops while connected.
 func (u *Uplink) WriteRaw(line string) error {
+	if u.floodEnabled() {
+		return u.enqueueFlood(line)
+	}
+	return u.writeImmediate(line)
+}
+
+// writeImmediate sends a line now, bypassing the flood queue and bucket.
+// Used for PONG (and when flood pacing is disabled).
+func (u *Uplink) writeImmediate(line string) error {
 	u.writeMu.Lock()
 	defer u.writeMu.Unlock()
 	u.mu.RLock()
 	c := u.conn
 	u.mu.RUnlock()
 	if c == nil {
-		return fmt.Errorf("not connected")
+		return errNotConnected
 	}
 	return c.WriteLine(line)
 }
@@ -289,7 +311,9 @@ func (u *Uplink) session(ctx context.Context) error {
 	u.mu.Lock()
 	u.conn = c
 	u.mu.Unlock()
+	u.startFloodDrain(ctx)
 	defer func() {
+		u.stopFloodDrain()
 		_ = c.Close()
 		u.mu.Lock()
 		u.conn = nil
@@ -490,7 +514,7 @@ func (u *Uplink) finishRegister(c *connio.Conn) error {
 	if u.handler != nil {
 		u.handler.OnRegistered(u)
 	}
-	u.joinChannels(c)
+	u.joinChannels()
 	return nil
 }
 
@@ -688,23 +712,27 @@ func parseCapList(s string) map[string]string {
 	return out
 }
 
-func (u *Uplink) joinChannels(c *connio.Conn) {
+func (u *Uplink) joinChannels() {
 	u.mu.RLock()
 	chs := append([]store.Channel(nil), u.cfg.Channels...)
 	u.mu.RUnlock()
 	for _, ch := range chs {
+		var line string
 		if ch.Key != "" {
-			_ = c.WriteLine("JOIN " + ch.Name + " " + ch.Key)
+			line = "JOIN " + ch.Name + " " + ch.Key
 		} else {
-			_ = c.WriteLine("JOIN " + ch.Name)
+			line = "JOIN " + ch.Name
 		}
+		// Share the flood bucket with client traffic.
+		_ = u.WriteRaw(line)
 	}
 }
 
 func (u *Uplink) handle(ctx context.Context, c *connio.Conn, msg irc.Message) error {
 	switch msg.Command {
 	case "PING":
-		return c.WriteLine("PONG :" + msg.Trailing())
+		// PONG never enters the flood queue or bucket.
+		return u.writeImmediate("PONG :" + msg.Trailing())
 	case "002":
 		u.storeWelcomeTail(&u.rpl002, msg.Params)
 	case "003":
