@@ -63,6 +63,7 @@ func (s *Session) OnRegistered(u *uplink.Uplink) {
 		}
 		s.notifyAttachCaps(d)
 	}
+	s.flushHeldAfterRegister()
 }
 
 // OnRegistrationLine implements uplink.Handler — relay pre-registration traffic
@@ -210,6 +211,11 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.pendingJoinKeys = make(map[string]string)
 	s.selfEcho = nil
 	s.selfEchoSeq = 0
+	if wasRegistered {
+		s.heldUntilReg = nil
+	}
+	s.heldFlushCancel = nil
+	s.heldFlushSent = nil
 	nick := s.Network.Nick
 	user := s.Network.Username
 	s.self = &User{Nick: nick, User: user, UModes: make(map[byte]bool)}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/history"
@@ -80,6 +81,17 @@ type Session struct {
 	// the uplink has labeled-response + echo-message (bouncer-owned upstream labels).
 	selfEcho    map[string]pendingSelfEcho
 	selfEchoSeq uint64
+	// heldUntilReg queues client→uplink commands received after a synthetic 001
+	// but before the uplink finishes registration (avoids 451 / stuck solicitous).
+	heldUntilReg []heldClientMsg
+	// heldFlushing is true while flushHeldAfterRegister is draining the queue.
+	heldFlushing bool
+	// heldFlushCancel fingerprints the client already re-sent during flush;
+	// flush must not also forward them.
+	heldFlushCancel map[ClientID]map[string]struct{}
+	// heldFlushSent fingerprints recently forwarded by flush; a matching client
+	// re-send after the real 001 is dropped once (see heldFlushSentTTL).
+	heldFlushSent map[ClientID]map[string]time.Time
 	// admin handles the in-band BNC IRC command (nil if unset).
 	admin AdminFunc
 }
@@ -88,6 +100,12 @@ type Session struct {
 type pendingSelfEcho struct {
 	Client ClientID
 	Label  string
+}
+
+// heldClientMsg is a client command waiting for uplink registration.
+type heldClientMsg struct {
+	Client ClientID
+	Msg    irc.Message
 }
 
 // AdminFunc runs a BNC management command and returns NOTICE text lines.

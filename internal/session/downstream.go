@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
@@ -20,6 +21,17 @@ func (s *Session) Detach(id ClientID) {
 	if s.saslClient == id {
 		s.saslClient = ""
 	}
+	if len(s.heldUntilReg) > 0 {
+		kept := s.heldUntilReg[:0]
+		for _, h := range s.heldUntilReg {
+			if h.Client != id {
+				kept = append(kept, h)
+			}
+		}
+		s.heldUntilReg = kept
+	}
+	delete(s.heldFlushCancel, id)
+	delete(s.heldFlushSent, id)
 	s.mu.Unlock()
 	s.tracker.DropClient(id)
 }
@@ -102,26 +114,47 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		}
 		return nil
 	case "MODE":
+		if s.holdUntilRegistered(d, msg) {
+			return nil
+		}
+		enquiry := isMODEEnquiryWith(msg.Params, s.isupport.Modes)
+		if enquiry && s.skipDuplicateAfterHold(d, msg) {
+			return nil
+		}
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		if isMODEEnquiryWith(msg.Params, s.isupport.Modes) {
+		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
 	case "TOPIC":
+		if s.holdUntilRegistered(d, msg) {
+			return nil
+		}
+		enquiry := isTOPICEnquiry(msg.Params)
+		if enquiry && s.skipDuplicateAfterHold(d, msg) {
+			return nil
+		}
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		if isTOPICEnquiry(msg.Params) {
+		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
 	case "SILENCE":
+		if s.holdUntilRegistered(d, msg) {
+			return nil
+		}
+		enquiry := isSILENCEEnquiry(msg.Params)
+		if enquiry && s.skipDuplicateAfterHold(d, msg) {
+			return nil
+		}
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		if isSILENCEEnquiry(msg.Params) {
+		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
 		return s.uplink.WriteMessage(s.toUplink(msg))
@@ -140,6 +173,185 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		}
 		s.uplink.StopNickRecovery()
 		return s.uplink.WriteMessage(s.toUplink(msg))
+	default:
+		if IsSolicitous(cmd) {
+			if s.holdUntilRegistered(d, msg) {
+				return nil
+			}
+			if s.skipDuplicateAfterHold(d, msg) {
+				return nil
+			}
+			return s.forwardSolicitous(d, msg)
+		}
+		if s.uplink == nil {
+			return fmt.Errorf("uplink not ready")
+		}
+		return s.uplink.WriteMessage(s.toUplink(msg))
+	}
+}
+
+const (
+	maxHeldUntilReg  = 64
+	heldFlushSentTTL = 5 * time.Second
+)
+
+func heldFingerprint(msg irc.Message) string {
+	return strings.ToUpper(msg.Command) + " " + strings.Join(msg.Params, " ")
+}
+
+func (s *Session) isHoldableUntilReg(msg irc.Message) bool {
+	cmd := strings.ToUpper(msg.Command)
+	if IsSolicitous(cmd) {
+		return true
+	}
+	switch cmd {
+	case "MODE":
+		return isMODEEnquiryWith(msg.Params, s.isupport.Modes)
+	case "TOPIC":
+		return isTOPICEnquiry(msg.Params)
+	case "SILENCE":
+		return isSILENCEEnquiry(msg.Params)
+	default:
+		return false
+	}
+}
+
+// holdUntilRegistered queues solicitous/enquiry commands while the uplink is
+// still registering (clients may already have a synthetic 001).
+// Repeated identical commands replace the earlier hold (no queue duplicates).
+func (s *Session) holdUntilRegistered(d Downlink, msg irc.Message) bool {
+	if s.Registered() {
+		return false
+	}
+	if !s.isHoldableUntilReg(msg) {
+		return false
+	}
+	key := heldFingerprint(msg)
+	s.mu.Lock()
+	replaced := false
+	for i := range s.heldUntilReg {
+		if s.heldUntilReg[i].Client == d.ID() && heldFingerprint(s.heldUntilReg[i].Msg) == key {
+			s.heldUntilReg[i].Msg = msg
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.heldUntilReg = append(s.heldUntilReg, heldClientMsg{Client: d.ID(), Msg: msg})
+		if len(s.heldUntilReg) > maxHeldUntilReg {
+			s.heldUntilReg = s.heldUntilReg[len(s.heldUntilReg)-maxHeldUntilReg:]
+		}
+	}
+	s.mu.Unlock()
+	return true
+}
+
+// skipDuplicateAfterHold prefers a live post-001 re-send over a held flush.
+// Returns true when this client message should not be forwarded (flush already did).
+func (s *Session) skipDuplicateAfterHold(d Downlink, msg irc.Message) bool {
+	if !s.isHoldableUntilReg(msg) {
+		return false
+	}
+	key := heldFingerprint(msg)
+	id := d.ID()
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Drop matching holds still waiting to flush.
+	if len(s.heldUntilReg) > 0 {
+		kept := s.heldUntilReg[:0]
+		for _, h := range s.heldUntilReg {
+			if h.Client == id && heldFingerprint(h.Msg) == key {
+				continue
+			}
+			kept = append(kept, h)
+		}
+		s.heldUntilReg = kept
+	}
+
+	// Flush already forwarded this — drop the immediate client repeat.
+	if m := s.heldFlushSent[id]; m != nil {
+		if at, ok := m[key]; ok {
+			delete(m, key)
+			if len(m) == 0 {
+				delete(s.heldFlushSent, id)
+			}
+			if now.Sub(at) <= heldFlushSentTTL {
+				return true
+			}
+		}
+	}
+
+	// Cancel an in-flight flush of the same command; this live send wins.
+	if s.heldFlushing {
+		if s.heldFlushCancel == nil {
+			s.heldFlushCancel = make(map[ClientID]map[string]struct{})
+		}
+		if s.heldFlushCancel[id] == nil {
+			s.heldFlushCancel[id] = make(map[string]struct{})
+		}
+		s.heldFlushCancel[id][key] = struct{}{}
+	}
+	return false
+}
+
+func (s *Session) flushHeldAfterRegister() {
+	s.mu.Lock()
+	held := s.heldUntilReg
+	s.heldUntilReg = nil
+	s.heldFlushing = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.heldFlushing = false
+		s.heldFlushCancel = nil
+		s.mu.Unlock()
+	}()
+
+	for _, h := range held {
+		key := heldFingerprint(h.Msg)
+		s.mu.Lock()
+		if m := s.heldFlushCancel[h.Client]; m != nil {
+			if _, ok := m[key]; ok {
+				delete(m, key)
+				if len(m) == 0 {
+					delete(s.heldFlushCancel, h.Client)
+				}
+				s.mu.Unlock()
+				continue
+			}
+		}
+		if s.heldFlushSent == nil {
+			s.heldFlushSent = make(map[ClientID]map[string]time.Time)
+		}
+		if s.heldFlushSent[h.Client] == nil {
+			s.heldFlushSent[h.Client] = make(map[string]time.Time)
+		}
+		s.heldFlushSent[h.Client][key] = time.Now()
+		d, ok := s.downlinks[h.Client]
+		s.mu.Unlock()
+		if !ok {
+			s.mu.Lock()
+			if m := s.heldFlushSent[h.Client]; m != nil {
+				delete(m, key)
+				if len(m) == 0 {
+					delete(s.heldFlushSent, h.Client)
+				}
+			}
+			s.mu.Unlock()
+			continue
+		}
+		_ = s.forwardHeldMessage(d, h.Msg)
+	}
+}
+
+// forwardHeldMessage sends a previously held command without re-entering hold/dedup.
+func (s *Session) forwardHeldMessage(d Downlink, msg irc.Message) error {
+	cmd := strings.ToUpper(msg.Command)
+	switch cmd {
+	case "MODE", "TOPIC", "SILENCE":
+		return s.forwardSolicitous(d, msg)
 	default:
 		if IsSolicitous(cmd) {
 			return s.forwardSolicitous(d, msg)

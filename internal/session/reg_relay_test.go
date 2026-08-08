@@ -42,6 +42,91 @@ func TestAttachPendingBeforeUplink(t *testing.T) {
 	}
 }
 
+func TestHoldSolicitousUntilRegistered(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	msg := irc.Message{Command: "USERHOST", Params: []string{"me"}}
+	if err := s.HandleClientMessage(d, msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HandleClientMessage(d, msg); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	n := len(s.heldUntilReg)
+	s.mu.RUnlock()
+	if n != 1 {
+		t.Fatalf("identical holds should coalesce, got %d", n)
+	}
+	if _, ok := s.tracker.ActiveClient(); ok {
+		t.Fatal("must not begin solicitous while unregistered")
+	}
+
+	// Local commands still work.
+	d.clearSent()
+	if err := s.HandleClientMessage(d, irc.Message{Command: "PING", Params: []string{"x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) != 1 || d.sent[0].Command != "PONG" {
+		t.Fatalf("PING: %+v", d.sent)
+	}
+
+	s.Detach(d.id)
+	s.mu.RLock()
+	n = len(s.heldUntilReg)
+	s.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("detach should drop held: %d", n)
+	}
+}
+
+func TestSkipDuplicateUSERHOSTAfterFlush(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	msg := irc.Message{Command: "USERHOST", Params: []string{"me"}}
+	if err := s.HandleClientMessage(d, msg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate register + flush without a live uplink write path by marking sent.
+	s.mu.Lock()
+	s.registered = true
+	s.heldUntilReg = nil
+	s.heldFlushSent = map[ClientID]map[string]time.Time{
+		d.id: {heldFingerprint(msg): time.Now()},
+	}
+	s.mu.Unlock()
+
+	if err := s.HandleClientMessage(d, msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.tracker.ActiveClient(); ok {
+		t.Fatal("post-001 repeat should be dropped, not forwarded")
+	}
+	s.mu.RLock()
+	_, still := s.heldFlushSent[d.id]
+	s.mu.RUnlock()
+	if still {
+		t.Fatal("dedup marker should be consumed")
+	}
+
+	// A later intentional USERHOST must still go through (no marker).
+	u := uplink.New(uplink.Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
+	s.SetUplink(u)
+	// WriteMessage will fail without a conn; we only care that we enter forwardSolicitous
+	// (tracker begins) rather than skipping again.
+	_ = s.HandleClientMessage(d, msg)
+	if _, ok := s.tracker.ActiveClient(); !ok {
+		t.Fatal("second USERHOST after dedup window should forward")
+	}
+}
+
 func TestAttachMidRegistrationCatchUp(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.OnRegistrationLine(nil, irc.Message{
