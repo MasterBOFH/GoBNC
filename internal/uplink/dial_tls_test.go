@@ -20,6 +20,51 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
 
+func TestDialBindHost(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portStr)
+
+	got := make(chan net.Addr, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			got <- nil
+			return
+		}
+		defer c.Close()
+		got <- c.RemoteAddr()
+	}()
+
+	u := New(Config{
+		Network: store.Network{
+			Host: "127.0.0.1", Port: port, Nick: "me", BindHost: "127.0.0.1",
+		},
+	}, nil)
+	c, err := u.dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	select {
+	case ra := <-got:
+		tcp, ok := ra.(*net.TCPAddr)
+		if !ok || !tcp.IP.Equal(net.ParseIP("127.0.0.1")) {
+			t.Fatalf("remote addr=%v", ra)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("accept timeout")
+	}
+}
+
 // TestDialTLSNoVerifyMismatchedHostname dials a TLS listener whose certificate is
 // self-signed for a different DNS name than the dial target.
 func TestDialTLSNoVerifyMismatchedHostname(t *testing.T) {

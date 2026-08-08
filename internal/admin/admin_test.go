@@ -148,6 +148,39 @@ func TestNetworkTLSCertFlags(t *testing.T) {
 	}
 }
 
+func TestNetworkBindHostFlags(t *testing.T) {
+	rt := &memRuntime{startOK: true, reloadOK: true}
+	deps := testDeps(t, rt)
+	opts := Options{AllowInlineSASLPass: true}
+	_, err := Run(context.Background(), deps, opts, []string{
+		"network", "add", "n1", "irc.example", "6697", "nick",
+		"--bind-host=198.51.100.2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := deps.Store.NetworkByName(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.BindHost != "198.51.100.2" {
+		t.Fatalf("add: %+v", n)
+	}
+	_, err = Run(context.Background(), deps, opts, []string{
+		"network", "mod", "n1", "--bind-host=none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err = deps.Store.NetworkByName(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.BindHost != "none" {
+		t.Fatalf("mod none: %+v", n)
+	}
+}
+
 func TestNetworkSASLFlag(t *testing.T) {
 	rt := &memRuntime{startOK: true, reloadOK: true}
 	deps := testDeps(t, rt)

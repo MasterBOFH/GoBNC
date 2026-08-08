@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,6 +143,47 @@ func TestResolveTLSClientCert(t *testing.T) {
 	_, _, ok = ResolveTLSClientCert("only.crt", "", "g.crt", "g.key")
 	if ok {
 		t.Fatal("incomplete network pair must not fall back partially")
+	}
+}
+
+func TestResolveBindHost(t *testing.T) {
+	if got := ResolveBindHost("", ""); got != "" {
+		t.Fatalf("empty: %q", got)
+	}
+	if got := ResolveBindHost("", "203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("inherit global: %q", got)
+	}
+	if got := ResolveBindHost("198.51.100.2", "203.0.113.10"); got != "198.51.100.2" {
+		t.Fatalf("network override: %q", got)
+	}
+	if got := ResolveBindHost("none", "203.0.113.10"); got != "" {
+		t.Fatalf("none disables: %q", got)
+	}
+	if got := ResolveBindHost("-", "203.0.113.10"); got != "" {
+		t.Fatalf("dash disables: %q", got)
+	}
+}
+
+func TestDialLocalAddr(t *testing.T) {
+	addr, err := DialLocalAddr("")
+	if err != nil || addr != nil {
+		t.Fatalf("empty: %v %v", addr, err)
+	}
+	addr, err = DialLocalAddr("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok || !tcp.IP.Equal(net.ParseIP("127.0.0.1")) || tcp.Port != 0 {
+		t.Fatalf("%#v", addr)
+	}
+	addr, err = DialLocalAddr("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, ok = addr.(*net.TCPAddr)
+	if !ok || !tcp.IP.Equal(net.ParseIP("127.0.0.1")) {
+		t.Fatalf("%#v", addr)
 	}
 }
 

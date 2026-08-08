@@ -22,7 +22,7 @@ make cert                        # prompts for hostname; or: make cert HOST=bnc.
 | `server.crt` / `server.key` | Presented to your IRC client (bouncer listener) |
 | `client.crt` / `client.key` / `client.pem` | Presented by GoBNC when connecting to an IRC network (CERTFP / SASL EXTERNAL) |
 
-It prints the **server** SHA-256 (pin in your IRC client) and **client** SHA-512 (NickServ CERTFP). Set `tls_client_cert` / `tls_client_key` in `gobnc.json` to use that network client cert globally, or override per network with `--tls-cert=` / `--tls-key=`.
+It prints the **server** SHA-256 (pin in your IRC client) and **client** SHA-512 (NickServ CERTFP). Set `tls_client_cert` / `tls_client_key` in `gobnc.json` to use that network client cert globally, or override per network with `--tls-cert=` / `--tls-key=`. Set `bind_host` (or `--bind-host=`) to source uplink connections from a specific local address.
 
 Further options: `gobnc.json` (commented in `gobnc.json.example`).
 
@@ -106,9 +106,9 @@ BNC rehash
 
 `BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
 
-Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables).
+Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
-`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert apply on the next reconnect). `network reconnect` forces a reconnect now. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`) and network rows without dropping clients. Restart required for: `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
+`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`) and network rows without dropping clients. Restart required for: `listen_addr`, `db_path`, `control_socket`, `log_file`, `log_level`.
 
 ## Packaging
 

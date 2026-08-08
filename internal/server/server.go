@@ -405,6 +405,7 @@ func (s *Server) startNetworkLocked(n store.Network) error {
 		MaxFloodQueue:       s.cfg.MaxFloodQueue,
 		GlobalTLSClientCert: s.cfg.TLSClientCert,
 		GlobalTLSClientKey:  s.cfg.TLSClientKey,
+		GlobalBindHost:      s.cfg.BindHost,
 	}, sess)
 	sess.SetUplink(u)
 	s.attachAdmin(sess)
@@ -557,6 +558,7 @@ func (s *Server) Rehash(cfgPath string) error {
 		if u := sess.Uplink(); u != nil {
 			u.SetMaxFloodQueue(newCfg.MaxFloodQueue)
 			u.SetGlobalTLSClient(newCfg.TLSClientCert, newCfg.TLSClientKey)
+			u.SetGlobalBindHost(newCfg.BindHost)
 		}
 	}
 	for _, name := range names {

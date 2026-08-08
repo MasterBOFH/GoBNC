@@ -102,7 +102,8 @@ func (s *Store) migrate() error {
 			nick_recovery INTEGER NOT NULL DEFAULT 1,
 			tls_noverify INTEGER NOT NULL DEFAULT 0,
 			tls_cert TEXT NOT NULL DEFAULT '',
-			tls_key TEXT NOT NULL DEFAULT ''
+			tls_key TEXT NOT NULL DEFAULT '',
+			bind_host TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +153,7 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_noverify INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_cert TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN bind_host TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN sasl INTEGER NOT NULL DEFAULT 0`)
 	// Existing networks with password SASL credentials keep doing SASL.
 	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
@@ -196,6 +198,9 @@ type Network struct {
 	// Empty inherits gobnc.json tls_client_cert/key; "none" or "-" disables.
 	TLSCert string
 	TLSKey  string
+	// BindHost is the local address for uplink dials on this network.
+	// Empty inherits gobnc.json bind_host; "none" or "-" disables.
+	BindHost string
 }
 
 // Channel is an auto-join channel.
@@ -222,8 +227,8 @@ type Message struct {
 // UpsertNetwork inserts or updates a network by name.
 func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			host=excluded.host, port=excluded.port, tls=excluded.tls, nick=excluded.nick,
 			username=excluded.username, realname=excluded.realname, pass=excluded.pass,
@@ -232,11 +237,12 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 			flood_burst=excluded.flood_burst, flood_rate=excluded.flood_rate,
 			alt_nick=excluded.alt_nick, nick_recovery=excluded.nick_recovery,
 			tls_noverify=excluded.tls_noverify,
-			tls_cert=excluded.tls_cert, tls_key=excluded.tls_key
+			tls_cert=excluded.tls_cert, tls_key=excluded.tls_key,
+			bind_host=excluded.bind_host
 	`, n.Name, n.Host, n.Port, boolInt(n.TLS), n.Nick, n.Username, n.Realname, n.Pass,
 		n.SASLUser, n.SASLPass, boolInt(n.SASL), boolInt(n.SASLRequired), boolInt(n.Enabled),
 		n.FloodBurst, n.FloodRate, n.AltNick, boolInt(n.NickRecovery), boolInt(n.TLSNoVerify),
-		n.TLSCert, n.TLSKey)
+		n.TLSCert, n.TLSKey, n.BindHost)
 	if err != nil {
 		return 0, err
 	}
@@ -250,7 +256,7 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 // ListNetworks returns all networks.
 func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host
 		FROM networks ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -262,7 +268,7 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 		var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
 		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
 			&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
-			&n.TLSCert, &n.TLSKey); err != nil {
+			&n.TLSCert, &n.TLSKey, &n.BindHost); err != nil {
 			return nil, err
 		}
 		n.TLS = tls != 0
@@ -281,11 +287,11 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error)
 	var n Network
 	var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host
 		FROM networks WHERE name=?`, name).Scan(
 		&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
 		&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
-		&n.TLSCert, &n.TLSKey)
+		&n.TLSCert, &n.TLSKey, &n.BindHost)
 	if err != nil {
 		return n, err
 	}

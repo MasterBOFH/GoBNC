@@ -57,7 +57,9 @@ type Config struct {
 	// Network.TLSCert/TLSKey are empty (inherit). See config.ResolveTLSClientCert.
 	GlobalTLSClientCert string
 	GlobalTLSClientKey  string
-	Logger              *slog.Logger
+	// GlobalBindHost comes from gobnc.json; used when Network.BindHost is empty.
+	GlobalBindHost string
+	Logger         *slog.Logger
 	// MaxFloodQueue caps paced outbound queue depth (0 = unlimited).
 	MaxFloodQueue int
 	// Backoff for reconnect tests
@@ -217,6 +219,14 @@ func (u *Uplink) SetGlobalTLSClient(cert, key string) {
 	u.mu.Lock()
 	u.cfg.GlobalTLSClientCert = cert
 	u.cfg.GlobalTLSClientKey = key
+	u.mu.Unlock()
+}
+
+// SetGlobalBindHost updates gobnc.json bind_host used when the network has no
+// bind_host override. Applies on the next dial.
+func (u *Uplink) SetGlobalBindHost(host string) {
+	u.mu.Lock()
+	u.cfg.GlobalBindHost = host
 	u.mu.Unlock()
 }
 
@@ -462,6 +472,7 @@ func (u *Uplink) dial(ctx context.Context) (net.Conn, error) {
 	customDial := u.cfg.Dial
 	tlsConf := u.cfg.TLSConf
 	globalCert, globalKey := u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey
+	globalBind := u.cfg.GlobalBindHost
 	u.mu.RUnlock()
 
 	addr := net.JoinHostPort(n.Host, strconv.Itoa(n.Port))
@@ -469,6 +480,13 @@ func (u *Uplink) dial(ctx context.Context) (net.Conn, error) {
 		return customDial(ctx, "tcp", addr)
 	}
 	d := net.Dialer{Timeout: 30 * time.Second}
+	if bind := config.ResolveBindHost(n.BindHost, globalBind); bind != "" {
+		la, err := config.DialLocalAddr(bind)
+		if err != nil {
+			return nil, fmt.Errorf("bind_host: %w", err)
+		}
+		d.LocalAddr = la
+	}
 	if n.TLS {
 		if tlsConf == nil {
 			tlsConf = &tls.Config{

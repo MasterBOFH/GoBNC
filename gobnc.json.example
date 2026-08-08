@@ -9,6 +9,10 @@
   "tls_client_cert": "",
   "tls_client_key": "",
 
+  // Local address for outbound IRC connections (IP or hostname). Empty = OS default.
+  // Per-network --bind-host= overrides; none or - disables for one network.
+  "bind_host": "",
+
   // SQLite DB (mode 0600 enforced). Holds auth, networks, SASL secrets, history.
   "db_path": "gobnc.db",
 

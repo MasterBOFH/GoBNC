@@ -171,6 +171,36 @@ func TestNetworkTLSCertPaths(t *testing.T) {
 	}
 }
 
+func TestNetworkBindHost(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	_, err := s.UpsertNetwork(ctx, Network{
+		Name: "n", Host: "h", Port: 6697, Nick: "me", TLS: true, Enabled: true,
+		BindHost: "203.0.113.10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.BindHost != "203.0.113.10" {
+		t.Fatalf("got bind_host=%q", n.BindHost)
+	}
+	n.BindHost = "none"
+	if _, err := s.UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.BindHost != "none" {
+		t.Fatalf("after clear: bind_host=%q", n.BindHost)
+	}
+}
+
 func TestNetworkCRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

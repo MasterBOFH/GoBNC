@@ -5,8 +5,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +37,10 @@ type Config struct {
 	// Empty means no global client cert; per-network paths override or inherit these.
 	TLSClientCert string `json:"tls_client_cert,omitempty"`
 	TLSClientKey  string `json:"tls_client_key,omitempty"`
-	DBPath        string `json:"db_path"`
+	// BindHost is the default local address for uplink dials (IP or hostname).
+	// Empty = OS default. Per-network bind_host overrides; none or - disables.
+	BindHost string `json:"bind_host,omitempty"`
+	DBPath   string `json:"db_path"`
 	ControlSocket string `json:"control_socket"`
 	PidFile       string `json:"pid_file,omitempty"`
 	LogLevel      string `json:"log_level"`
@@ -156,6 +161,65 @@ func isTLSClientCertDisabled(p string) bool {
 	default:
 		return false
 	}
+}
+
+// ResolveBindHost picks the local bind address for an uplink dial.
+// Network bind_host empty inherits global bind_host; "none" or "-" disables.
+func ResolveBindHost(netHost, globalHost string) string {
+	netHost = strings.TrimSpace(netHost)
+	if isBindHostDisabled(netHost) {
+		return ""
+	}
+	if netHost != "" {
+		return netHost
+	}
+	globalHost = strings.TrimSpace(globalHost)
+	if isBindHostDisabled(globalHost) {
+		return ""
+	}
+	return globalHost
+}
+
+func isBindHostDisabled(p string) bool {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "none", "-":
+		return true
+	default:
+		return false
+	}
+}
+
+// DialLocalAddr resolves bindHost to a TCP local address for net.Dialer.LocalAddr.
+// bindHost may be an IP or a hostname that resolves to a local interface address.
+// Empty bindHost returns (nil, nil).
+func DialLocalAddr(bindHost string) (net.Addr, error) {
+	bindHost = strings.TrimSpace(bindHost)
+	if bindHost == "" {
+		return nil, nil
+	}
+	if host, port, err := net.SplitHostPort(bindHost); err == nil {
+		// Allow "1.2.3.4:0" style; non-zero ports are unusual for bind but accepted.
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return nil, fmt.Errorf("bind_host %q: host is not an IP", bindHost)
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil {
+			return nil, fmt.Errorf("bind_host %q: %w", bindHost, err)
+		}
+		return &net.TCPAddr{IP: ip, Port: p}, nil
+	}
+	if ip := net.ParseIP(bindHost); ip != nil {
+		return &net.TCPAddr{IP: ip}, nil
+	}
+	ips, err := net.LookupIP(bindHost)
+	if err != nil {
+		return nil, fmt.Errorf("bind_host %q: %w", bindHost, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("bind_host %q: no addresses", bindHost)
+	}
+	return &net.TCPAddr{IP: ips[0]}, nil
 }
 
 // ResolvedControlSocket returns the Unix control socket path.

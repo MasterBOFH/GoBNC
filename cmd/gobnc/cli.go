@@ -28,8 +28,8 @@ func runCLI(args []string) error {
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
-  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
   network reconnect <name>
@@ -49,7 +49,7 @@ status shows listen address, attached clients, and per-network uplink state (con
 rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
 stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
-uplink stays up and new host/port/TLS/SASL/cert apply on the next reconnect.
+uplink stays up and new host/port/TLS/SASL/cert/bind_host apply on the next reconnect.
 network reconnect reloads DB settings and drops the uplink so it dials again now
 (downlinks stay attached).
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
@@ -57,6 +57,8 @@ Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 
 enables the nick ladder and ISON reclaim of the primary/alt nick.
 --tls-cert= / --tls-key= set a per-network cert GoBNC presents to the IRC server
 (empty inherits tls_client_cert/key from gobnc.json; none or - disables).
+--bind-host= sets the local address for uplink dials (empty inherits bind_host from
+gobnc.json; none or - uses the OS default).
 --sasl=true enables bouncer SASL (SCRAM/PLAIN with --sasl-user/--sasl-pass; EXTERNAL
 when sasl is on with no user/pass and a client cert). A client cert alone does not
 enable SASL. network add with --sasl-user and a password implies --sasl=true.
