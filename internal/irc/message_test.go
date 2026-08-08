@@ -40,6 +40,16 @@ func TestEncodeTrailingColon(t *testing.T) {
 		t.Fatalf("NOTICE: %q", got)
 	}
 
+	// PING/PONG: always colon the token (keepalive + replies).
+	msg = Message{Command: "PING", Params: []string{"gobnc"}}
+	if got := msg.Encode(); got != "PING :gobnc" {
+		t.Fatalf("PING: %q", got)
+	}
+	msg = Message{Command: "PONG", Params: []string{"gobnc"}}
+	if got := msg.Encode(); got != "PONG :gobnc" {
+		t.Fatalf("PONG: %q", got)
+	}
+
 	// Numerics: no colon when the last param is a plain token.
 	msg = Message{Source: "irc.example.com", Command: "366", Params: []string{"me", "#c", "End"}}
 	if got := msg.Encode(); got != ":irc.example.com 366 me #c End" {

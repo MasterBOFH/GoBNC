@@ -49,7 +49,10 @@ type Session struct {
 	self      *User
 	users     map[string]*User         // folded nick → user
 	channels  map[string]*ChannelState // folded name
-	downlinks map[ClientID]Downlink
+	// pendingJoinKeys remembers keys from client JOIN until the uplink self-JOIN
+	// confirms the channel (so refused joins are not persisted for auto-rejoin).
+	pendingJoinKeys map[string]string // folded name → key (may be "")
+	downlinks       map[ClientID]Downlink
 	isupport  *irc.ISUPPORT
 	upCaps    map[string]bool
 	// saslOffer is the CAP token advertised for passthrough SASL ("" if none).
@@ -94,18 +97,19 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 		irc.CaseRFC1459.Canonical(net.Nick): self,
 	}
 	return &Session{
-		Network:   net,
-		log:       log,
-		store:     st,
-		hist:      hist,
-		tracker:   NewRequestTracker(),
-		self:      self,
-		users:     users,
-		channels:       make(map[string]*ChannelState),
-		downlinks:      make(map[ClientID]Downlink),
-		awaitingUplink: make(map[ClientID]bool),
-		isupport:       irc.NewISUPPORT(),
-		upCaps:         make(map[string]bool),
+		Network:         net,
+		log:             log,
+		store:           st,
+		hist:            hist,
+		tracker:         NewRequestTracker(),
+		self:            self,
+		users:           users,
+		channels:        make(map[string]*ChannelState),
+		pendingJoinKeys: make(map[string]string),
+		downlinks:       make(map[ClientID]Downlink),
+		awaitingUplink:  make(map[ClientID]bool),
+		isupport:        irc.NewISUPPORT(),
+		upCaps:          make(map[string]bool),
 	}
 }
 

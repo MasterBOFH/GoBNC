@@ -252,12 +252,14 @@ func formatTagPrefix(tags map[string]string) string {
 }
 
 // needsTrailingColon reports whether the final parameter must be colon-encoded.
-// PRIVMSG/NOTICE text is always trailing (even a single word). Other commands
-// only require it when empty, spaced, or starting with ':'. Prefer keeping Raw
-// and using Wire() when relaying so server colonation is preserved verbatim.
+// PRIVMSG/NOTICE text is always trailing (even a single word). PING/PONG tokens
+// are always colon-encoded so keepalives and replies match IRC practice
+// ("PING :payload" / "PONG :payload"). Other commands only require it when empty,
+// spaced, or starting with ':'. Prefer keeping Raw and using Wire() when relaying
+// so server colonation is preserved verbatim.
 func needsTrailingColon(command, param string) bool {
 	switch strings.ToUpper(command) {
-	case "PRIVMSG", "NOTICE":
+	case "PRIVMSG", "NOTICE", "PING", "PONG":
 		return true
 	}
 	return param == "" || strings.ContainsAny(param, " \t") || strings.HasPrefix(param, ":")

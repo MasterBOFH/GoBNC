@@ -64,7 +64,7 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		s.Detach(d.ID())
 		return nil
 	case "JOIN":
-		s.persistClientJoin(msg)
+		s.rememberJoinKeys(msg)
 		if s.uplink == nil {
 			return fmt.Errorf("uplink not ready")
 		}
@@ -393,21 +393,18 @@ func parseWHOXParam(p string) (flags, fields, token string) {
 }
 
 
-// persistClientJoin stores channels (+ keys) from a client JOIN before uplink forward.
-func (s *Session) persistClientJoin(msg irc.Message) {
-	for _, jk := range ParseJoin(msg.Param(0), msg.Param(1)) {
-		s.mu.Lock()
-		ck := s.isupport.CaseMapping.Canonical(jk.Name)
-		ch := s.channels[ck]
-		if ch == nil {
-			ch = &ChannelState{Name: jk.Name, Modes: irc.NewChannelModes(), Members: map[string]struct{}{}}
-			s.channels[ck] = ch
-		}
-		ch.Key = jk.Key
-		s.mu.Unlock()
-		s.persistChannel(jk.Name, jk.Key)
+// rememberJoinKeys records channel keys from a client JOIN until the uplink
+// echoes our self-JOIN (refused joins must not be persisted for auto-rejoin).
+func (s *Session) rememberJoinKeys(msg irc.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingJoinKeys == nil {
+		s.pendingJoinKeys = make(map[string]string)
 	}
-	s.syncUplinkChannels()
+	for _, jk := range ParseJoin(msg.Param(0), msg.Param(1)) {
+		ck := s.isupport.CaseMapping.Canonical(jk.Name)
+		s.pendingJoinKeys[ck] = jk.Key
+	}
 }
 
 // JoinTarget is one channel from a JOIN command, with its optional key.

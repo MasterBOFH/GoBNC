@@ -43,8 +43,8 @@ func TestDownlinkKeepalivePING(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(buf[:n])
-	if !strings.Contains(got, "PING") {
-		t.Fatalf("expected PING, got %q", got)
+	if !strings.Contains(got, "PING :gobnc") {
+		t.Fatalf("expected PING :gobnc, got %q", got)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestClientSendPINGWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(buf[:n]), "PING ") {
+	if !strings.HasPrefix(string(buf[:n]), "PING :gobnc") {
 		t.Fatalf("%q", buf[:n])
 	}
 }

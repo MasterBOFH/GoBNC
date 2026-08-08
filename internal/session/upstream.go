@@ -192,6 +192,7 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.rpl002, s.rpl003, s.rpl004 = nil, nil, nil
 	s.ircd = ""
 	s.channels = make(map[string]*ChannelState)
+	s.pendingJoinKeys = make(map[string]string)
 	nick := s.Network.Nick
 	user := s.Network.Username
 	s.self = &User{Nick: nick, User: user, UModes: make(map[byte]bool)}

@@ -1160,8 +1160,22 @@ func TestPersistJoinPart(t *testing.T) {
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	_ = s.Attach(d)
 
-	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#a,#b,#c", "key1,key2"}})
+	// Client JOIN alone must not persist (refused joins must not auto-rejoin).
+	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#bad"}})
 	chs, err := db.ListChannels(ctx, id)
+	if err != nil || len(chs) != 0 {
+		t.Fatalf("pre-self-JOIN persist: %+v err=%v", chs, err)
+	}
+
+	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#a,#b,#c", "key1,key2"}})
+	chs, err = db.ListChannels(ctx, id)
+	if err != nil || len(chs) != 0 {
+		t.Fatalf("still waiting for self-JOIN: %+v err=%v", chs, err)
+	}
+	for _, name := range []string{"#a", "#b", "#c"} {
+		s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{name}})
+	}
+	chs, err = db.ListChannels(ctx, id)
 	if err != nil || len(chs) != 3 {
 		t.Fatalf("persist multi join: %+v err=%v", chs, err)
 	}
@@ -1174,6 +1188,7 @@ func TestPersistJoinPart(t *testing.T) {
 	}
 
 	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#secret", "hunter2"}})
+	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
 	chs, err = db.ListChannels(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -1197,6 +1212,28 @@ func TestPersistJoinPart(t *testing.T) {
 		if c.Name == "#secret" {
 			t.Fatal("expected #secret removed")
 		}
+	}
+}
+
+func TestPersistSkipsRefusedJoin(t *testing.T) {
+	db := testutil.TempStore(t)
+	ctx := context.Background()
+	id, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "n")
+	s := New(netw, db, nil, nil)
+	s.registered = true
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	_ = s.Attach(d)
+
+	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#nope", "secret"}})
+	// Server refuses; never sends self-JOIN.
+	s.OnMessage(nil, irc.Message{Command: "403", Params: []string{"me", "#nope", "No such channel"}})
+	chs, err := db.ListChannels(ctx, id)
+	if err != nil || len(chs) != 0 {
+		t.Fatalf("refused join must not persist: %+v err=%v", chs, err)
 	}
 }
 

@@ -14,7 +14,9 @@ func (s *Session) applyState(msg irc.Message) {
 	switch msg.Command {
 	// Commands
 	case "JOIN":
-		s.stateJOINLocked(msg)
+		if p := s.stateJOINLocked(msg); p != nil {
+			persist = append(persist, p...)
+		}
 	case "PART", "KICK":
 		remove = append(remove, s.statePartKickLocked(msg)...)
 	case "QUIT":

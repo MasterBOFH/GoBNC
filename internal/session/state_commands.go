@@ -2,17 +2,17 @@ package session
 
 import "github.com/MasterBOFH/GoBNC/internal/irc"
 
-func (s *Session) stateJOINLocked(msg irc.Message) {
+func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string) {
 	cm := s.isupport.CaseMapping
 	chName := msg.Param(0)
 	if chName == "" {
 		chName = msg.Trailing()
 	}
-	key := cm.Canonical(chName)
-	ch := s.channels[key]
+	folded := cm.Canonical(chName)
+	ch := s.channels[folded]
 	if ch == nil {
 		ch = &ChannelState{Name: chName, Modes: irc.NewChannelModes(), Members: map[string]struct{}{}}
-		s.channels[key] = ch
+		s.channels[folded] = ch
 	}
 	u := s.touchUserFromPrefixLocked(msg.Source)
 	if u == nil {
@@ -21,6 +21,15 @@ func (s *Session) stateJOINLocked(msg irc.Message) {
 	ch.Members[cm.Canonical(u.Nick)] = struct{}{}
 	if u == s.self {
 		ch.Name = chName
+		// Persist only after a confirmed self-JOIN from a client JOIN (pending key).
+		// Uplink auto-rejoin already has a DB row; do not upsert an empty key over it.
+		if s.pendingJoinKeys != nil {
+			if key, ok := s.pendingJoinKeys[folded]; ok {
+				delete(s.pendingJoinKeys, folded)
+				ch.Key = key
+				persist = append(persist, [2]string{ch.Name, ch.Key})
+			}
+		}
 	}
 	// extended-join: JOIN #chan account :Real Name
 	if len(msg.Params) >= 2 {
@@ -31,6 +40,7 @@ func (s *Session) stateJOINLocked(msg irc.Message) {
 			u.Account = acct
 		}
 	}
+	return persist
 }
 
 func (s *Session) statePartKickLocked(msg irc.Message) (remove []string) {
