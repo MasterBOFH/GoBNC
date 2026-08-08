@@ -123,7 +123,7 @@ Release tags build `.deb` / macOS `.pkg` / FreeBSD `.tar.gz` — see `packaging/
 
 ## Debug
 
-`"log_level": "debug"` enables colored console IRC traces (`<<` / `>>`). `"log_file"` writes JSON. `PASS` / `AUTHENTICATE` secrets are redacted. `serve -debug` / `-d` stays in the foreground with debug logging.
+`"log_level": "debug"` enables colored console IRC traces (`<<` / `>>`). `"log_file"` writes JSON. `PASS` / `AUTHENTICATE` secrets are redacted. `serve -debug` / `-d` stays in the foreground and forces a debug console; the log file still uses `log_level` from the config.
 
 ## Tests
 

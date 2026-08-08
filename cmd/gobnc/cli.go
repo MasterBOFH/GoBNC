@@ -35,8 +35,9 @@ func runCLI(args []string) error {
   network reconnect <name>
 
 serve backgrounds by default (re-exec + pid file). Use -debug/-d or -foreground/-f
-to stay attached (required under systemd/rc.d). Daemon mode defaults log_file to
-the state dir when unset.
+to stay attached (required under systemd/rc.d). -debug also forces a debug console
+(file still uses gobnc.json log_level). Daemon mode defaults log_file to the state
+dir when unset.
 
 Secrets (bouncer password, SASL password) are prompted on a TTY; they are not accepted on the command line.
 auth set-password asks whether to generate a random password (default yes); otherwise you enter one.

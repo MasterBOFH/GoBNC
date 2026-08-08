@@ -64,6 +64,39 @@ func TestSetupDebugTextAndJSONFile(t *testing.T) {
 	}
 }
 
+func TestSetupDebugConsoleKeepsFileLevel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gobnc.json.log")
+	var console bytes.Buffer
+	l, closer, err := Setup(Options{
+		Level:     "debug",
+		FileLevel: "info",
+		Console:   &console,
+		File:      path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer() }()
+
+	l.Debug("noise", "n", 1)
+	l.Info("keep", "n", 2)
+
+	if !bytes.Contains(console.Bytes(), []byte("noise")) || !bytes.Contains(console.Bytes(), []byte("keep")) {
+		t.Fatalf("console should show both: %s", console.String())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("noise")) {
+		t.Fatalf("file should omit debug: %s", data)
+	}
+	if !bytes.Contains(data, []byte("keep")) {
+		t.Fatalf("file missing info: %s", data)
+	}
+}
+
 func TestPrettyIRCLine(t *testing.T) {
 	var buf bytes.Buffer
 	l, _, err := Setup(Options{Level: "debug", Console: &buf})

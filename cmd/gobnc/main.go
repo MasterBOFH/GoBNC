@@ -36,7 +36,7 @@ func runServe() {
 	cfgPath := flag.String("config", "gobnc.json", "path to bootstrap JSON config")
 	foreground := flag.Bool("foreground", false, "run in the foreground (no fork; for systemd/rc.d)")
 	flag.BoolVar(foreground, "f", false, "short for -foreground")
-	debug := flag.Bool("debug", false, "run in the foreground with the console attached (developer mode)")
+	debug := flag.Bool("debug", false, "foreground + debug console (file keeps config log_level)")
 	flag.BoolVar(debug, "d", false, "short for -debug")
 	flag.Parse()
 
@@ -73,10 +73,15 @@ func runServe() {
 
 	// Daemon children (no TTY) default logs to the state dir when log_file is unset.
 	logFile := cfg.ResolvedLogFile(isChild)
+	consoleLevel := cfg.LogLevel
+	if *debug {
+		consoleLevel = "debug"
+	}
 	logger, closeLog, err := gobnclog.Setup(gobnclog.Options{
-		Level:   cfg.LogLevel,
-		Console: os.Stderr,
-		File:    logFile,
+		Level:     consoleLevel,
+		FileLevel: cfg.LogLevel,
+		Console:   os.Stderr,
+		File:      logFile,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "log: %v\n", err)

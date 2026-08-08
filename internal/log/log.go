@@ -12,10 +12,11 @@ import (
 
 // Options configures console/file logging.
 type Options struct {
-	Level   string    // debug, info, warn, error
-	Console io.Writer // default stderr; human-readable when Level is debug
-	// File, if set, receives JSON logs at the configured level.
-	// In debug mode this is the structured sink; console stays text.
+	Level     string    // console: debug, info, warn, error
+	FileLevel string    // JSON file level; empty means same as Level
+	Console   io.Writer // default stderr; human-readable when Level is debug
+	// File, if set, receives JSON logs at FileLevel (or Level).
+	// In debug console mode this is the structured sink; console stays text.
 	File string
 }
 
@@ -27,7 +28,7 @@ func New(level string, w io.Writer) *slog.Logger {
 }
 
 // Setup builds a logger from Options.
-// Debug mode: text to console, JSON to File when File is set.
+// Debug console: text to console, JSON to File when File is set.
 // Other levels: JSON to console; also JSON to File when File is set.
 // The returned closer flushes/closes the log file (may be a no-op).
 func Setup(opts Options) (*slog.Logger, func() error, error) {
@@ -35,16 +36,20 @@ func Setup(opts Options) (*slog.Logger, func() error, error) {
 	if console == nil {
 		console = os.Stderr
 	}
-	lv := parseLevel(opts.Level)
-	debug := lv <= slog.LevelDebug
+	consoleLv := parseLevel(opts.Level)
+	fileLv := consoleLv
+	if opts.FileLevel != "" {
+		fileLv = parseLevel(opts.FileLevel)
+	}
+	pretty := consoleLv <= slog.LevelDebug
 
 	var handlers []slog.Handler
 	var closer func() error = func() error { return nil }
 
-	if debug {
-		handlers = append(handlers, newPrettyHandler(console, lv))
+	if pretty {
+		handlers = append(handlers, newPrettyHandler(console, consoleLv))
 	} else {
-		handlers = append(handlers, slog.NewJSONHandler(console, &slog.HandlerOptions{Level: lv}))
+		handlers = append(handlers, slog.NewJSONHandler(console, &slog.HandlerOptions{Level: consoleLv}))
 	}
 
 	if opts.File != "" {
@@ -54,7 +59,7 @@ func Setup(opts Options) (*slog.Logger, func() error, error) {
 		}
 		// Tighten perms on pre-existing world-readable logs.
 		_ = os.Chmod(opts.File, 0o600)
-		handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{Level: lv}))
+		handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{Level: fileLv}))
 		closer = f.Close
 	}
 
