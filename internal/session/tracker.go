@@ -88,22 +88,38 @@ func (rt *RequestTracker) IRCd() string {
 func endCodesFor(cmd, ircd string) map[string]bool {
 	switch cmd {
 	case "WHO", "WHOX":
-		return map[string]bool{"315": true}
+		// 315 is normal end; 403 alone on some ircds (e.g. bahamut) for unknown channels.
+		return map[string]bool{"315": true, "403": true, "402": true}
 	case "WHOIS":
 		// 401 is mid-exchange on ircu (401 then 318); only 318 ends the waiter.
 		return map[string]bool{"318": true}
+	case "WHOWAS":
+		return map[string]bool{"369": true, "431": true}
 	case "STATS":
 		return map[string]bool{"219": true}
 	case "LIST":
-		return map[string]bool{"323": true}
+		return map[string]bool{"323": true, "402": true}
 	case "NAMES":
-		return map[string]bool{"366": true}
+		// Most ircds still send 366 for unknown channels; inspircd may send 403 only.
+		return map[string]bool{"366": true, "401": true, "403": true}
 	case "LINKS":
-		return map[string]bool{"365": true}
+		return map[string]bool{"365": true, "402": true}
 	case "MAP":
 		return irc.MAPEndCodes(ircd)
 	case "ISON":
-		return map[string]bool{"303": true}
+		return map[string]bool{"303": true, "461": true}
+	case "USERHOST":
+		return map[string]bool{"302": true, "461": true}
+	case "LUSERS":
+		return lusersEndCodes(ircd)
+	case "TIME":
+		return map[string]bool{"391": true, "402": true}
+	case "TRACE":
+		// 262 = end; 481 = no privileges; 421 = unknown command on some ircds.
+		return map[string]bool{"262": true, "402": true, "481": true, "421": true}
+	case "USERS":
+		// 394 end-of-list; 395 none; 446 disabled; 266 when aliased to luser stats; 421 unknown.
+		return map[string]bool{"394": true, "395": true, "446": true, "266": true, "402": true, "424": true, "421": true}
 	case "HELP":
 		// RatBox / modern: 704 start, 705 text, 706 end.
 		return map[string]bool{"706": true, "524": true} // 524 = ERR_HELPNOTFOUND where used
@@ -113,6 +129,7 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	case "MODE":
 		// Channel modes: 324 (329 follows via sticky). Lists: *68/*49/*47/*29.
 		// User modes: 221. Errors clear a stuck enquiry.
+		// Note: 467/501/502 are MODE *change* errors (not list enquiry); see docker probe.
 		return map[string]bool{
 			"221": true, "324": true,
 			"368": true, "349": true, "347": true, "729": true,
@@ -120,7 +137,7 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 		}
 	case "TOPIC":
 		// 331 = no topic; 332 then 333 (333 ends). Errors clear the enquiry.
-		return map[string]bool{"331": true, "333": true, "403": true, "442": true, "461": true}
+		return map[string]bool{"331": true, "333": true, "401": true, "403": true, "442": true, "461": true}
 	case "SILENCE":
 		// ircu2: 271 RPL_SILELIST, 272 RPL_ENDOFSILELIST (always sent, even if empty).
 		return map[string]bool{"272": true}
@@ -129,17 +146,32 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	}
 }
 
+// lusersEndCodes: modern ircds finish with 266; classic ircu stops at 255 (no 265/266).
+func lusersEndCodes(ircd string) map[string]bool {
+	switch ircd {
+	case irc.IRCdIrcu, irc.IRCdSnircd:
+		return map[string]bool{"255": true}
+	default:
+		return map[string]bool{"266": true}
+	}
+}
+
 // replyCodesFor are numerics attributed to a serialized solicitous exchange.
 func replyCodesFor(cmd, ircd string) map[string]bool {
 	switch cmd {
 	case "WHO", "WHOX":
-		return map[string]bool{"352": true, "315": true, "354": true}
+		return map[string]bool{"352": true, "315": true, "354": true, "402": true, "403": true}
+	case "WHOWAS":
+		return map[string]bool{
+			"314": true, "312": true, "330": true, "338": true,
+			"406": true, "369": true, "431": true,
+		}
 	case "LIST":
-		return map[string]bool{"321": true, "322": true, "323": true}
+		return map[string]bool{"321": true, "322": true, "323": true, "402": true}
 	case "NAMES":
-		return map[string]bool{"353": true, "366": true}
+		return map[string]bool{"353": true, "366": true, "401": true, "403": true}
 	case "LINKS":
-		return map[string]bool{"364": true, "365": true}
+		return map[string]bool{"364": true, "365": true, "402": true}
 	case "STATS":
 		return map[string]bool{
 			"211": true, "212": true, "213": true, "214": true, "215": true,
@@ -150,7 +182,28 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 	case "MAP":
 		return irc.MAPReplyCodes(ircd)
 	case "ISON":
-		return map[string]bool{"303": true}
+		return map[string]bool{"303": true, "461": true}
+	case "USERHOST":
+		return map[string]bool{"302": true, "461": true}
+	case "LUSERS":
+		return map[string]bool{
+			"250": true, "251": true, "252": true, "253": true, "254": true, "255": true,
+			"265": true, "266": true,
+		}
+	case "TIME":
+		return map[string]bool{"391": true, "402": true}
+	case "TRACE":
+		return map[string]bool{
+			"200": true, "201": true, "202": true, "203": true, "204": true,
+			"205": true, "206": true, "208": true, "261": true, "262": true,
+			"402": true, "481": true, "421": true,
+		}
+	case "USERS":
+		return map[string]bool{
+			"265": true, "266": true,
+			"392": true, "393": true, "394": true, "395": true,
+			"402": true, "424": true, "446": true, "421": true,
+		}
 	case "HELP":
 		return map[string]bool{"704": true, "705": true, "706": true, "524": true}
 	case "ADMIN":
@@ -166,7 +219,7 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 			"401": true, "403": true, "442": true, "461": true, "472": true, "482": true,
 		}
 	case "TOPIC":
-		return map[string]bool{"331": true, "332": true, "333": true, "403": true, "442": true, "461": true}
+		return map[string]bool{"331": true, "332": true, "333": true, "401": true, "403": true, "442": true, "461": true}
 	case "SILENCE":
 		return map[string]bool{"271": true, "272": true}
 	default:
@@ -178,7 +231,8 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 func IsSolicitous(cmd string) bool {
 	switch cmd {
 	case "WHO", "WHOIS", "WHOWAS", "STATS", "LIST", "LINKS", "NAMES",
-		"USERHOST", "ISON", "MONITOR", "WATCH",
+		"USERHOST", "ISON",
+		"LUSERS", "TIME", "TRACE", "USERS",
 		"MAP", "HELP", "ADMIN":
 		return true
 	default:
@@ -517,7 +571,7 @@ func modeEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
 // topicEnquiryNumericTarget extracts the folded channel from a TOPIC enquiry reply.
 func topicEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
 	switch msg.Command {
-	case "331", "332", "333", "403", "442", "461":
+	case "331", "332", "333", "401", "403", "442", "461":
 		if len(msg.Params) > 1 {
 			return cm.Canonical(msg.Params[1])
 		}

@@ -40,6 +40,163 @@ func TestRequestTrackerISON(t *testing.T) {
 	}
 }
 
+func TestRequestTrackerRouteRepliesParity(t *testing.T) {
+	cm := irc.CaseRFC1459
+
+	t.Run("ISON 461 ends", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "ISON"})
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "ISON"})
+		if w2 == nil {
+			t.Fatal("second should wait")
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "461", Params: []string{"me", "ISON", "Need more params"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		select {
+		case <-w2:
+		case <-time.After(time.Second):
+			t.Fatal("461 should release next ISON")
+		}
+	})
+
+	t.Run("USERHOST", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "USERHOST"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "302", Params: []string{"me", "nick=+~u@h"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("302 should end USERHOST")
+		}
+	})
+
+	t.Run("WHOWAS", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOWAS"})
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOWAS"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "406", Params: []string{"me", "gone", "no such"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "369", Params: []string{"me", "gone", "End"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		select {
+		case <-w2:
+		case <-time.After(time.Second):
+			t.Fatal("369 should release next WHOWAS")
+		}
+	})
+
+	t.Run("WHO 403 ends", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "403", Params: []string{"me", "#x", "No such channel"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("403 should end WHO")
+		}
+	})
+
+	t.Run("NAMES 403 ends", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "NAMES"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "403", Params: []string{"me", "#x", "No such channel"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("403 should end NAMES")
+		}
+	})
+
+	t.Run("LUSERS ircu ends on 255", func(t *testing.T) {
+		rt := NewRequestTracker()
+		rt.SetIRCd(irc.IRCdIrcu)
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "LUSERS"})
+		for _, code := range []string{"251", "254"} {
+			c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: code, Params: []string{"me", "x"}}, cm)
+			if !only || c != "c1" {
+				t.Fatalf("%s: %s %v", code, c, only)
+			}
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "255", Params: []string{"me", "I have 1 clients"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("ircu LUSERS should end on 255")
+		}
+	})
+
+	t.Run("LUSERS modern ends on 266", func(t *testing.T) {
+		rt := NewRequestTracker()
+		rt.SetIRCd(irc.IRCdCharybdis)
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "LUSERS"})
+		for _, code := range []string{"250", "251", "255", "265"} {
+			c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: code, Params: []string{"me", "x"}}, cm)
+			if !only || c != "c1" {
+				t.Fatalf("%s: %s %v", code, c, only)
+			}
+		}
+		if _, ok := rt.ActiveClient(); !ok {
+			t.Fatal("255 must not end modern LUSERS before 266")
+		}
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "266", Params: []string{"me", "Current local users"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("266 should end LUSERS")
+		}
+	})
+
+	t.Run("TIME TRACE USERS", func(t *testing.T) {
+		rt := NewRequestTracker()
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "TIME"})
+		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "391", Params: []string{"me", "server", "now"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "TRACE"})
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "205", Params: []string{"me", "User", "x"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "262", Params: []string{"me", "End"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "USERS"})
+		c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "446", Params: []string{"me", "USERS has been disabled"}}, cm)
+		if !only || c != "c1" {
+			t.Fatal(c, only)
+		}
+		if _, ok := rt.ActiveClient(); ok {
+			t.Fatal("446 should end USERS")
+		}
+	})
+
+	t.Run("unsupported commands not solicitous", func(t *testing.T) {
+		for _, cmd := range []string{"MONITOR", "WATCH", "METADATA"} {
+			if IsSolicitous(cmd) {
+				t.Fatalf("%s should not be solicitous", cmd)
+			}
+		}
+		for _, cmd := range []string{"WHOWAS", "USERHOST", "LUSERS", "TIME", "TRACE", "USERS"} {
+			if !IsSolicitous(cmd) {
+				t.Fatalf("%s should be solicitous", cmd)
+			}
+		}
+	})
+}
+
 func TestClientNICKBlockedUntilRegistered(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	s.registered = false

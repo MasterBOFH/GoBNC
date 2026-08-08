@@ -164,6 +164,7 @@ func IsWHOISReply(numeric, ircd string) bool {
 		case "276",
 			"330", // account / logged-in
 			"335", // WHOISTEXT (hybrid) / similar
+			"337", // solanum RPL_WHOISTEXT — idle time hidden (+I); charybdis lineage
 			"338", // WHOISACTUALLY
 			"671":
 			return true

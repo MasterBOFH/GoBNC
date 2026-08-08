@@ -73,4 +73,11 @@ func TestIsWHOISReplyPerIRCd(t *testing.T) {
 	if !IsWHOISReply("378", IRCdUnreal) {
 		t.Fatal("378 on unreal")
 	}
+	// Solanum idle-hidden text (337); gated to ratbox-family (not observed on matrix ircds without +I).
+	if !IsWHOISReply("337", IRCdSolanum) || !IsWHOISReply("337", IRCdCharybdis) {
+		t.Fatal("337 whois text on solanum/charybdis")
+	}
+	if IsWHOISReply("337", IRCdIrcu) {
+		t.Fatal("337 should not be WHOIS on ircu")
+	}
 }
