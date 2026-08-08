@@ -167,20 +167,35 @@ func (s *Session) broadcastCapNotify(sub string, names []string) {
 	}
 }
 
-// OnDisconnect implements uplink.Handler — ERROR+close all downlinks and clear state.
+// OnDisconnect implements uplink.Handler.
+//
+// If the uplink had finished registration, clients get ERROR and are closed so
+// they reconnect with a clean attach burst. If registration never completed
+// (including reconnect attempts while clients are already attached and waiting),
+// keep downlinks open, clear ephemeral registration state, and NOTICE the
+// failure so /bnc remains usable.
 func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	_ = u
 	s.log.Info("uplink down", "err", err)
 	reason := disconnectReason(err)
-	errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}
 
 	s.mu.Lock()
+	wasRegistered := s.registered
 	clients := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
 		clients = append(clients, d)
 	}
-	s.downlinks = make(map[ClientID]Downlink)
-	s.awaitingUplink = make(map[ClientID]bool)
+	if wasRegistered {
+		s.downlinks = make(map[ClientID]Downlink)
+		s.awaitingUplink = make(map[ClientID]bool)
+	} else {
+		// Stay attached and keep waiting for the next successful registration.
+		awaiting := make(map[ClientID]bool, len(s.downlinks))
+		for id := range s.downlinks {
+			awaiting[id] = true
+		}
+		s.awaitingUplink = awaiting
+	}
 	s.regBuffer = nil
 	s.registered = false
 	s.upCaps = make(map[string]bool)
@@ -203,10 +218,28 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.tracker = NewRequestTracker()
 	s.mu.Unlock()
 
-	for _, d := range clients {
-		_ = d.Send(errMsg)
-		_ = d.Close()
+	if wasRegistered {
+		errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}
+		for _, d := range clients {
+			_ = d.Send(errMsg)
+			_ = d.Close()
+		}
+		return
 	}
+	for _, d := range clients {
+		_ = d.Send(s.rewriteFor(d, irc.Message{
+			Source:  ServerName,
+			Command: "NOTICE",
+			Params:  []string{nickOrStar(nick), "Uplink connection failed: " + reason + ". Retrying..."},
+		}))
+	}
+}
+
+func nickOrStar(nick string) string {
+	if nick == "" {
+		return "*"
+	}
+	return nick
 }
 
 func disconnectReason(err error) string {

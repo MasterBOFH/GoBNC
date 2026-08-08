@@ -264,23 +264,43 @@ func TestOnDisconnectWhileAwaitingUplink(t *testing.T) {
 
 	s.OnDisconnect(nil, fmt.Errorf("connection reset by peer"))
 
-	if len(d.sent) != 1 || d.sent[0].Command != "ERROR" {
-		t.Fatalf("want ERROR while awaiting: %+v", d.sent)
+	if len(d.sent) != 1 || d.sent[0].Command != "NOTICE" {
+		t.Fatalf("want NOTICE while awaiting (keep client): %+v", d.sent)
 	}
 	got := d.sent[0].Trailing()
 	if got == "" {
-		got = d.sent[0].Param(0)
+		got = d.sent[0].Param(1)
 	}
-	if got != "connection reset by peer" {
-		t.Fatalf("ERROR text=%q", got)
+	if !strings.Contains(got, "connection reset by peer") || !strings.Contains(got, "Retrying") {
+		t.Fatalf("NOTICE text=%q", got)
 	}
 	s.mu.RLock()
 	nAwait := len(s.awaitingUplink)
 	nDown := len(s.downlinks)
 	nBuf := len(s.regBuffer)
+	awaiting := s.awaitingUplink[d.id]
 	s.mu.RUnlock()
-	if nAwait != 0 || nDown != 0 || nBuf != 0 {
-		t.Fatalf("await=%d down=%d buf=%d", nAwait, nDown, nBuf)
+	if nAwait != 1 || nDown != 1 || nBuf != 0 || !awaiting {
+		t.Fatalf("await=%d down=%d buf=%d awaiting=%v", nAwait, nDown, nBuf, awaiting)
+	}
+}
+
+func TestOnDisconnectUnregisteredKeepsBNCUsable(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.SetAdmin(func(args []string) ([]string, error) {
+		return []string{"ok " + strings.Join(args, " ")}, nil
+	})
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	s.OnDisconnect(nil, fmt.Errorf("dial tcp: connection refused"))
+	d.clearSent()
+	if err := s.HandleClientMessage(d, irc.Message{Command: "BNC", Params: []string{"status"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) != 1 || d.sent[0].Command != "NOTICE" || d.sent[0].Trailing() != "ok status" {
+		t.Fatalf("BNC while uplink down: %+v", d.sent)
 	}
 }
 
@@ -373,27 +393,37 @@ func TestNickInUseRelayedThenDisconnect(t *testing.T) {
 	go func() { runDone <- u.Run(ctx) }()
 
 	waitUntil(t, 5*time.Second, func() bool {
-		return countMsgCmd(a.snapshot(), "433") >= 1 && countMsgCmd(a.snapshot(), "ERROR") >= 1
+		return countMsgCmd(a.snapshot(), "433") >= 1 && countMsgCmd(a.snapshot(), "NOTICE") >= 1
 	})
 
 	for _, d := range []*fakeDL{a, b} {
 		if countMsgCmd(d.snapshot(), "433") < 1 {
 			t.Fatalf("%s missing 433: %+v", d.id, d.snapshot())
 		}
-		if countMsgCmd(d.snapshot(), "ERROR") < 1 {
-			t.Fatalf("%s missing ERROR after nick failure: %+v", d.id, d.snapshot())
+		if countMsgCmd(d.snapshot(), "ERROR") != 0 {
+			t.Fatalf("%s unexpected ERROR while unregistered: %+v", d.id, d.snapshot())
 		}
-		// 433 should appear before ERROR.
-		if !afterCmd(d.snapshot(), "433", "ERROR") {
-			t.Fatalf("%s 433 must precede ERROR: %+v", d.id, d.snapshot())
+		noticeOK := false
+		for _, m := range d.snapshot() {
+			if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "Retrying") {
+				noticeOK = true
+				break
+			}
+		}
+		if !noticeOK {
+			t.Fatalf("%s missing reconnect NOTICE: %+v", d.id, d.snapshot())
+		}
+		// 433 should appear before the reconnect NOTICE.
+		if !afterCmd(d.snapshot(), "433", "NOTICE") {
+			t.Fatalf("%s 433 must precede NOTICE: %+v", d.id, d.snapshot())
 		}
 	}
 	s.mu.RLock()
 	nDown := len(s.downlinks)
 	nAwait := len(s.awaitingUplink)
 	s.mu.RUnlock()
-	if nDown != 0 || nAwait != 0 {
-		t.Fatalf("down=%d await=%d", nDown, nAwait)
+	if nDown != 2 || nAwait != 2 {
+		t.Fatalf("want clients kept: down=%d await=%d", nDown, nAwait)
 	}
 
 	select {
