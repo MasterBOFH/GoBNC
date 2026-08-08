@@ -208,6 +208,8 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.ircd = ""
 	s.channels = make(map[string]*ChannelState)
 	s.pendingJoinKeys = make(map[string]string)
+	s.selfEcho = nil
+	s.selfEchoSeq = 0
 	nick := s.Network.Nick
 	user := s.Network.Username
 	s.self = &User{Nick: nick, User: user, UModes: make(map[byte]bool)}
@@ -284,6 +286,30 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 	}
 	msg = ensureMessageTime(msg)
 	msg = ensureMessageID(msg)
+	pending, msg, selfEcho := s.consumeSelfEcho(msg)
+	if selfEcho {
+		s.maybeStoreHistory(msg)
+		s.applyState(msg)
+		if strings.EqualFold(msg.Command, "ACK") {
+			// Labeled ACK only goes to the originating client.
+			s.mu.RLock()
+			d, have := s.downlinks[pending.Client]
+			s.mu.RUnlock()
+			if have {
+				out := s.rewriteFor(d, msg)
+				if pending.Label != "" && d.HasCap("labeled-response") {
+					if out.Tags == nil {
+						out.Tags = map[string]string{}
+					}
+					out.Tags["label"] = pending.Label
+				}
+				_ = d.Send(out)
+			}
+			return
+		}
+		s.fanoutSelfEcho(msg, pending)
+		return
+	}
 	s.maybeStoreHistory(msg) // before applyState so QUIT/NICK still see channel membership
 	s.applyState(msg)
 

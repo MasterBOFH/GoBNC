@@ -82,12 +82,23 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		if cmd == "TAGMSG" && !s.uplink.HasCap("message-tags") {
 			return nil
 		}
-		if err := s.uplink.WriteMessage(s.toUplink(msg)); err != nil {
+		clientLabel, _ := msg.Tag("label")
+		out := s.toUplink(msg)
+		// Uplink will echo: remap client label so we can restore it for the sender only.
+		if clientLabel != "" && s.uplink.HasCap("labeled-response") && s.uplink.HasCap("echo-message") {
+			upLabel := s.registerSelfEcho(d.ID(), clientLabel)
+			if out.Tags == nil {
+				out.Tags = map[string]string{}
+			}
+			out.Tags["label"] = upLabel
+			return s.uplink.WriteMessage(out)
+		}
+		if err := s.uplink.WriteMessage(out); err != nil {
 			return err
 		}
 		// No server echo: fan out locally so every attached client sees the line.
 		if !s.uplink.HasCap("echo-message") {
-			s.echoSelfLocally(msg)
+			s.echoSelfLocally(d, msg)
 		}
 		return nil
 	case "MODE":
@@ -220,7 +231,9 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 
 // echoSelfLocally synthesizes a self PRIVMSG/NOTICE/TAGMSG when the uplink
 // lacks echo-message, and delivers it to every downlink (multi-client sync).
-func (s *Session) echoSelfLocally(msg irc.Message) {
+// The originating client's label is preserved so labeled-response correlation works.
+func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
+	clientLabel, _ := msg.Tag("label")
 	echo := irc.Message{
 		Source:  s.SelfPrefix(),
 		Command: strings.ToUpper(msg.Command),
@@ -244,6 +257,12 @@ func (s *Session) echoSelfLocally(msg irc.Message) {
 		if out.Command == "" {
 			continue
 		}
+		if d.ID() == origin.ID() && clientLabel != "" && d.HasCap("labeled-response") {
+			if out.Tags == nil {
+				out.Tags = map[string]string{}
+			}
+			out.Tags["label"] = clientLabel
+		}
 		_ = d.Send(out)
 		if !hasChathistory(d) {
 			legacyHit = true
@@ -251,6 +270,77 @@ func (s *Session) echoSelfLocally(msg irc.Message) {
 	}
 	s.mu.RUnlock()
 	s.advanceLegacyPlaybackIfDelivered(echo, legacyHit)
+}
+
+func (s *Session) registerSelfEcho(client ClientID, clientLabel string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selfEchoSeq++
+	up := formatID("E", s.selfEchoSeq)
+	if s.selfEcho == nil {
+		s.selfEcho = make(map[string]pendingSelfEcho)
+	}
+	s.selfEcho[up] = pendingSelfEcho{Client: client, Label: clientLabel}
+	return up
+}
+
+// consumeSelfEcho strips a tracked uplink self-echo label and returns the pending
+// client mapping. msg is returned with the uplink label removed for history/fan-out.
+func (s *Session) consumeSelfEcho(msg irc.Message) (pendingSelfEcho, irc.Message, bool) {
+	lbl, ok := msg.Tag("label")
+	if !ok || lbl == "" {
+		return pendingSelfEcho{}, msg, false
+	}
+	cmd := strings.ToUpper(msg.Command)
+	if cmd != "PRIVMSG" && cmd != "NOTICE" && cmd != "TAGMSG" && cmd != "ACK" {
+		return pendingSelfEcho{}, msg, false
+	}
+	s.mu.Lock()
+	p, ok := s.selfEcho[lbl]
+	if ok {
+		delete(s.selfEcho, lbl)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return pendingSelfEcho{}, msg, false
+	}
+	out := msg
+	out.Tags = msg.CopyTags()
+	if out.Tags != nil {
+		delete(out.Tags, "label")
+		if len(out.Tags) == 0 {
+			out.Tags = nil
+		}
+	}
+	out.Raw = "" // tag prefix changed
+	if cmd != "ACK" && !s.isSelfNick(msg.Nick()) {
+		// Stale/mismatched label mapping; continue as a normal unlabeled line.
+		return pendingSelfEcho{}, out, false
+	}
+	return p, out, true
+}
+
+func (s *Session) fanoutSelfEcho(msg irc.Message, pending pendingSelfEcho) {
+	s.mu.RLock()
+	legacyHit := false
+	for _, d := range s.downlinks {
+		out := s.rewriteFor(d, msg)
+		if out.Command == "" {
+			continue
+		}
+		if d.ID() == pending.Client && pending.Label != "" && d.HasCap("labeled-response") {
+			if out.Tags == nil {
+				out.Tags = map[string]string{}
+			}
+			out.Tags["label"] = pending.Label
+		}
+		_ = d.Send(out)
+		if legacyPlaybackCommands(msg) && !hasChathistory(d) {
+			legacyHit = true
+		}
+	}
+	s.mu.RUnlock()
+	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 }
 
 // isWHOXParam reports whether a WHO second argument uses WHOX (%fields) syntax.

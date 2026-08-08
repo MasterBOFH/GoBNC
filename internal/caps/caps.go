@@ -11,7 +11,6 @@ var AlwaysOffer = []string{
 	"message-tags",
 	"server-time",
 	"batch",
-	"labeled-response",
 	"echo-message",
 	"chathistory",
 	"draft/chathistory",
@@ -21,12 +20,15 @@ var AlwaysOffer = []string{
 }
 
 // UplinkOffer is advertised to clients only while the uplink has the capability enabled.
+// labeled-response is offered only when the uplink supports it so we can honour
+// client labels (remap upstream / restore on self-echo).
 var UplinkOffer = []string{
 	"away-notify",
 	"chghost",
 	"invite-notify",
 	"account-notify",
 	"extended-join",
+	"labeled-response",
 }
 
 // AllOffer is AlwaysOffer ∪ UplinkOffer (full potential set).

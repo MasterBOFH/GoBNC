@@ -1063,6 +1063,73 @@ func TestEchoMessageFiltering(t *testing.T) {
 	}
 }
 
+func TestEchoSelfLocallyPreservesOriginLabel(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	origin := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true, "labeled-response": true}}
+	other := &fakeDL{id: "c3", caps: map[string]bool{"echo-message": true, "labeled-response": true}}
+	_ = s.Attach(origin)
+	_ = s.Attach(other)
+	origin.clearSent()
+	other.clearSent()
+
+	s.echoSelfLocally(origin, irc.Message{
+		Tags:    map[string]string{"label": "104"},
+		Command: "PRIVMSG",
+		Params:  []string{"#GoBNC", "abc"},
+	})
+
+	if len(origin.sent) != 1 || origin.sent[0].Command != "PRIVMSG" {
+		t.Fatalf("origin: %+v", origin.sent)
+	}
+	if got, _ := origin.sent[0].Tag("label"); got != "104" {
+		t.Fatalf("origin label=%q want 104", got)
+	}
+	if len(other.sent) != 1 || other.sent[0].Command != "PRIVMSG" {
+		t.Fatalf("other: %+v", other.sent)
+	}
+	if _, ok := other.sent[0].Tag("label"); ok {
+		t.Fatalf("other must not see origin label: %+v", other.sent[0])
+	}
+}
+
+func TestUplinkSelfEchoRestoresClientLabel(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "nakaka"}, nil, nil, nil)
+	origin := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true, "labeled-response": true, "message-tags": true, "server-time": true}}
+	other := &fakeDL{id: "c3", caps: map[string]bool{"echo-message": true, "message-tags": true}}
+	_ = s.Attach(origin)
+	_ = s.Attach(other)
+	s.mu.Lock()
+	s.registered = true
+	s.self.Nick = "nakaka"
+	s.mu.Unlock()
+	origin.clearSent()
+	other.clearSent()
+
+	upLabel := s.registerSelfEcho(origin.ID(), "104")
+	s.OnMessage(nil, irc.Message{
+		Tags:    map[string]string{"label": upLabel},
+		Source:  "nakaka!naka@host",
+		Command: "PRIVMSG",
+		Params:  []string{"#GoBNC", "abc"},
+	})
+
+	if len(origin.sent) != 1 {
+		t.Fatalf("origin: %+v", origin.sent)
+	}
+	if got, _ := origin.sent[0].Tag("label"); got != "104" {
+		t.Fatalf("origin label=%q", got)
+	}
+	if _, ok := origin.sent[0].Tag("msgid"); !ok {
+		t.Fatal("expected msgid on echo")
+	}
+	if len(other.sent) != 1 {
+		t.Fatalf("other: %+v", other.sent)
+	}
+	if _, ok := other.sent[0].Tag("label"); ok {
+		t.Fatalf("other must not see label: %+v", other.sent[0])
+	}
+}
+
 func TestExtendedJoinRewrite(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	with := &fakeDL{id: "a", caps: map[string]bool{"extended-join": true}}

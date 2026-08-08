@@ -76,8 +76,18 @@ type Session struct {
 	readMarkers map[string]string
 	// playbackCursors is an in-memory fallback for legacy attach playback watermarks.
 	playbackCursors map[string]string
+	// selfEcho maps uplink label → client label for PRIVMSG/NOTICE/TAGMSG when
+	// the uplink has labeled-response + echo-message (bouncer-owned upstream labels).
+	selfEcho    map[string]pendingSelfEcho
+	selfEchoSeq uint64
 	// admin handles the in-band BNC IRC command (nil if unset).
 	admin AdminFunc
+}
+
+// pendingSelfEcho correlates an uplink-labeled self-echo with the originating client.
+type pendingSelfEcho struct {
+	Client ClientID
+	Label  string
 }
 
 // AdminFunc runs a BNC management command and returns NOTICE text lines.

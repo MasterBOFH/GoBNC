@@ -18,10 +18,13 @@ func TestOffered(t *testing.T) {
 			t.Fatalf("unexpected uplink cap %s without uplink", c)
 		}
 	}
-	up := map[string]bool{"away-notify": true, "chghost": true}
+	up := map[string]bool{"away-notify": true, "chghost": true, "labeled-response": true}
 	got = caps.Offered(up)
 	if !contains(got, "away-notify") || !contains(got, "chghost") {
 		t.Fatal(got)
+	}
+	if !contains(got, "labeled-response") {
+		t.Fatal("labeled-response should follow uplink")
 	}
 	if contains(got, "extended-join") {
 		t.Fatal("extended-join not on uplink")
