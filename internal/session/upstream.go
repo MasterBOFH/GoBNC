@@ -426,8 +426,13 @@ func isChannelName(s string) bool {
 	return len(s) > 0 && (s[0] == '#' || s[0] == '&' || s[0] == '+' || s[0] == '!')
 }
 
-// rewriteFor strips/adjusts an upstream message for a client's negotiated caps.
+// rewriteFor adjusts an upstream message for a client's negotiated caps.
 // Empty Command means the caller should not deliver the message to this client.
+//
+// Policy: the IRC body (prefix/command/params) is passed through via msg.Raw /
+// Wire. Capability handling only replaces the tag prefix, except:
+//   - extended-join: strip account/GECOS from JOIN (body edit → replace Raw)
+//   - WHOX token fixups in OnMessage (body edit → clear Raw)
 func (s *Session) rewriteFor(d Downlink, msg irc.Message) irc.Message {
 	return s.rewriteMessage(d, msg, false)
 }
@@ -441,10 +446,16 @@ func (s *Session) rewriteMessage(d Downlink, msg irc.Message, forceSelfEcho bool
 		out.Command = ""
 		return out
 	}
-	// extended-join: strip account/GECOS for clients that did not negotiate it.
+	// extended-join: clients without the cap must not see account/GECOS params.
 	if out.Command == "JOIN" && !d.HasCap("extended-join") && len(out.Params) > 1 {
-		out.Params = []string{out.Params[0]}
-		out.Raw = "" // body changed; cannot reuse uplink wire form
+		ch := out.Params[0]
+		out.Params = []string{ch}
+		// Body edit: set an explicit JOIN wire form (do not re-Encode the uplink line).
+		if out.Source != "" {
+			out.Raw = ":" + out.Source + " JOIN " + ch
+		} else {
+			out.Raw = "JOIN " + ch
+		}
 	}
 	wantTime := d.HasCap("server-time")
 	wantTags := d.HasCap("message-tags")

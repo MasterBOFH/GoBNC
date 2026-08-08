@@ -30,7 +30,7 @@ func TestWirePreservesNumericBody(t *testing.T) {
 }
 
 func TestEncodeTrailingColon(t *testing.T) {
-	// PRIVMSG/NOTICE: always colon the message text.
+	// Encode always trailing-encodes the last param (synthesized lines only).
 	msg := Message{Source: "nick!u@h", Command: "PRIVMSG", Params: []string{"#chan", "hei"}}
 	if got := msg.Encode(); got != ":nick!u@h PRIVMSG #chan :hei" {
 		t.Fatalf("PRIVMSG: %q", got)
@@ -39,8 +39,6 @@ func TestEncodeTrailingColon(t *testing.T) {
 	if got := msg.Encode(); got != "NOTICE nick :CAP" {
 		t.Fatalf("NOTICE: %q", got)
 	}
-
-	// PING/PONG: always colon the token (keepalive + replies).
 	msg = Message{Command: "PING", Params: []string{"gobnc"}}
 	if got := msg.Encode(); got != "PING :gobnc" {
 		t.Fatalf("PING: %q", got)
@@ -49,15 +47,39 @@ func TestEncodeTrailingColon(t *testing.T) {
 	if got := msg.Encode(); got != "PONG :gobnc" {
 		t.Fatalf("PONG: %q", got)
 	}
-
-	// Numerics: no colon when the last param is a plain token.
+	msg = Message{Source: "gobnc", Command: "353", Params: []string{"MrIron", "=", "#iron-dev", "@MrIron"}}
+	if got := msg.Encode(); got != ":gobnc 353 MrIron = #iron-dev :@MrIron" {
+		t.Fatalf("353: %q", got)
+	}
+	msg = Message{Source: "gobnc", Command: "332", Params: []string{"me", "#c", "hi"}}
+	if got := msg.Encode(); got != ":gobnc 332 me #c :hi" {
+		t.Fatalf("332: %q", got)
+	}
 	msg = Message{Source: "irc.example.com", Command: "366", Params: []string{"me", "#c", "End"}}
-	if got := msg.Encode(); got != ":irc.example.com 366 me #c End" {
-		t.Fatalf("numeric plain: %q", got)
+	if got := msg.Encode(); got != ":irc.example.com 366 me #c :End" {
+		t.Fatalf("numeric last param: %q", got)
 	}
 	msg = Message{Source: "irc.example.com", Command: "366", Params: []string{"me", "#c", "End of /NAMES list."}}
 	if got := msg.Encode(); got != ":irc.example.com 366 me #c :End of /NAMES list." {
 		t.Fatalf("numeric spaced: %q", got)
+	}
+}
+
+func TestWireNeverReencodesUpstreamBody(t *testing.T) {
+	// Unusual colonation must survive tag injection — no Encode round-trip.
+	line := `:irc.example.com 353 me = #c @nick`
+	msg, err := Parse(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.Tags = map[string]string{"time": "2024-01-01T00:00:00.000Z"}
+	got := msg.Wire()
+	if got != `@time=2024-01-01T00:00:00.000Z `+line {
+		t.Fatalf("rewrote body: %q", got)
+	}
+	msg.Tags = nil
+	if msg.Wire() != line {
+		t.Fatalf("stripped tags mangled body: %q", msg.Wire())
 	}
 }
 

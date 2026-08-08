@@ -34,27 +34,34 @@ func RedactIRC(line string) string {
 		if secret == "" && len(msg.Params) > 0 {
 			secret = msg.Params[0]
 		}
+		redacted := "***"
 		if i := strings.IndexByte(secret, '/'); i >= 0 {
-			msg.Params = []string{secret[:i+1] + "***"}
-		} else {
-			msg.Params = []string{"***"}
+			redacted = secret[:i+1] + "***"
 		}
-		msg.Raw = ""
-		return msg.Encode()
+		msg.Params = []string{redacted}
+		msg.Raw = redactCommandBody(msg.Source, "PASS", redacted)
+		return msg.Wire()
 	case "AUTHENTICATE":
 		payload := strings.TrimSpace(msg.Trailing())
 		if payload == "" && len(msg.Params) > 0 {
 			payload = strings.TrimSpace(msg.Params[0])
 		}
 		if strings.EqualFold(payload, "+") {
-			return msg.Encode()
+			return line
 		}
 		msg.Params = []string{"***"}
-		msg.Raw = ""
-		return msg.Encode()
+		msg.Raw = redactCommandBody(msg.Source, "AUTHENTICATE", "***")
+		return msg.Wire()
 	default:
 		return line
 	}
+}
+
+func redactCommandBody(source, command, param string) string {
+	if source != "" {
+		return ":" + source + " " + command + " " + param
+	}
+	return command + " " + param
 }
 
 // redactIRCFallback best-effort redacts when the line does not parse.

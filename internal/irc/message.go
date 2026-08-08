@@ -172,8 +172,10 @@ func EscapeTagValue(v string) string {
 	return b.String()
 }
 
-// Encode serializes the message to a wire line without CRLF.
-// Prefer Wire when forwarding a parsed network line so the body stays verbatim.
+// Encode serializes a message we originate (attach burst, keepalive, errors).
+// The last parameter is always trailing-encoded (":…") so callers do not need
+// command-specific colon heuristics. Do not use Encode to forward network lines —
+// keep Raw and use Wire so uplink/client bodies stay verbatim.
 func (m Message) Encode() string {
 	var b bytes.Buffer
 	if len(m.Tags) > 0 {
@@ -186,22 +188,23 @@ func (m Message) Encode() string {
 		b.WriteByte(' ')
 	}
 	b.WriteString(m.Command)
+	n := len(m.Params)
 	for i, p := range m.Params {
 		b.WriteByte(' ')
-		last := i == len(m.Params)-1
-		if last && needsTrailingColon(m.Command, p) {
+		if i == n-1 {
 			b.WriteByte(':')
-			b.WriteString(p)
-		} else {
-			b.WriteString(p)
 		}
+		b.WriteString(p)
 	}
 	return b.String()
 }
 
-// Wire returns the line to send to a client. If Raw is set (parsed from the
-// network and the body was not rewritten), the original prefix/command/params
-// are preserved and only the tag prefix is adjusted.
+// Wire returns the line to send on the wire.
+//
+// If Raw is set (parsed from the network and the body was not rewritten), the
+// original prefix/command/params are preserved and only the tag prefix is
+// replaced for capability compatibility (server-time, message-tags, …).
+// Cap-driven body edits must clear or replace Raw (see session rewriteMessage).
 func (m Message) Wire() string {
 	if m.Raw == "" {
 		return m.Encode()
@@ -249,20 +252,6 @@ func formatTagPrefix(tags map[string]string) string {
 		}
 	}
 	return b.String()
-}
-
-// needsTrailingColon reports whether the final parameter must be colon-encoded.
-// PRIVMSG/NOTICE text is always trailing (even a single word). PING/PONG tokens
-// are always colon-encoded so keepalives and replies match IRC practice
-// ("PING :payload" / "PONG :payload"). Other commands only require it when empty,
-// spaced, or starting with ':'. Prefer keeping Raw and using Wire() when relaying
-// so server colonation is preserved verbatim.
-func needsTrailingColon(command, param string) bool {
-	switch strings.ToUpper(command) {
-	case "PRIVMSG", "NOTICE", "PING", "PONG":
-		return true
-	}
-	return param == "" || strings.ContainsAny(param, " \t") || strings.HasPrefix(param, ":")
 }
 
 func sortStrings(a []string) {

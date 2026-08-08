@@ -255,9 +255,10 @@ func (u *Uplink) UserModes() string {
 	return irc.UserModeString(u.umodes)
 }
 
-// WriteMessage encodes and sends a message (flood-paced when configured).
+// WriteMessage sends a message on the uplink.
+// Uses Wire so a parsed client Raw body is preserved; only the tag prefix changes.
 func (u *Uplink) WriteMessage(msg irc.Message) error {
-	return u.WriteRaw(msg.Encode())
+	return u.WriteRaw(msg.Wire())
 }
 
 // WriteRaw queues a raw line for flood-paced send when pacing is enabled;

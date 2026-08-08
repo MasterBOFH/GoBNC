@@ -1071,14 +1071,21 @@ func TestExtendedJoinRewrite(t *testing.T) {
 		Source:  "bob!u@h",
 		Command: "JOIN",
 		Params:  []string{"#c", "bobacct", "Bob Real"},
+		Raw:     ":bob!u@h JOIN #c bobacct :Bob Real",
 	}
 	got := s.rewriteFor(with, ext)
 	if len(got.Params) != 3 || got.Params[1] != "bobacct" {
 		t.Fatalf("extended client: %+v", got.Params)
 	}
+	if got.Wire() != ext.Raw {
+		t.Fatalf("extended client must keep uplink body: %q", got.Wire())
+	}
 	got = s.rewriteFor(without, ext)
 	if len(got.Params) != 1 || got.Params[0] != "#c" {
 		t.Fatalf("plain client: %+v", got.Params)
+	}
+	if got.Wire() != ":bob!u@h JOIN #c" {
+		t.Fatalf("plain client JOIN wire: %q", got.Wire())
 	}
 }
 
