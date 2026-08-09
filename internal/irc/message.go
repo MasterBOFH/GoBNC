@@ -204,7 +204,7 @@ func (m Message) Encode() string {
 // If Raw is set (parsed from the network and the body was not rewritten), the
 // original prefix/command/params are preserved and only the tag prefix is
 // replaced for capability compatibility (server-time, message-tags, …).
-// Cap-driven body edits must clear or replace Raw (see session rewriteMessage).
+// Cap-driven body edits must clear or replace Raw (see session rewriteFor).
 func (m Message) Wire() string {
 	if m.Raw == "" {
 		return m.Encode()

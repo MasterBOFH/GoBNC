@@ -1052,14 +1052,32 @@ func TestEchoMessageFiltering(t *testing.T) {
 	if s.rewriteFor(with, self).Command != "PRIVMSG" {
 		t.Fatal("self PRIVMSG with echo-message should pass")
 	}
-	// Local synthesis (no uplink echo-message): force to everyone.
-	if s.rewriteMessage(without, self, true).Command != "PRIVMSG" {
-		t.Fatal("forced self echo should reach clients without the cap")
-	}
 
 	other := irc.Message{Source: "bob!u@h", Command: "PRIVMSG", Params: []string{"#c", "hi"}}
 	if s.rewriteFor(without, other).Command != "PRIVMSG" {
 		t.Fatal("other nick PRIVMSG always passes")
+	}
+}
+
+func TestEchoSelfLocallyRequiresEchoMessage(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	with := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true}}
+	without := &fakeDL{id: "c3", caps: map[string]bool{}}
+	_ = s.Attach(with)
+	_ = s.Attach(without)
+	with.clearSent()
+	without.clearSent()
+
+	s.echoSelfLocally(without, irc.Message{
+		Command: "PRIVMSG",
+		Params:  []string{"#c", "hi"},
+	})
+
+	if len(with.sent) != 1 || with.sent[0].Command != "PRIVMSG" {
+		t.Fatalf("echo-message client: %+v", with.sent)
+	}
+	if len(without.sent) != 0 {
+		t.Fatalf("client without echo-message must not get synthetic echo: %+v", without.sent)
 	}
 }
 

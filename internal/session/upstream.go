@@ -499,15 +499,9 @@ func isChannelName(s string) bool {
 //   - extended-join: strip account/GECOS from JOIN (body edit → replace Raw)
 //   - WHOX token fixups in OnMessage (body edit → clear Raw)
 func (s *Session) rewriteFor(d Downlink, msg irc.Message) irc.Message {
-	return s.rewriteMessage(d, msg, false)
-}
-
-// rewriteMessage is rewriteFor with forceSelfEcho for locally synthesized echoes
-// when the uplink lacks echo-message (deliver to every client).
-func (s *Session) rewriteMessage(d Downlink, msg irc.Message, forceSelfEcho bool) irc.Message {
 	out := msg
 	out.Tags = msg.CopyTags()
-	if !s.clientAccepts(d, out, forceSelfEcho) {
+	if !s.clientAccepts(d, out) {
 		out.Command = ""
 		return out
 	}
@@ -557,18 +551,18 @@ func (s *Session) rewriteMessage(d Downlink, msg irc.Message, forceSelfEcho bool
 }
 
 // clientAccepts reports whether this downlink should receive msg given its caps.
-func (s *Session) clientAccepts(d Downlink, msg irc.Message, forceSelfEcho bool) bool {
+func (s *Session) clientAccepts(d Downlink, msg irc.Message) bool {
 	switch msg.Command {
 	case "TAGMSG":
 		if !d.HasCap("message-tags") {
 			return false
 		}
-		if s.isSelfNick(msg.Nick()) && !forceSelfEcho {
+		if s.isSelfNick(msg.Nick()) {
 			return d.HasCap("echo-message")
 		}
 		return true
 	case "PRIVMSG", "NOTICE":
-		if s.isSelfNick(msg.Nick()) && !forceSelfEcho {
+		if s.isSelfNick(msg.Nick()) {
 			return d.HasCap("echo-message")
 		}
 		return true

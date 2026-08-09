@@ -442,7 +442,8 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 }
 
 // echoSelfLocally synthesizes a self PRIVMSG/NOTICE/TAGMSG when the uplink
-// lacks echo-message, and delivers it to every downlink (multi-client sync).
+// lacks echo-message. Only downlinks that negotiated echo-message receive it
+// (clients without the cap already display their own sends locally).
 // The originating client's label is preserved so labeled-response correlation works.
 func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	clientLabel, _ := msg.Tag("label")
@@ -465,7 +466,7 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	s.mu.RLock()
 	legacyHit := false
 	for _, d := range s.downlinks {
-		out := s.rewriteMessage(d, echo, true)
+		out := s.rewriteFor(d, echo)
 		if out.Command == "" {
 			continue
 		}
