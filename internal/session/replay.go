@@ -119,7 +119,14 @@ func (s *Session) Attach(d Downlink) error {
 		send(m)
 	}
 	if umode != "" {
-		send(irc.Message{Source: src, Command: "221", Params: []string{nick, umode}})
+		// RPL_UMODEIS modes are a middle param (no leading ':'); set Raw so Wire
+		// does not Encode them as trailing.
+		send(irc.Message{
+			Source:  src,
+			Command: "221",
+			Params:  []string{nick, umode},
+			Raw:     ":" + src + " 221 " + nick + " " + umode,
+		})
 	}
 	// Clients often wait for end-of-MOTD to finish registration; we don't burst the
 	// uplink MOTD, but tell them how to fetch it and close with 376.

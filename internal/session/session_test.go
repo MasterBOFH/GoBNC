@@ -1382,6 +1382,9 @@ func TestAttachWelcomeBurst(t *testing.T) {
 			if m.Param(1) != "+i" {
 				t.Fatalf("221=%v", m.Params)
 			}
+			if got := m.Wire(); strings.Contains(got, ":+") || !strings.Contains(got, " +i") {
+				t.Fatalf("attach 221 must not trailing-encode modes: %q", got)
+			}
 		case "372":
 			if m.Trailing() == "" && (len(m.Params) < 2 || m.Params[1] == "") {
 				t.Fatalf("empty 372: %+v", m)
@@ -1413,6 +1416,34 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 	if !strings.Contains(joined, "MOTD") && cmds["376"] != 1 {
 		t.Fatal("expected end of MOTD")
+	}
+}
+
+func TestLive221PreservesUplinkColonation(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.mu.Lock()
+	s.registered = true
+	s.mu.Unlock()
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	line := `:irc.example.com 221 me +iw`
+	msg, err := irc.Parse(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.OnMessage(nil, msg)
+
+	if len(d.sent) != 1 || d.sent[0].Command != "221" {
+		t.Fatalf("sent=%+v", d.sent)
+	}
+	got := d.sent[0].Wire()
+	if got != line {
+		t.Fatalf("live 221 rewrote body:\n got %q\nwant %q", got, line)
+	}
+	if strings.Contains(got, ":+") {
+		t.Fatalf("live 221 must not add trailing colon: %q", got)
 	}
 }
 
