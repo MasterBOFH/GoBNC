@@ -45,7 +45,7 @@
   "history_retention_days": 0,
 
   // QUIT reason sent to all uplinks on process shutdown.
-  "quit_message": "GoBNC 0.1.0",
+  "quit_message": "GoBNC 0.1.1",
 
   // Defaults for `network add` when nick / identity flags are omitted.
   "default_nick": "",
