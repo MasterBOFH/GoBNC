@@ -167,6 +167,7 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 
 	sess, err := l.mgr.Session(network)
 	if err != nil {
+		l.log.Info("auth failed", "ip", peerIP(c), "network", network, "err", "unknown network")
 		_ = cl.Send(irc.Message{Command: "ERROR", Params: []string{"unknown network: " + network}})
 		return
 	}
@@ -254,9 +255,11 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	}
 
 	fpOK := false
+	presentedCert := false
 	cfg := l.config()
 	if cfg.AllowCertAuth {
 		if state := tc.ConnectionState(); len(state.PeerCertificates) > 0 {
+			presentedCert = true
 			sum := sha256.Sum256(state.PeerCertificates[0].Raw)
 			fp := hex.EncodeToString(sum[:])
 			ok, err := l.store.HasFingerprint(ctx, fp)
@@ -268,7 +271,8 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	}
 	passOK := false
 	passSecret := stripNetworkFromPass(pass)
-	if cfg.AllowPasswordAuth && passSecret != "" {
+	triedPassword := cfg.AllowPasswordAuth && passSecret != ""
+	if triedPassword {
 		hash, err := l.store.PasswordHash(ctx)
 		if err != nil {
 			return false, "", err
@@ -280,7 +284,16 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		}
 	}
 	if !fpOK && !passOK {
-		return false, "", fmt.Errorf("no valid credentials")
+		switch {
+		case presentedCert && triedPassword:
+			return false, "", fmt.Errorf("invalid password and fingerprint")
+		case presentedCert:
+			return false, "", fmt.Errorf("invalid fingerprint")
+		case triedPassword:
+			return false, "", fmt.Errorf("invalid password")
+		default:
+			return false, "", fmt.Errorf("no valid credentials")
+		}
 	}
 
 	network := networkFromPass(pass)

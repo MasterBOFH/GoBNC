@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,6 +174,172 @@ func TestAuthFailClosed(t *testing.T) {
 	if contains(string(buf[:n]), "001") {
 		t.Fatal("should not auth")
 	}
+}
+
+type logCapture struct {
+	mu      sync.Mutex
+	records []string
+}
+
+func (h *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+func (h *logCapture) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+	b.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		b.WriteByte(' ')
+		b.WriteString(a.String())
+		return true
+	})
+	h.mu.Lock()
+	h.records = append(h.records, b.String())
+	h.mu.Unlock()
+	return nil
+}
+func (h *logCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *logCapture) WithGroup(string) slog.Handler      { return h }
+func (h *logCapture) has(substr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if strings.Contains(r, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAuthFailedLoggedUnknownNetwork(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+	_ = db.SetPasswordHash(context.Background(), mustHash(t, "s3cret"))
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost"}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("PASS nosuch/s3cret\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	_, _ = c.Read(buf)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("auth failed") && cap.has("unknown network") && cap.has("nosuch") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing auth failed log for unknown network: %#v", cap.records)
+}
+
+func TestAuthFailedLoggedInvalidPassword(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+	_ = db.SetPasswordHash(context.Background(), mustHash(t, "right"))
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost"}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("PASS n/wrong\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	_, _ = c.Read(buf)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("auth failed") && cap.has("invalid password") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing auth failed log for invalid password: %#v", cap.records)
+}
+
+func TestAuthFailedLoggedInvalidFingerprint(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = false
+	cfg.AllowCertAuth = true
+	// No fingerprints registered — client cert must fail.
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	c, err := tls.Dial("tcp", ln.Addr().String(), fx.ClientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("PASS libera/\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	_, _ = c.Read(buf)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("auth failed") && cap.has("invalid fingerprint") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing auth failed log for invalid fingerprint: %#v", cap.records)
 }
 
 func TestPeerIP(t *testing.T) {
