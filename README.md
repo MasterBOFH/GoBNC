@@ -47,9 +47,13 @@ Connect with TLS to `listen_addr` (default `127.0.0.1:6697`).
 **Cert login:** present any TLS client certificate from your IRC client and register its SHA-256:
 
 ```bash
-./bin/gobnc auth add-fingerprint <sha256-hex>
+./bin/gobnc auth add-fingerprint <sha256-hex> [label]
+./bin/gobnc auth list-fingerprints
+./bin/gobnc auth delete-fingerprint <#N|sha256-hex|prefix>
 # e.g. openssl x509 -in your-client.crt -outform DER | openssl dgst -sha256 -hex
 ```
+
+`label` is an optional note stored with the fingerprint (re-run `add-fingerprint` with the same hash to change it). `list-fingerprints` prints a 1-based index used by `delete-fingerprint #2` (or `2`).
 
 Then connect with `PASS libera/` (or `libera`) and that client cert enabled.
 

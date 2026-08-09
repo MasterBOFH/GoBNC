@@ -247,7 +247,7 @@ func TestAuthFingerprint(t *testing.T) {
 	if err != nil || h != "argon2id$..." {
 		t.Fatal(h, err)
 	}
-	fp := "aabbcc"
+	fp := "aabbccdd00112233445566778899aabbccddeeff00112233445566778899aaaa"
 	if err := s.AddFingerprint(ctx, fp, "laptop"); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +258,40 @@ func TestAuthFingerprint(t *testing.T) {
 	ok, _ = s.HasFingerprint(ctx, "nope")
 	if ok {
 		t.Fatal("expected miss")
+	}
+	list, err := s.ListFingerprints(ctx)
+	if err != nil || len(list) != 1 || list[0].Fingerprint != fp || list[0].Label != "laptop" {
+		t.Fatalf("%+v %v", list, err)
+	}
+	fp2 := "bbccddee00112233445566778899aabbccddeeff00112233445566778899bbbb"
+	if err := s.AddFingerprint(ctx, fp2, "phone"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolveFingerprint(ctx, "#2")
+	if err != nil || got != fp2 {
+		t.Fatalf("resolve #2: %q %v", got, err)
+	}
+	got, err = s.ResolveFingerprint(ctx, "2")
+	if err != nil || got != fp2 {
+		t.Fatalf("resolve 2: %q %v", got, err)
+	}
+	got, err = s.ResolveFingerprint(ctx, "bbccddee")
+	if err != nil || got != fp2 {
+		t.Fatalf("resolve prefix: %q %v", got, err)
+	}
+	if err := s.RemoveFingerprint(ctx, fp2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolveFingerprint(ctx, "#2"); err == nil {
+		t.Fatal("expected missing #2")
+	}
+	// Relabel via add conflict
+	if err := s.AddFingerprint(ctx, fp, "desk"); err != nil {
+		t.Fatal(err)
+	}
+	list, err = s.ListFingerprints(ctx)
+	if err != nil || len(list) != 1 || list[0].Label != "desk" {
+		t.Fatalf("relabel: %+v %v", list, err)
 	}
 }
 

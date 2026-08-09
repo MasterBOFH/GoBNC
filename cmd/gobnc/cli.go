@@ -28,6 +28,7 @@ func runCLI(args []string) error {
   auth set-password
   auth add-fingerprint <sha256-hex> [label]
   auth list-fingerprints
+  auth delete-fingerprint <#N|sha256-hex|prefix>
   network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
@@ -190,17 +191,47 @@ func cmdAuth(ctx context.Context, st *store.Store, args []string) error {
 		}
 		label := ""
 		if len(args) > 2 {
-			label = args[2]
+			label = strings.Join(args[2:], " ")
 		}
-		return st.AddFingerprint(ctx, strings.ToLower(args[1]), label)
+		fp := strings.ToLower(args[1])
+		if err := st.AddFingerprint(ctx, fp, label); err != nil {
+			return err
+		}
+		if label != "" {
+			fmt.Fprintf(os.Stderr, "Fingerprint added (%s).\n", label)
+		} else {
+			fmt.Fprintln(os.Stderr, "Fingerprint added.")
+		}
+		return nil
 	case "list-fingerprints":
 		fps, err := st.ListFingerprints(ctx)
 		if err != nil {
 			return err
 		}
-		for _, fp := range fps {
-			fmt.Println(fp)
+		if len(fps) == 0 {
+			fmt.Fprintln(os.Stderr, "No fingerprints.")
+			return nil
 		}
+		for i, e := range fps {
+			if e.Label != "" {
+				fmt.Printf("%d\t%s\t%s\n", i+1, e.Fingerprint, e.Label)
+			} else {
+				fmt.Printf("%d\t%s\n", i+1, e.Fingerprint)
+			}
+		}
+		return nil
+	case "delete-fingerprint", "remove-fingerprint":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: auth delete-fingerprint <#N|sha256-hex|prefix>")
+		}
+		fp, err := st.ResolveFingerprint(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		if err := st.RemoveFingerprint(ctx, fp); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Deleted %s\n", fp)
 		return nil
 	default:
 		return fmt.Errorf("unknown auth command")

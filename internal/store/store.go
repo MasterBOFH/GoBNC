@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -356,7 +357,15 @@ func (s *Store) PasswordHash(ctx context.Context) (string, error) {
 	return h, err
 }
 
+// CertFingerprint is an allowed client certificate fingerprint.
+type CertFingerprint struct {
+	Fingerprint string
+	Label       string
+	CreatedAt   string
+}
+
 // AddFingerprint adds an allowed client cert fingerprint (lowercase hex).
+// An existing fingerprint's label is updated on conflict.
 func (s *Store) AddFingerprint(ctx context.Context, fp, label string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cert_fingerprints (fingerprint, label, created_at) VALUES (?, ?, ?)
@@ -367,8 +376,18 @@ func (s *Store) AddFingerprint(ctx context.Context, fp, label string) error {
 
 // RemoveFingerprint deletes a fingerprint.
 func (s *Store) RemoveFingerprint(ctx context.Context, fp string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM cert_fingerprints WHERE fingerprint=?`, fp)
-	return err
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cert_fingerprints WHERE fingerprint=?`, fp)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("fingerprint not found")
+	}
+	return nil
 }
 
 // HasFingerprint reports whether fp is allowed.
@@ -378,22 +397,96 @@ func (s *Store) HasFingerprint(ctx context.Context, fp string) (bool, error) {
 	return n > 0, err
 }
 
-// ListFingerprints returns all fingerprints.
-func (s *Store) ListFingerprints(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT fingerprint FROM cert_fingerprints ORDER BY fingerprint`)
+// ListFingerprints returns all fingerprints ordered by creation time, then fingerprint.
+func (s *Store) ListFingerprints(ctx context.Context) ([]CertFingerprint, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT fingerprint, label, created_at FROM cert_fingerprints
+		ORDER BY created_at ASC, fingerprint ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	var out []CertFingerprint
 	for rows.Next() {
-		var fp string
-		if err := rows.Scan(&fp); err != nil {
+		var e CertFingerprint
+		if err := rows.Scan(&e.Fingerprint, &e.Label, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		out = append(out, fp)
+		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ResolveFingerprint maps a list index (#N / N) or fingerprint (exact or unique
+// prefix) to the stored fingerprint string. Indices match ListFingerprints order (1-based).
+func (s *Store) ResolveFingerprint(ctx context.Context, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("empty fingerprint reference")
+	}
+	entries, err := s.ListFingerprints(ctx)
+	if err != nil {
+		return "", err
+	}
+	if n, ok := parseFingerprintIndex(ref); ok {
+		if n < 1 || n > len(entries) {
+			return "", fmt.Errorf("fingerprint #%d not found", n)
+		}
+		return entries[n-1].Fingerprint, nil
+	}
+	ref = strings.ToLower(ref)
+	var matches []string
+	for _, e := range entries {
+		if e.Fingerprint == ref {
+			return e.Fingerprint, nil
+		}
+		if strings.HasPrefix(e.Fingerprint, ref) {
+			matches = append(matches, e.Fingerprint)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("fingerprint not found")
+	default:
+		return "", fmt.Errorf("fingerprint prefix %q is ambiguous (%d matches)", ref, len(matches))
+	}
+}
+
+// parseFingerprintIndex accepts "#3" or "3" as a 1-based list index.
+// Bare values that look like hex fingerprints (contain a-f or length >= 8) are not indices.
+func parseFingerprintIndex(ref string) (int, bool) {
+	s := strings.TrimSpace(ref)
+	if strings.HasPrefix(s, "#") {
+		s = strings.TrimSpace(s[1:])
+		if s == "" {
+			return 0, false
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		return n, true
+	}
+	if s == "" {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	// Avoid treating short hex-looking refs as indices when they include a-f — already digits-only.
+	// Long numeric strings are still indices only if short enough to be a list position.
+	if len(s) > 6 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
 }
 
 // InsertMessage stores a chat message.
