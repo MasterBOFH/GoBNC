@@ -1360,6 +1360,7 @@ func TestSelfPrefix(t *testing.T) {
 func TestAttachWelcomeBurst(t *testing.T) {
 	s := New(store.Network{Name: "ircu2", Nick: "me"}, nil, nil, nil)
 	s.registered = true
+	s.uplinkServer = "ircu2.example"
 	s.isupport.Parse005([]string{"me", "CHANMODES=b,k,l,imnpst", "PREFIX=(ov)@+", "WHOX", "NETWORK=upstream", "are supported by this server"})
 	s.rpl002 = []string{"Your host is ircu2.example"}
 	s.rpl003 = []string{"This server was created yesterday"}
@@ -1395,8 +1396,8 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	for _, m := range d.sent {
 		switch m.Command {
 		case "001", "002", "003", "004", "005", "221", "375", "372", "376":
-			if m.Source != ServerName {
-				t.Fatalf("%s missing source prefix: %+v", m.Command, m)
+			if m.Source != "ircu2.example" {
+				t.Fatalf("%s source=%q want ircu2.example: %+v", m.Command, m.Source, m)
 			}
 			if _, ok := m.Tag("time"); !ok {
 				t.Fatalf("%s missing @time for server-time client: %+v", m.Command, m)
@@ -1413,6 +1414,32 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	if !strings.Contains(joined, "MOTD") && cmds["376"] != 1 {
 		t.Fatal("expected end of MOTD")
 	}
+}
+
+func TestAttachWelcomeUsesUplinkServerFrom001(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s.OnRegistrationLine(nil, irc.Message{
+		Source:  "undernet.org",
+		Command: "001",
+		Params:  []string{"me", "Welcome"},
+	})
+	s.mu.Lock()
+	s.registered = true
+	s.mu.Unlock()
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range d.sent {
+		if m.Command == "001" {
+			if m.Source != "undernet.org" {
+				t.Fatalf("001 source=%q want undernet.org", m.Source)
+			}
+			return
+		}
+	}
+	t.Fatal("missing 001")
 }
 
 func TestAttachISUPPORTChatHistoryMsgRefTypes(t *testing.T) {

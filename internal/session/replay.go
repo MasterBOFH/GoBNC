@@ -8,8 +8,18 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
 
-// ServerName is the source prefix on bouncer-generated numerics and notices.
+// ServerName is the fallback source prefix on bouncer-generated numerics and notices
+// when the uplink's 001 server name is not yet known.
 const ServerName = "gobnc"
+
+// serverPrefixLocked returns the source for attach-burst server messages.
+// Prefers the uplink 001 prefix when known. Caller must hold s.mu.
+func (s *Session) serverPrefixLocked() string {
+	if s.uplinkServer != "" {
+		return s.uplinkServer
+	}
+	return ServerName
+}
 
 // Attach registers a downlink and replays welcome + channel state.
 //
@@ -68,6 +78,7 @@ func (s *Session) Attach(d Downlink) error {
 	}
 
 	nick := s.liveNickLocked()
+	src := s.serverPrefixLocked()
 	rpl002 := append([]string(nil), s.rpl002...)
 	rpl003 := append([]string(nil), s.rpl003...)
 	rpl004 := append([]string(nil), s.rpl004...)
@@ -93,28 +104,28 @@ func (s *Session) Attach(d Downlink) error {
 		_ = d.Send(s.rewriteFor(d, msg))
 	}
 
-	send(irc.Message{Source: ServerName, Command: "001", Params: []string{nick, "Welcome to GoBNC"}})
+	send(irc.Message{Source: src, Command: "001", Params: []string{nick, "Welcome to GoBNC"}})
 	if len(rpl002) > 0 {
-		send(irc.Message{Source: ServerName, Command: "002", Params: append([]string{nick}, rpl002...)})
+		send(irc.Message{Source: src, Command: "002", Params: append([]string{nick}, rpl002...)})
 	}
 	if len(rpl003) > 0 {
-		send(irc.Message{Source: ServerName, Command: "003", Params: append([]string{nick}, rpl003...)})
+		send(irc.Message{Source: src, Command: "003", Params: append([]string{nick}, rpl003...)})
 	}
 	if len(rpl004) > 0 {
-		send(irc.Message{Source: ServerName, Command: "004", Params: append([]string{nick}, rpl004...)})
+		send(irc.Message{Source: src, Command: "004", Params: append([]string{nick}, rpl004...)})
 	}
 	for _, m := range irc.RPL005(nick, isupportRaw, 500) {
-		m.Source = ServerName
+		m.Source = src
 		send(m)
 	}
 	if umode != "" {
-		send(irc.Message{Source: ServerName, Command: "221", Params: []string{nick, umode}})
+		send(irc.Message{Source: src, Command: "221", Params: []string{nick, umode}})
 	}
 	// Clients often wait for end-of-MOTD to finish registration; we don't burst the
 	// uplink MOTD, but tell them how to fetch it and close with 376.
-	send(irc.Message{Source: ServerName, Command: "375", Params: []string{nick, "- GoBNC Message of the Day -"}})
-	send(irc.Message{Source: ServerName, Command: "372", Params: []string{nick, "- MOTD can be requested by typing /MOTD"}})
-	send(irc.Message{Source: ServerName, Command: "376", Params: []string{nick, "End of /MOTD command."}})
+	send(irc.Message{Source: src, Command: "375", Params: []string{nick, "- GoBNC Message of the Day -"}})
+	send(irc.Message{Source: src, Command: "372", Params: []string{nick, "- MOTD can be requested by typing /MOTD"}})
+	send(irc.Message{Source: src, Command: "376", Params: []string{nick, "End of /MOTD command."}})
 
 	if haveLogin {
 		send(loggedIn)
@@ -126,12 +137,12 @@ func (s *Session) Attach(d Downlink) error {
 			s.sendMarkReadAfterJoin(d, ch.Name)
 		}
 		if ch.Topic != "" {
-			send(irc.Message{Source: ServerName, Command: "332", Params: []string{nick, ch.Name, ch.Topic}})
+			send(irc.Message{Source: src, Command: "332", Params: []string{nick, ch.Name, ch.Topic}})
 		}
 		if names := namesFor[ch.Name]; len(names) > 0 {
-			send(irc.Message{Source: ServerName, Command: "353", Params: []string{nick, "=", ch.Name, strings.Join(names, " ")}})
+			send(irc.Message{Source: src, Command: "353", Params: []string{nick, "=", ch.Name, strings.Join(names, " ")}})
 		}
-		send(irc.Message{Source: ServerName, Command: "366", Params: []string{nick, ch.Name, "End of /NAMES list."}})
+		send(irc.Message{Source: src, Command: "366", Params: []string{nick, ch.Name, "End of /NAMES list."}})
 		if !hasChathistory(d) {
 			s.playLegacyHistory(d, ch.Name)
 		}

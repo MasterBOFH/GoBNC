@@ -65,6 +65,7 @@ type Session struct {
 	rpl002         []string // params after nick
 	rpl003         []string
 	rpl004         []string
+	uplinkServer   string // source prefix from uplink 001 when known
 	ircd           string // detected IRCd family (irc.IRCd*)
 	registered     bool   // true after uplink OnRegistered until OnDisconnect
 	// awaitingUplink marks downlinks that attached before uplink registration

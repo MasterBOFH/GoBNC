@@ -77,6 +77,9 @@ func (s *Session) OnRegistrationLine(u *uplink.Uplink, msg irc.Message) {
 		actual := msg.Params[0]
 		s.ensureSelfLocked(actual)
 		s.self.Nick = actual
+		if src := strings.TrimSpace(msg.Source); src != "" {
+			s.uplinkServer = src
+		}
 		// Clients may already have a synthetic 001 with the configured nick.
 		// Send self-NICK before the real 001 when the live nick differs.
 		if cfgNick != "" && !s.isupport.CaseMapping.Equal(cfgNick, actual) {
@@ -206,6 +209,7 @@ func (s *Session) OnDisconnect(u *uplink.Uplink, err error) {
 	s.saslClient = ""
 	s.loggedIn = false
 	s.rpl002, s.rpl003, s.rpl004 = nil, nil, nil
+	s.uplinkServer = ""
 	s.ircd = ""
 	s.channels = make(map[string]*ChannelState)
 	s.pendingJoinKeys = make(map[string]string)
