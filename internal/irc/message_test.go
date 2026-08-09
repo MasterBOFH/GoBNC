@@ -29,6 +29,39 @@ func TestWirePreservesNumericBody(t *testing.T) {
 	}
 }
 
+func TestParamsTextPASS(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{"PASS Undernet/secret", "Undernet/secret"},
+		{"PASS :Undernet/secret", "Undernet/secret"},
+		{"PASS Undernet/sec ret", "Undernet/sec ret"},
+		{"PASS :Undernet/sec ret", "Undernet/sec ret"},
+		{"PASS Undernet/12345", "Undernet/12345"},
+		{"PASS :Undernet/12345", "Undernet/12345"},
+		{"PASS Undernet 12345", "Undernet 12345"},
+		{"@label=1 PASS net/pass", "net/pass"},
+		{"@label=1 PASS :net/pass with spaces", "net/pass with spaces"},
+		{"PASS", ""},
+		{"PASS :", ""},
+	}
+	for _, tc := range cases {
+		msg, err := Parse(tc.line)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.line, err)
+		}
+		if got := msg.ParamsText(); got != tc.want {
+			t.Fatalf("ParamsText(%q)=%q want %q (params=%q)", tc.line, got, tc.want, msg.Params)
+		}
+	}
+	// Constructed message without Raw joins params.
+	msg := Message{Command: "PASS", Params: []string{"net/a", "b", "c"}}
+	if got := msg.ParamsText(); got != "net/a b c" {
+		t.Fatalf("constructed: %q", got)
+	}
+}
+
 func TestEncodeTrailingColon(t *testing.T) {
 	// Encode always trailing-encodes the last param (synthesized lines only).
 	msg := Message{Source: "nick!u@h", Command: "PRIVMSG", Params: []string{"#chan", "hei"}}

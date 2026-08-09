@@ -232,10 +232,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		case "CAP":
 			_ = handleClientCAP(cl, msg)
 		case "PASS":
-			pass = msg.Trailing()
-			if pass == "" {
-				pass = msg.Param(0)
-			}
+			pass = msg.ParamsText()
 		case "NICK":
 			nick = msg.Param(0)
 			cl.nick = nick

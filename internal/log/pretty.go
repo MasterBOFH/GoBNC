@@ -30,10 +30,7 @@ func RedactIRC(line string) string {
 	}
 	switch strings.ToUpper(msg.Command) {
 	case "PASS":
-		secret := msg.Trailing()
-		if secret == "" && len(msg.Params) > 0 {
-			secret = msg.Params[0]
-		}
+		secret := msg.ParamsText()
 		redacted := "***"
 		if i := strings.IndexByte(secret, '/'); i >= 0 {
 			redacted = secret[:i+1] + "***"
@@ -42,10 +39,7 @@ func RedactIRC(line string) string {
 		msg.Raw = redactCommandBody(msg.Source, "PASS", redacted)
 		return msg.Wire()
 	case "AUTHENTICATE":
-		payload := strings.TrimSpace(msg.Trailing())
-		if payload == "" && len(msg.Params) > 0 {
-			payload = strings.TrimSpace(msg.Params[0])
-		}
+		payload := strings.TrimSpace(msg.ParamsText())
 		if strings.EqualFold(payload, "+") {
 			return line
 		}

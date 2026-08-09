@@ -29,6 +29,33 @@ func (m *memMgr) Session(network string) (*session.Session, error) {
 	return nil, context.Canceled
 }
 
+func TestPassParamWithAndWithoutColon(t *testing.T) {
+	cases := []struct {
+		line, network, secret string
+	}{
+		{"PASS Undernet/s3cret", "Undernet", "s3cret"},
+		{"PASS :Undernet/s3cret", "Undernet", "s3cret"},
+		{"PASS Undernet/s3cret 99", "Undernet", "s3cret 99"},
+		{"PASS :Undernet/s3cret 99", "Undernet", "s3cret 99"},
+		{"PASS Undernet/", "Undernet", ""},
+		{"PASS :Undernet/", "Undernet", ""},
+		{"PASS Undernet", "Undernet", ""},
+	}
+	for _, tc := range cases {
+		msg, err := irc.Parse(tc.line)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.line, err)
+		}
+		pass := msg.ParamsText()
+		if got := networkFromPass(pass); got != tc.network {
+			t.Fatalf("%q network=%q want %q (pass=%q)", tc.line, got, tc.network, pass)
+		}
+		if got := stripNetworkFromPass(pass); got != tc.secret {
+			t.Fatalf("%q secret=%q want %q (pass=%q)", tc.line, got, tc.secret, pass)
+		}
+	}
+}
+
 func TestAuthPasswordAndCert(t *testing.T) {
 	fx := testutil.NewTLSFixture(t)
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))

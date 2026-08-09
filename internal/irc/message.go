@@ -295,6 +295,57 @@ func (m Message) Trailing() string {
 	return m.Params[len(m.Params)-1]
 }
 
+// ParamsText returns the parameter payload after the command as a single string.
+//
+// For opaque single-argument commands (PASS, AUTHENTICATE, …) clients may send
+// either "CMD :payload" or "CMD payload". Without a leading colon, spaces in the
+// payload become multiple IRC params; ParamsText reconstructs the original text
+// from Raw when available, otherwise joins Params with spaces.
+func (m Message) ParamsText() string {
+	if m.Raw != "" {
+		if text, ok := paramsTextFromRaw(m.Raw, m.Command); ok {
+			return text
+		}
+	}
+	if len(m.Params) == 0 {
+		return ""
+	}
+	return strings.Join(m.Params, " ")
+}
+
+// paramsTextFromRaw extracts the text after command in a wire line.
+func paramsTextFromRaw(line, command string) (string, bool) {
+	s := stripTagPrefix(line)
+	if len(s) > 0 && s[0] == ':' {
+		sp := strings.IndexByte(s, ' ')
+		if sp < 0 {
+			return "", false
+		}
+		s = strings.TrimLeft(s[sp+1:], " ")
+	}
+	if command == "" {
+		return "", false
+	}
+	if len(s) < len(command) || !strings.EqualFold(s[:len(command)], command) {
+		return "", false
+	}
+	rest := s[len(command):]
+	if rest == "" {
+		return "", true
+	}
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return "", false
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	if rest == "" {
+		return "", true
+	}
+	if rest[0] == ':' {
+		return rest[1:], true
+	}
+	return rest, true
+}
+
 // CopyTags returns a shallow copy of tags.
 func (m Message) CopyTags() map[string]string {
 	if m.Tags == nil {
