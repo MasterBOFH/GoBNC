@@ -69,7 +69,7 @@ Enable bouncer SASL with `--sasl=true`:
 
 Empty network cert paths inherit the global JSON paths; `none` or `-` disables the cert for one network.
 
-Channels you `JOIN` (including keys) are remembered and auto-rejoined on uplink reconnect; `PART` forgets them.
+Channels you `JOIN` (including keys) are remembered and auto-rejoined on uplink reconnect; `PART` forgets them. If a remembered channel cannot be joined (for example invite-only), an `INVITE` to that channel retries the join; invites after an intentional `PART` do not.
 
 ### Administer
 

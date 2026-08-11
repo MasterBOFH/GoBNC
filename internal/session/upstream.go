@@ -369,6 +369,57 @@ func (s *Session) OnMessage(u *uplink.Uplink, msg irc.Message) {
 	s.mu.RUnlock()
 	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 	s.maybeSendMarkReadOnSelfJOIN(msg)
+	s.maybeJoinOnInvite(msg)
+}
+
+// maybeJoinOnInvite retries JOIN when we are invited to a channel that is still
+// on the auto-join list but we are not currently in (e.g. invite-only failure
+// after reconnect). Intentional PART removes the channel from the store, so
+// invites after PART do not rejoin.
+func (s *Session) maybeJoinOnInvite(msg irc.Message) {
+	if msg.Command != "INVITE" {
+		return
+	}
+	line := s.inviteAutoJoinLine(msg)
+	if line == "" || s.uplink == nil {
+		return
+	}
+	_ = s.uplink.WriteRaw(line)
+}
+
+// inviteAutoJoinLine returns a JOIN line when INVITE targets us for a remembered
+// but unjoined channel; otherwise "".
+func (s *Session) inviteAutoJoinLine(msg irc.Message) string {
+	if !s.isSelfNick(msg.Param(0)) {
+		return ""
+	}
+	chName := msg.Param(1)
+	if chName == "" || s.store == nil || s.Network.ID == 0 {
+		return ""
+	}
+
+	s.mu.RLock()
+	cm := s.isupport.CaseMapping
+	_, joined := s.channels[cm.Canonical(chName)]
+	s.mu.RUnlock()
+	if joined {
+		return ""
+	}
+
+	chs, err := s.store.ListChannels(context.Background(), s.Network.ID)
+	if err != nil {
+		return ""
+	}
+	for _, ch := range chs {
+		if !cm.Equal(ch.Name, chName) {
+			continue
+		}
+		if ch.Key != "" {
+			return "JOIN " + ch.Name + " " + ch.Key
+		}
+		return "JOIN " + ch.Name
+	}
+	return ""
 }
 
 // ensureMessageTime adds @time= when the uplink did not provide server-time.

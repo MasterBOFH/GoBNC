@@ -1329,6 +1329,55 @@ func TestPersistSkipsRefusedJoin(t *testing.T) {
 	}
 }
 
+func TestInviteAutoJoinsRememberedUnjoinedChannel(t *testing.T) {
+	db := testutil.TempStore(t)
+	ctx := context.Background()
+	id, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddChannel(ctx, id, "#secret", "hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "n")
+	s := New(netw, db, nil, nil)
+	s.registered = true
+
+	// Remembered but not currently joined (e.g. invite-only failure on reconnect).
+	invite := irc.Message{Source: "bob!u@h", Command: "INVITE", Params: []string{"me", "#secret"}}
+	if got := s.inviteAutoJoinLine(invite); got != "JOIN #secret hunter2" {
+		t.Fatalf("wanted JOIN with key, got %q", got)
+	}
+
+	// Already joined: do not retry.
+	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
+	if got := s.inviteAutoJoinLine(invite); got != "" {
+		t.Fatalf("already joined: got %q", got)
+	}
+
+	// Intentional PART forgets the channel: invite must not rejoin.
+	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "PART", Params: []string{"#secret"}})
+	chs, err := db.ListChannels(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range chs {
+		if c.Name == "#secret" {
+			t.Fatal("PART should remove #secret from auto-join")
+		}
+	}
+	if got := s.inviteAutoJoinLine(invite); got != "" {
+		t.Fatalf("after PART: got %q", got)
+	}
+
+	// Invite for someone else never auto-joins.
+	if got := s.inviteAutoJoinLine(irc.Message{
+		Source: "bob!u@h", Command: "INVITE", Params: []string{"alice", "#other"},
+	}); got != "" {
+		t.Fatalf("invite-notify for other: got %q", got)
+	}
+}
+
 func TestSelfPrefix(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil)
 	if got := s.SelfPrefix(); got != "me!u" {
