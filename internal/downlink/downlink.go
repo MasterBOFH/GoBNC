@@ -47,7 +47,9 @@ type Listener struct {
 	mgr     Manager
 	log     *slog.Logger
 	tlsCfg  *tls.Config
+	lnMu    sync.Mutex
 	ln      net.Listener
+	lnGen   uint64 // incremented on ReplaceListener
 	idSeq   uint64
 	active  atomic.Int64
 	authSem chan struct{} // limits concurrent argon2 verifies
@@ -92,22 +94,79 @@ func (l *Listener) maxClients() int {
 	return cfg.MaxClients
 }
 
-// Serve accepts connections until ctx cancelled.
-func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
+// TLSConfig returns the shared listener TLS config (GetCertificate is hot-swappable).
+func (l *Listener) TLSConfig() *tls.Config {
+	return l.tlsCfg
+}
+
+// Addr returns the current listen address, or nil if not listening.
+func (l *Listener) Addr() net.Addr {
+	l.lnMu.Lock()
+	defer l.lnMu.Unlock()
+	if l.ln == nil {
+		return nil
+	}
+	return l.ln.Addr()
+}
+
+// ReplaceListener swaps the accept socket and closes the previous one.
+// Existing accepted connections are unaffected. Serve continues on the new listener.
+func (l *Listener) ReplaceListener(ln net.Listener) {
+	if ln == nil {
+		return
+	}
+	l.lnMu.Lock()
+	old := l.ln
 	l.ln = ln
+	l.lnGen++
+	l.lnMu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// Serve accepts connections until ctx cancelled.
+// ln may be replaced later via ReplaceListener without stopping Serve.
+func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
+	l.lnMu.Lock()
+	l.ln = ln
+	l.lnMu.Unlock()
 	go func() {
 		<-ctx.Done()
-		_ = ln.Close()
+		l.lnMu.Lock()
+		cur := l.ln
+		l.lnMu.Unlock()
+		if cur != nil {
+			_ = cur.Close()
+		}
 	}()
 	for {
-		c, err := ln.Accept()
+		l.lnMu.Lock()
+		cur := l.ln
+		gen := l.lnGen
+		l.lnMu.Unlock()
+		if cur == nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(10 * time.Millisecond):
+				continue
+			}
+		}
+		c, err := cur.Accept()
 		if err != nil {
 			select {
 			case <-ctx.Done():
 				return nil
 			default:
-				return err
 			}
+			l.lnMu.Lock()
+			swapped := l.lnGen != gen
+			l.lnMu.Unlock()
+			if swapped {
+				continue
+			}
+			return err
 		}
 		if !l.tryAcquireClient() {
 			l.log.Debug("max clients reached; closing connection")

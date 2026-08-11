@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/control"
 	"github.com/MasterBOFH/GoBNC/internal/downlink"
 	"github.com/MasterBOFH/GoBNC/internal/history"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/uplink"
@@ -27,6 +29,10 @@ type Server struct {
 	cfg       config.Config
 	cfgPath   string // bootstrap JSON path for REHASH / SIGHUP
 	log       *slog.Logger
+	logSink   *gobnclog.Sink
+	logCons   io.Writer // console writer for log Reload (default stderr)
+	debugCons bool      // serve -debug: keep console at debug across rehash
+	daemonLog bool      // resolve empty log_file to state-dir default
 	store     *store.Store
 	hist      *history.Store
 	mu        sync.RWMutex
@@ -63,6 +69,19 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 func (s *Server) SetConfigPath(path string) {
 	s.mu.Lock()
 	s.cfgPath = path
+	s.mu.Unlock()
+}
+
+// SetLogSink wires a reloadable log sink for rehash (log_level / log_file).
+// console is the writer used on Reload (typically os.Stderr).
+// debugConsole keeps the console at debug when serve -debug was set.
+// daemonLogDefault uses ResolvedLogFile(true) when log_file is empty.
+func (s *Server) SetLogSink(sink *gobnclog.Sink, console io.Writer, debugConsole, daemonLogDefault bool) {
+	s.mu.Lock()
+	s.logSink = sink
+	s.logCons = console
+	s.debugCons = debugConsole
+	s.daemonLog = daemonLogDefault
 	s.mu.Unlock()
 }
 
@@ -134,7 +153,6 @@ func (s *Server) Run(ctx context.Context) error {
 		s.cancel()
 		return err
 	}
-	defer ln.Close()
 
 	dl := downlink.NewListener(s.cfg, s.store, s, tlsCfg, s.log)
 	s.mu.Lock()
@@ -145,7 +163,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		_ = ln.Close()
 		s.gracefulShutdown()
 		s.stopAllNetworks()
 		s.wg.Wait()
@@ -495,7 +512,9 @@ func (s *Server) ReconnectNetwork(name string) error {
 
 // Rehash reloads gobnc.json and refreshes running network rows from SQLite.
 // Existing downlink/uplink connections are not dropped. Listener TLS certs are
-// hot-swapped for new handshakes via GetCertificate.
+// hot-swapped for new handshakes via GetCertificate. log_level, log_file, and
+// listen_addr apply immediately (existing TLS clients stay on the old socket
+// until they disconnect when listen_addr changes).
 func (s *Server) Rehash(cfgPath string) error {
 	if s.runCtx == nil {
 		return fmt.Errorf("server not running")
@@ -510,12 +529,12 @@ func (s *Server) Rehash(cfgPath string) error {
 
 	s.mu.RLock()
 	old := s.cfg
+	debugCons := s.debugCons
+	daemonLog := s.daemonLog
+	logSink := s.logSink
+	logCons := s.logCons
 	s.mu.RUnlock()
 
-	if newCfg.ListenAddr != old.ListenAddr {
-		s.log.Warn("rehash: listen_addr change ignored (restart required)", "old", old.ListenAddr, "new", newCfg.ListenAddr)
-		newCfg.ListenAddr = old.ListenAddr
-	}
 	if newCfg.DBPath != old.DBPath {
 		s.log.Warn("rehash: db_path change ignored (restart required)", "old", old.DBPath, "new", newCfg.DBPath)
 		newCfg.DBPath = old.DBPath
@@ -525,17 +544,28 @@ func (s *Server) Rehash(cfgPath string) error {
 			"old", old.ResolvedControlSocket(), "new", newCfg.ResolvedControlSocket())
 		newCfg.ControlSocket = old.ControlSocket
 	}
-	if newCfg.LogFile != old.LogFile {
-		s.log.Warn("rehash: log_file change ignored (restart required)", "old", old.LogFile, "new", newCfg.LogFile)
-		newCfg.LogFile = old.LogFile
-	}
-	if newCfg.LogLevel != old.LogLevel {
-		s.log.Warn("rehash: log_level change ignored (restart required)", "old", old.LogLevel, "new", newCfg.LogLevel)
-		newCfg.LogLevel = old.LogLevel
-	}
 
 	if err := s.certs.Load(newCfg.TLSCert, newCfg.TLSKey); err != nil {
 		return err
+	}
+
+	if logSink != nil {
+		consoleLevel := newCfg.LogLevel
+		if debugCons {
+			consoleLevel = "debug"
+		}
+		console := logCons
+		if console == nil {
+			console = os.Stderr
+		}
+		if err := logSink.Reload(gobnclog.Options{
+			Level:     consoleLevel,
+			FileLevel: newCfg.LogLevel,
+			Console:   console,
+			File:      newCfg.ResolvedLogFile(daemonLog),
+		}); err != nil {
+			return fmt.Errorf("rehash log: %w", err)
+		}
 	}
 
 	s.mu.Lock()
@@ -566,6 +596,32 @@ func (s *Server) Rehash(cfgPath string) error {
 			s.log.Warn("rehash: network reload failed", "name", name, "err", err)
 		}
 	}
+
+	if dl != nil && newCfg.ListenAddr != old.ListenAddr {
+		tlsCfg := dl.TLSConfig()
+		if tlsCfg == nil {
+			tlsCfg = &tls.Config{
+				GetCertificate: s.certs.GetCertificate,
+				ClientAuth:     tls.RequestClientCert,
+				MinVersion:     tls.VersionTLS12,
+			}
+		}
+		newLn, err := tls.Listen("tcp", newCfg.ListenAddr, tlsCfg)
+		if err != nil {
+			s.mu.Lock()
+			s.cfg.ListenAddr = old.ListenAddr
+			s.mu.Unlock()
+			if dl != nil {
+				cfg := newCfg
+				cfg.ListenAddr = old.ListenAddr
+				dl.SetConfig(cfg)
+			}
+			return fmt.Errorf("rehash listen_addr %q: %w", newCfg.ListenAddr, err)
+		}
+		dl.ReplaceListener(newLn)
+		s.log.Info("rehash listen_addr updated", "old", old.ListenAddr, "new", newCfg.ListenAddr)
+	}
+
 	s.log.Info("rehash complete", "tls_cert", newCfg.TLSCert, "networks", len(names))
 	return nil
 }

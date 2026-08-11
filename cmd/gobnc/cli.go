@@ -47,7 +47,9 @@ When the daemon is running, network add/delete also notify it via the control so
 (control_socket in gobnc.json; default under $XDG_RUNTIME_DIR/gobnc or ~/.gobnc)
 so uplinks start/stop immediately.
 status shows listen address, attached clients, and per-network uplink state (connected/connecting/stopped).
-rehash reloads gobnc.json and refreshes networks (same as SIGHUP).
+rehash reloads gobnc.json and refreshes networks (same as SIGHUP), including
+log_level, log_file, and listen_addr (existing TLS clients stay connected when
+the listen address changes). Restart still required for db_path and control_socket.
 stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL/cert/bind_host apply on the next reconnect.

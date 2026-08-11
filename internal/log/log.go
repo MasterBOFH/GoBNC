@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // Options configures console/file logging.
@@ -20,6 +22,13 @@ type Options struct {
 	File string
 }
 
+// Sink owns the active log outputs and can Reload on rehash.
+type Sink struct {
+	swap   *swapHandler
+	mu     sync.Mutex
+	closer func() error
+}
+
 // New returns a JSON slog logger at the given level writing to w (default stderr).
 // Prefer Setup for process logging (debug text console + optional JSON file).
 func New(level string, w io.Writer) *slog.Logger {
@@ -30,8 +39,54 @@ func New(level string, w io.Writer) *slog.Logger {
 // Setup builds a logger from Options.
 // Debug console: text to console, JSON to File when File is set.
 // Other levels: JSON to console; also JSON to File when File is set.
-// The returned closer flushes/closes the log file (may be a no-op).
-func Setup(opts Options) (*slog.Logger, func() error, error) {
+// The returned Sink closes the log file and can Reload options after rehash.
+func Setup(opts Options) (*slog.Logger, *Sink, error) {
+	inner, closer, err := buildHandler(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	sh := &swapHandler{}
+	sh.store(inner)
+	return slog.New(sh), &Sink{swap: sh, closer: closer}, nil
+}
+
+// Reload replaces the active handlers (level / log file) without replacing the Logger.
+// Child loggers from Logger.With keep working. On failure the previous sink stays active.
+func (s *Sink) Reload(opts Options) error {
+	if s == nil {
+		return fmt.Errorf("nil log sink")
+	}
+	inner, closer, err := buildHandler(opts)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	old := s.closer
+	s.swap.store(inner)
+	s.closer = closer
+	s.mu.Unlock()
+	if old != nil {
+		_ = old()
+	}
+	return nil
+}
+
+// Close closes the log file (if any).
+func (s *Sink) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	c := s.closer
+	s.closer = func() error { return nil }
+	s.mu.Unlock()
+	if c == nil {
+		return nil
+	}
+	return c()
+}
+
+func buildHandler(opts Options) (slog.Handler, func() error, error) {
 	console := opts.Console
 	if console == nil {
 		console = os.Stderr
@@ -44,7 +99,7 @@ func Setup(opts Options) (*slog.Logger, func() error, error) {
 	pretty := consoleLv <= slog.LevelDebug
 
 	var handlers []slog.Handler
-	var closer func() error = func() error { return nil }
+	closer := func() error { return nil }
 
 	if pretty {
 		handlers = append(handlers, newPrettyHandler(console, consoleLv))
@@ -69,7 +124,7 @@ func Setup(opts Options) (*slog.Logger, func() error, error) {
 	} else {
 		h = multiHandler(handlers)
 	}
-	return slog.New(h), closer, nil
+	return h, closer, nil
 }
 
 func parseLevel(level string) slog.Level {
@@ -83,6 +138,77 @@ func parseLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// swapHandler delegates to a replaceable root handler so Reload updates all loggers.
+type swapHandler struct {
+	v atomic.Value // slog.Handler
+}
+
+func (h *swapHandler) store(inner slog.Handler) {
+	h.v.Store(inner)
+}
+
+func (h *swapHandler) load() slog.Handler {
+	return h.v.Load().(slog.Handler)
+}
+
+func (h *swapHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.load().Enabled(ctx, level)
+}
+
+func (h *swapHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.load().Handle(ctx, r)
+}
+
+func (h *swapHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &dynHandler{swap: h, attrs: attrs}
+}
+
+func (h *swapHandler) WithGroup(name string) slog.Handler {
+	return &dynHandler{swap: h, group: name}
+}
+
+// dynHandler re-resolves against the current swap root so Reload stays visible.
+type dynHandler struct {
+	swap   *swapHandler
+	parent *dynHandler
+	group  string
+	attrs  []slog.Attr
+}
+
+func (d *dynHandler) resolve() slog.Handler {
+	var chain []*dynHandler
+	for x := d; x != nil; x = x.parent {
+		chain = append(chain, x)
+	}
+	h := d.swap.load()
+	for i := len(chain) - 1; i >= 0; i-- {
+		c := chain[i]
+		if c.group != "" {
+			h = h.WithGroup(c.group)
+		}
+		if len(c.attrs) > 0 {
+			h = h.WithAttrs(c.attrs)
+		}
+	}
+	return h
+}
+
+func (d *dynHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return d.resolve().Enabled(ctx, level)
+}
+
+func (d *dynHandler) Handle(ctx context.Context, r slog.Record) error {
+	return d.resolve().Handle(ctx, r)
+}
+
+func (d *dynHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &dynHandler{swap: d.swap, parent: d, attrs: attrs}
+}
+
+func (d *dynHandler) WithGroup(name string) slog.Handler {
+	return &dynHandler{swap: d.swap, parent: d, group: name}
 }
 
 // multiHandler fans a record out to several handlers.

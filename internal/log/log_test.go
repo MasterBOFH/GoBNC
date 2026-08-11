@@ -36,11 +36,11 @@ func TestSetupDebugTextAndJSONFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gobnc.json.log")
 	var console bytes.Buffer
-	l, closer, err := Setup(Options{Level: "debug", Console: &console, File: path})
+	l, sink, err := Setup(Options{Level: "debug", Console: &console, File: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = closer() }()
+	defer func() { _ = sink.Close() }()
 
 	l.Debug("probe", "n", 1)
 
@@ -67,7 +67,7 @@ func TestSetupDebugTextAndJSONFile(t *testing.T) {
 func TestSetupDebugConsoleKeepsFileLevel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gobnc.json.log")
 	var console bytes.Buffer
-	l, closer, err := Setup(Options{
+	l, sink, err := Setup(Options{
 		Level:     "debug",
 		FileLevel: "info",
 		Console:   &console,
@@ -76,7 +76,7 @@ func TestSetupDebugConsoleKeepsFileLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = closer() }()
+	defer func() { _ = sink.Close() }()
 
 	l.Debug("noise", "n", 1)
 	l.Info("keep", "n", 2)
@@ -107,6 +107,75 @@ func TestPrettyIRCLine(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "<<") || !strings.Contains(out, "uplink/ircu2") || !strings.Contains(out, "001") {
 		t.Fatalf("%q", out)
+	}
+}
+
+func TestSinkReloadLevelAndFile(t *testing.T) {
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "a.log")
+	path2 := filepath.Join(dir, "b.log")
+	var console bytes.Buffer
+	l, sink, err := Setup(Options{Level: "info", Console: &console, File: path1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	child := l.With("net", "x")
+	child.Info("first")
+	child.Debug("hidden")
+
+	data1, err := os.ReadFile(path1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data1, []byte("first")) || bytes.Contains(data1, []byte("hidden")) {
+		t.Fatalf("path1 before reload: %s", data1)
+	}
+
+	if err := sink.Reload(Options{Level: "debug", Console: &console, File: path2}); err != nil {
+		t.Fatal(err)
+	}
+	child.Debug("after")
+
+	data2, err := os.ReadFile(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data2, []byte("after")) || !bytes.Contains(data2, []byte(`"net":"x"`)) {
+		t.Fatalf("path2 after reload: %s", data2)
+	}
+	// Old file should not receive the post-reload line.
+	data1b, err := os.ReadFile(path1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data1b, []byte("after")) {
+		t.Fatalf("old file still written after reload: %s", data1b)
+	}
+}
+
+func TestSinkReloadBadFileKeepsOld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ok.log")
+	var console bytes.Buffer
+	l, sink, err := Setup(Options{Level: "info", Console: &console, File: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	bad := filepath.Join(dir, "missing-dir", "x.log")
+	if err := sink.Reload(Options{Level: "debug", Console: &console, File: bad}); err == nil {
+		t.Fatal("expected reload error")
+	}
+	l.Info("still")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("still")) {
+		t.Fatalf("old sink should still work: %s", data)
 	}
 }
 
@@ -150,11 +219,11 @@ func TestRedactIRC(t *testing.T) {
 
 func TestSetupLogFileModeOwnerOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gobnc.json.log")
-	_, closer, err := Setup(Options{Level: "info", Console: io.Discard, File: path})
+	_, sink, err := Setup(Options{Level: "info", Console: io.Discard, File: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = closer() }()
+	defer func() { _ = sink.Close() }()
 	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -172,11 +241,11 @@ func TestSetupChmodsWorldReadableLog(t *testing.T) {
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, closer, err := Setup(Options{Level: "info", Console: io.Discard, File: path})
+	_, sink, err := Setup(Options{Level: "info", Console: io.Discard, File: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = closer() }()
+	defer func() { _ = sink.Close() }()
 	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

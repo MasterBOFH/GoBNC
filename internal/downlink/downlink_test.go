@@ -522,6 +522,96 @@ func TestPlainTCPRejected(t *testing.T) {
 	}
 }
 
+func TestReplaceListenerAcceptsOnNewAddr(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	h, err := auth.HashPassword("s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetPasswordHash(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
+
+	ln1, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAddr := ln1.Addr().String()
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- l.Serve(serveCtx, ln1) }()
+
+	// Wait until the first listener is accepting.
+	waitDial := func(addr string) error {
+		deadline := time.Now().Add(2 * time.Second)
+		var last error
+		for time.Now().Before(deadline) {
+			c, err := tls.Dial("tcp", addr, &tls.Config{
+				RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12,
+			})
+			if err != nil {
+				last = err
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			_ = c.Close()
+			return nil
+		}
+		return last
+	}
+	if err := waitDial(oldAddr); err != nil {
+		t.Fatalf("first listener: %v", err)
+	}
+
+	ln2, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAddr := ln2.Addr().String()
+	l.ReplaceListener(ln2)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var dialErr error
+	for time.Now().Before(deadline) {
+		c, err := tls.Dial("tcp", newAddr, &tls.Config{
+			RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12,
+		})
+		if err != nil {
+			dialErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		_, _ = c.Write([]byte("PASS libera/s3cret\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 2048)
+		n, err := c.Read(buf)
+		_ = c.Close()
+		if err == nil && contains(string(buf[:n]), "001") {
+			select {
+			case err := <-errCh:
+				t.Fatalf("Serve exited early: %v", err)
+			default:
+			}
+			return
+		}
+		dialErr = fmt.Errorf("auth reply: %v %q", err, buf[:n])
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("dial new addr: %v", dialErr)
+}
+
 func TestRegistrationReady(t *testing.T) {
 	cases := []struct {
 		name                       string

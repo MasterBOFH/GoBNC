@@ -77,7 +77,7 @@ func runServe() {
 	if *debug {
 		consoleLevel = "debug"
 	}
-	logger, closeLog, err := gobnclog.Setup(gobnclog.Options{
+	logger, logSink, err := gobnclog.Setup(gobnclog.Options{
 		Level:     consoleLevel,
 		FileLevel: cfg.LogLevel,
 		Console:   os.Stderr,
@@ -87,7 +87,7 @@ func runServe() {
 		fmt.Fprintf(os.Stderr, "log: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = closeLog() }()
+	defer func() { _ = logSink.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -99,6 +99,7 @@ func runServe() {
 	}
 	defer srv.Close()
 	srv.SetConfigPath(*cfgPath)
+	srv.SetLogSink(logSink, os.Stderr, *debug, isChild)
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

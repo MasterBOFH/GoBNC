@@ -1,13 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +58,7 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	copyFile(t, filepath.Join(fxA.Dir, "server.crt"), certPath)
 	copyFile(t, filepath.Join(fxA.Dir, "server.key"), keyPath)
 
+	logPath := filepath.Join(dir, "gobnc.log")
 	cfgPath := filepath.Join(dir, "gobnc.json")
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
@@ -65,13 +69,23 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	cfg.AllowPasswordAuth = true
 	cfg.AllowCertAuth = true
 	cfg.MaxClients = 32
+	cfg.LogLevel = "info"
+	cfg.LogFile = logPath
 	writeConfig(t, cfgPath, cfg)
 
-	s, err := New(cfg, gobnclog.New("error", nil))
+	var console bytes.Buffer
+	logger, sink, err := gobnclog.Setup(gobnclog.Options{Level: "info", Console: &console, File: logPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	s, err := New(cfg, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	s.SetLogSink(sink, &console, false, false)
 
 	ctx := context.Background()
 	h, err := auth.HashPassword("s3cret")
@@ -105,7 +119,6 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
 	addr := ln.Addr().String()
 	cfg.ListenAddr = addr
 	s.cfg = cfg
@@ -121,6 +134,15 @@ func TestRehashTLSAndConfig(t *testing.T) {
 		t.Fatalf("before rehash fp=%s want %s", fpBefore, wantA)
 	}
 
+	// Second ephemeral bind for listen_addr swap target.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAddr := probe.Addr().String()
+	_ = probe.Close()
+
+	logPath2 := filepath.Join(dir, "gobnc2.log")
 	// Replace cert files and tighten config.
 	copyFile(t, filepath.Join(fxB.Dir, "server.crt"), certPath)
 	copyFile(t, filepath.Join(fxB.Dir, "server.key"), keyPath)
@@ -131,10 +153,10 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	cfg.ChatHistoryMax = 250
 	cfg.HistoryRetentionDays = 3
 	cfg.QuitMessage = "rehashed"
-	// Immutable-looking change should be ignored.
-	cfg.ListenAddr = "0.0.0.0:9999"
-	cfg.DBPath = filepath.Join(dir, "other.db")
+	cfg.ListenAddr = newAddr
+	cfg.DBPath = filepath.Join(dir, "other.db") // restart-only; ignored
 	cfg.LogLevel = "debug"
+	cfg.LogFile = logPath2
 	writeConfig(t, cfgPath, cfg)
 
 	if err := s.Rehash(cfgPath); err != nil {
@@ -144,14 +166,17 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	s.mu.RLock()
 	got := s.cfg
 	s.mu.RUnlock()
-	if got.ListenAddr != addr {
-		t.Fatalf("listen_addr mutated: %q", got.ListenAddr)
+	if got.ListenAddr != newAddr {
+		t.Fatalf("listen_addr=%q want %q", got.ListenAddr, newAddr)
 	}
 	if got.DBPath != filepath.Join(dir, "t.db") {
 		t.Fatalf("db_path mutated: %q", got.DBPath)
 	}
-	if got.LogLevel != "info" {
-		t.Fatalf("log_level should stay info, got %q", got.LogLevel)
+	if got.LogLevel != "debug" {
+		t.Fatalf("log_level=%q want debug", got.LogLevel)
+	}
+	if got.LogFile != logPath2 {
+		t.Fatalf("log_file=%q want %q", got.LogFile, logPath2)
 	}
 	if got.AllowCertAuth {
 		t.Fatal("AllowCertAuth should be false after rehash")
@@ -169,7 +194,7 @@ func TestRehashTLSAndConfig(t *testing.T) {
 		t.Fatalf("QuitMessage=%q", got.QuitMessage)
 	}
 
-	fpAfter := peerFingerprint(t, addr, fxB)
+	fpAfter := peerFingerprint(t, newAddr, fxB)
 	wantB := serverLeafFP(t, filepath.Join(fxB.Dir, "server.crt"), filepath.Join(fxB.Dir, "server.key"))
 	if fpAfter != wantB {
 		t.Fatalf("after rehash fp=%s want %s", fpAfter, wantB)
@@ -177,6 +202,89 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	if fpAfter == fpBefore {
 		t.Fatal("server cert fingerprint unchanged after rehash")
 	}
+
+	s.log.Debug("rehash-debug-probe")
+	data, err := os.ReadFile(logPath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("rehash-debug-probe")) {
+		t.Fatalf("new log file missing debug line: %s", data)
+	}
+}
+
+func TestRehashListenBindFailure(t *testing.T) {
+	dir := t.TempDir()
+	fx := testutil.NewTLSFixture(t)
+	cfgPath := filepath.Join(dir, "gobnc.json")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "t.db")
+	cfg.ControlSocket = filepath.Join(dir, "c.sock")
+	cfg.TLSCert = filepath.Join(fx.Dir, "server.crt")
+	cfg.TLSKey = filepath.Join(fx.Dir, "server.key")
+	cfg.ListenAddr = "127.0.0.1:0"
+	writeConfig(t, cfgPath, cfg)
+
+	s, err := New(cfg, gobnclog.New("error", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = runCtx
+	s.cancel = cancel
+	if err := s.certs.Load(cfg.TLSCert, cfg.TLSKey); err != nil {
+		t.Fatal(err)
+	}
+	tlsCfg := &tls.Config{
+		GetCertificate: s.certs.GetCertificate,
+		ClientAuth:     tls.RequestClientCert,
+		MinVersion:     tls.VersionTLS12,
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tlsCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	cfg.ListenAddr = addr
+	s.cfg = cfg
+	writeConfig(t, cfgPath, cfg)
+
+	dl := downlink.NewListener(cfg, s.store, s, tlsCfg, s.log)
+	s.dl = dl
+	go func() { _ = dl.Serve(runCtx, ln) }()
+
+	// Occupy a port so rehash bind fails with EADDRINUSE.
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	busy := held.Addr().String()
+
+	cfg.ListenAddr = busy
+	cfg.MaxClients = 9
+	writeConfig(t, cfgPath, cfg)
+	err = s.Rehash(cfgPath)
+	if err == nil {
+		t.Fatal("expected listen_addr bind failure")
+	}
+	if !strings.Contains(err.Error(), "listen_addr") {
+		t.Fatalf("want listen_addr error, got %v", err)
+	}
+	s.mu.RLock()
+	got := s.cfg.ListenAddr
+	maxClients := s.cfg.MaxClients
+	s.mu.RUnlock()
+	if got != addr {
+		t.Fatalf("listen_addr rolled back? got %q want %q", got, addr)
+	}
+	if maxClients != 9 {
+		t.Fatalf("other rehash fields should apply: MaxClients=%d", maxClients)
+	}
+	_ = peerFingerprint(t, addr, fx) // old listener still accepts
 }
 
 func TestRehashReloadsNetworkConfig(t *testing.T) {
