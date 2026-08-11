@@ -61,12 +61,12 @@ enables the nick ladder and ISON reclaim of the primary/alt nick.
 --bind-host= sets the local address for uplink dials (empty inherits bind_host from
 gobnc.json; none or - uses the OS default).
 --sasl=true enables bouncer SASL (SCRAM/PLAIN with --sasl-user/--sasl-pass; EXTERNAL
-when sasl is on with no user/pass and a client cert). A client cert alone does not
-enable SASL. network add with --sasl-user and a password implies --sasl=true.
+when sasl is on, password is empty, and a client cert is present — optional
+--sasl-user= is sent as the EXTERNAL authorization identity). A client cert alone
+does not enable SASL. network add with --sasl-user= implies --sasl=true.
 network add uses default_nick / default_username / default_realname / default_alt_nick
 from gobnc.json when those fields are omitted.
-Pass --sasl-pass (no value) to prompt for a SASL password; if --sasl-user= is set without
-a password, you are prompted automatically.`)
+Pass --sasl-pass (no value) to prompt for a SASL password.`)
 		return nil
 	}
 	cfgPath := "gobnc.json"

@@ -183,9 +183,11 @@ func TestPickSASLMech(t *testing.T) {
 		{name: "prefer SCRAM over PLAIN", sasl: true, user: "u", pass: "p", offered: []string{"PLAIN", "SCRAM-SHA-256"}, want: "SCRAM-SHA-256", ok: true},
 		{name: "PLAIN when no SCRAM", sasl: true, user: "u", pass: "p", offered: []string{"EXTERNAL", "PLAIN"}, want: "PLAIN", ok: true},
 		{name: "EXTERNAL when sasl and cert no credentials", sasl: true, tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "PLAIN"}, want: "EXTERNAL", ok: true},
-		{name: "user without pass is not EXTERNAL", sasl: true, user: "acct", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, ok: false},
+		{name: "EXTERNAL with authzid when user no pass", sasl: true, user: "acct", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, want: "EXTERNAL", ok: true},
+		{name: "user without pass and without cert", sasl: true, user: "acct", offered: []string{"EXTERNAL", "PLAIN"}, ok: false},
 		{name: "cert alone without sasl flag", sasl: false, tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, ok: false},
 		{name: "password prefers SCRAM over EXTERNAL", sasl: true, user: "u", pass: "p", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL", "SCRAM-SHA-256", "PLAIN"}, want: "SCRAM-SHA-256", ok: true},
+		{name: "password set disables EXTERNAL even if offered only", sasl: true, user: "u", pass: "p", tlsConf: fx.ClientTLS, offered: []string{"EXTERNAL"}, ok: false},
 		{name: "no match", sasl: true, user: "u", pass: "p", offered: []string{"EXTERNAL"}, ok: false},
 		{name: "sasl on but no credentials or cert", sasl: true, offered: []string{"PLAIN", "EXTERNAL"}, ok: false},
 	}
@@ -314,6 +316,60 @@ func TestUplinkSASLExternalEmptyAuthzid(t *testing.T) {
 			{Expect: "AUTHENTICATE EXTERNAL"},
 			{Send: "AUTHENTICATE +"},
 			{Expect: "AUTHENTICATE +"},
+			{Send: ":server 903 testnick :SASL authentication successful"},
+			{Expect: "CAP END"},
+			{Send: ":server 001 testnick :Welcome"},
+			{Send: ":server 376 testnick :End of /MOTD command."},
+		})
+	}()
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- u.session(ctx) }()
+
+	select {
+	case err := <-scriptDone:
+		if err != nil {
+			t.Fatal("script:", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("timeout script")
+	}
+	cancel()
+	<-runDone
+}
+
+func TestUplinkSASLExternalAuthzid(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	u := New(Config{
+		Network: store.Network{
+			Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
+			SASL: true, SASLUser: "MrIron",
+		},
+		TLSConf:    fx.ClientTLS,
+		MinBackoff: time.Hour,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return client, nil
+		},
+	}, &regHandler{})
+
+	scriptDone := make(chan error, 1)
+	go func() {
+		scriptDone <- testutil.RunScript(ctx, server, []testutil.ScriptStep{
+			{ExpectContains: "CAP LS"},
+			{ExpectContains: "NICK"},
+			{ExpectContains: "USER"},
+			{Send: "CAP * LS :sasl=EXTERNAL,PLAIN cap-notify"},
+			{ExpectContains: "CAP REQ"},
+			{Send: "CAP * ACK :sasl cap-notify"},
+			{Expect: "AUTHENTICATE EXTERNAL"},
+			{Send: "AUTHENTICATE +"},
+			{Expect: "AUTHENTICATE TXJJcm9u"}, // base64("MrIron")
 			{Send: ":server 903 testnick :SASL authentication successful"},
 			{Expect: "CAP END"},
 			{Send: ":server 001 testnick :Welcome"},

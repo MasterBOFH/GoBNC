@@ -181,7 +181,8 @@ type Network struct {
 	SASLUser 	 string
 	SASLPass 	 string
 	// SASL enables bouncer-owned SASL. With user+pass: SCRAM-SHA-256/PLAIN.
-	// With neither and a client cert: EXTERNAL. Cert alone does not enable SASL.
+	// With empty password and a client cert: EXTERNAL (optional user = authzid).
+	// Cert alone does not enable SASL.
 	SASL         bool
 	SASLRequired bool
 	Enabled      bool

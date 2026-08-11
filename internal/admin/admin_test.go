@@ -101,6 +101,21 @@ func TestInlineSASLPass(t *testing.T) {
 	}
 
 	_, err = Run(context.Background(), deps, opts, []string{
+		"network", "add", "n1ext", "irc.example", "6697", "nick",
+		"--sasl-user=MrIron",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err = deps.Store.NetworkByName(context.Background(), "n1ext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.SASLUser != "MrIron" || n.SASLPass != "" || !n.SASL {
+		t.Fatalf("EXTERNAL authzid add: %+v", n)
+	}
+
+	_, err = Run(context.Background(), deps, opts, []string{
 		"network", "add", "n2", "irc.example", "6697", "nick", "--sasl-pass",
 	})
 	if err == nil || !strings.Contains(err.Error(), "--sasl-pass=secret") {

@@ -108,7 +108,9 @@ func (u *Uplink) startSASL(c *connio.Conn) error {
 }
 
 // pickSASLMech prefers SCRAM-SHA-256, then PLAIN, then EXTERNAL.
-// EXTERNAL only when SASL is enabled with no user/pass and a client cert is available.
+// Password auth (SCRAM/PLAIN) only when both SASL user and password are set.
+// EXTERNAL when SASL is on, password is empty, and a client cert is available
+// (optional SASL user is sent as the EXTERNAL authorization identity).
 // Empty advertised list (pre-302 / no value): PLAIN if password auth, else EXTERNAL with cert.
 func (u *Uplink) pickSASLMech() (string, bool) {
 	u.mu.RLock()
@@ -118,15 +120,14 @@ func (u *Uplink) pickSASLMech() (string, bool) {
 		return "", false
 	}
 	passwordOK := n.SASLUser != "" && n.SASLPass != ""
-	externalOK := n.SASLUser == "" && n.SASLPass == "" &&
+	externalOK := n.SASLPass == "" &&
 		(hasClientCert(u.cfg.TLSConf) ||
 			clientCertPathsConfigured(n, u.cfg.GlobalTLSClientCert, u.cfg.GlobalTLSClientKey))
 
 	var preferred []string
 	if passwordOK {
 		preferred = append(preferred, "SCRAM-SHA-256", "PLAIN")
-	}
-	if externalOK {
+	} else if externalOK {
 		preferred = append(preferred, "EXTERNAL")
 	}
 	if len(preferred) == 0 {

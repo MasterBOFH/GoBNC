@@ -39,8 +39,7 @@ type Options struct {
 	// AllowInlineSASLPass accepts --sasl-pass=secret (BNC path). When false (CLI),
 	// --sasl-pass=value is rejected and PromptSASL is used instead.
 	AllowInlineSASLPass bool
-	// PromptSASL is called for bare --sasl-pass or sasl-user without a password
-	// when AllowInlineSASLPass is false. Required in those cases.
+	// PromptSASL is called for bare --sasl-pass when AllowInlineSASLPass is false.
 	PromptSASL func() (string, error)
 }
 
@@ -244,14 +243,15 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	if n.Nick == "" {
 		return nil, fmt.Errorf("nick required: pass [nick] / --nick=, or set default_nick in gobnc.json")
 	}
-	pass, err := resolveSASLPass(opts, wantSASLPass, n.SASLUser != "" && n.SASLPass == "")
+	pass, err := resolveSASLPass(opts, wantSASLPass)
 	if err != nil {
 		return nil, err
 	}
 	if pass != "" {
 		n.SASLPass = pass
 	}
-	if !saslFlagSet && n.SASLUser != "" && n.SASLPass != "" {
+	// User alone (EXTERNAL authzid) or user+pass implies SASL on.
+	if !saslFlagSet && n.SASLUser != "" {
 		n.SASL = true
 	}
 	if _, err := deps.Store.UpsertNetwork(ctx, n); err != nil {
@@ -280,7 +280,6 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	}
 	changed := false
 	wantSASLPass := false
-	saslUserSet := false
 	for i := 2; i < len(args); i++ {
 		a := args[i]
 		if a == "-config" {
@@ -320,7 +319,6 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			changed = true
 		case strings.HasPrefix(a, "--sasl-user="):
 			n.SASLUser = strings.TrimPrefix(a, "--sasl-user=")
-			saslUserSet = true
 			changed = true
 		case a == "--sasl-pass":
 			wantSASLPass = true
@@ -357,7 +355,7 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			return nil, fmt.Errorf("unknown flag %q", a)
 		}
 	}
-	pass, err := resolveSASLPass(opts, wantSASLPass, saslUserSet && n.SASLPass == "")
+	pass, err := resolveSASLPass(opts, wantSASLPass)
 	if err != nil {
 		return nil, err
 	}
@@ -388,8 +386,8 @@ func parseInlineSASLPass(flag string, opts Options) (string, error) {
 	return strings.TrimPrefix(flag, "--sasl-pass="), nil
 }
 
-func resolveSASLPass(opts Options, wantPrompt, needPass bool) (string, error) {
-	if !wantPrompt && !needPass {
+func resolveSASLPass(opts Options, wantPrompt bool) (string, error) {
+	if !wantPrompt {
 		return "", nil
 	}
 	if opts.AllowInlineSASLPass {

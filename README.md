@@ -11,7 +11,7 @@ make cert                        # prompts for hostname; or: make cert HOST=bnc.
 ./bin/gobnc auth set-password    # bouncer login password (not NickServ)
 ./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
 # CERTFP only: set tls_client_cert in gobnc.json, then reconnect (no --sasl)
-# SASL EXTERNAL: --sasl=true with that cert and no --sasl-user/--sasl-pass
+# SASL EXTERNAL: --sasl=true (or --sasl-user=acct) with that cert and no --sasl-pass
 ./bin/gobnc serve -config gobnc.json
 ```
 
@@ -64,8 +64,8 @@ Then connect with `PASS libera/` (or `libera`) and that client cert enabled.
 Enable bouncer SASL with `--sasl=true`:
 
 - `--sasl-user=` + `--sasl-pass` → SCRAM-SHA-256 or PLAIN (whichever the server offers)
-- no user/pass + client cert → **EXTERNAL**
-- `network add` with user+pass implies `--sasl=true` if you omit `--sasl=`
+- no password + client cert → **EXTERNAL** (optional `--sasl-user=` is the authorization identity)
+- `network add` with `--sasl-user=` implies `--sasl=true` if you omit `--sasl=`
 
 Empty network cert paths inherit the global JSON paths; `none` or `-` disables the cert for one network.
 
