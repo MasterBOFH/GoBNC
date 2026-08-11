@@ -32,6 +32,9 @@ type Deps struct {
 	Realname   string
 	AltNick    string
 	Runtime    Runtime
+	// CurrentNetwork is the network of the IRC connection issuing BNC (empty for CLI).
+	// When set, reconnect/disconnect may omit <name> to target this network.
+	CurrentNetwork string
 }
 
 // Options control SASL password handling.
@@ -49,15 +52,20 @@ func Help() string {
   help
   status
   rehash
+  reconnect [<name>]
+  disconnect [<name>]
   network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
-  network reconnect <name>`)
+  network reconnect [<name>]
+  network disconnect [<name>]
+(<name> defaults to this connection's network when omitted)`)
 }
 
 // Run executes a management command and returns output lines.
-// Accepted verbs: help, status, network, rehash. serve/auth/stop are rejected.
+// Accepted verbs: help, status, network, rehash, reconnect, disconnect.
+// serve/auth/stop are rejected.
 func Run(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		return strings.Split(Help(), "\n"), nil
@@ -67,6 +75,10 @@ func Run(ctx context.Context, deps Deps, opts Options, args []string) ([]string,
 		return runStatus(ctx, deps)
 	case "network":
 		return runNetwork(ctx, deps, opts, args[1:])
+	case "reconnect":
+		return runReconnect(deps, args[1:], "reconnect [<name>]")
+	case "disconnect":
+		return runDisconnect(deps, args[1:], "disconnect [<name>]")
 	case "rehash":
 		if deps.Runtime == nil {
 			return nil, fmt.Errorf("runtime not configured")
@@ -80,6 +92,49 @@ func Run(ctx context.Context, deps Deps, opts Options, args []string) ([]string,
 	default:
 		return nil, fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// resolveNetworkName picks an explicit name, else CurrentNetwork (IRC BNC context).
+func resolveNetworkName(deps Deps, args []string, usage string) (string, error) {
+	if len(args) >= 1 && args[0] != "" {
+		return args[0], nil
+	}
+	if deps.CurrentNetwork != "" {
+		return deps.CurrentNetwork, nil
+	}
+	return "", fmt.Errorf("usage: %s", usage)
+}
+
+func runReconnect(deps Deps, args []string, usage string) ([]string, error) {
+	if deps.Runtime == nil {
+		return nil, fmt.Errorf("runtime not configured")
+	}
+	name, err := resolveNetworkName(deps, args, usage)
+	if err != nil {
+		return nil, err
+	}
+	if err := deps.Runtime.ReconnectNetwork(name); err != nil {
+		return nil, err
+	}
+	return []string{fmt.Sprintf("reconnect requested for %s", name)}, nil
+}
+
+func runDisconnect(deps Deps, args []string, usage string) ([]string, error) {
+	if deps.Runtime == nil {
+		return nil, fmt.Errorf("runtime not configured")
+	}
+	name, err := resolveNetworkName(deps, args, usage)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := deps.Runtime.StopNetwork(name)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return []string{fmt.Sprintf("disconnected %s", name)}, nil
+	}
+	return []string{fmt.Sprintf("disconnected %s (daemon not running)", name)}, nil
 }
 
 func runStatus(ctx context.Context, deps Deps) ([]string, error) {
@@ -129,17 +184,9 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		}
 		return lines, nil
 	case "reconnect":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("usage: network reconnect <name>")
-		}
-		if deps.Runtime == nil {
-			return nil, fmt.Errorf("runtime not configured")
-		}
-		name := args[1]
-		if err := deps.Runtime.ReconnectNetwork(name); err != nil {
-			return nil, err
-		}
-		return []string{fmt.Sprintf("reconnect requested for %s", name)}, nil
+		return runReconnect(deps, args[1:], "network reconnect <name>")
+	case "disconnect":
+		return runDisconnect(deps, args[1:], "network disconnect <name>")
 	case "delete":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("usage: network delete <name>")

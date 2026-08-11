@@ -12,19 +12,21 @@ import (
 
 // attachAdmin wires the in-band BNC command handler onto a session.
 func (s *Server) attachAdmin(sess *session.Session) {
+	netName := sess.Network.Name
 	sess.SetAdmin(func(args []string) ([]string, error) {
 		s.mu.RLock()
 		cfg := s.cfg
 		s.mu.RUnlock()
 		nick, user, real, alt := cfg.NetworkIdentityDefaults()
 		return admin.Run(context.Background(), admin.Deps{
-			Store:      s.store,
-			ListenAddr: cfg.ListenAddr,
-			Nick:       nick,
-			Username:   user,
-			Realname:   real,
-			AltNick:    alt,
-			Runtime:    serverRuntime{s: s},
+			Store:          s.store,
+			ListenAddr:     cfg.ListenAddr,
+			Nick:           nick,
+			Username:       user,
+			Realname:       real,
+			AltNick:        alt,
+			Runtime:        serverRuntime{s: s},
+			CurrentNetwork: netName,
 		}, admin.Options{AllowInlineSASLPass: true}, args)
 	})
 }

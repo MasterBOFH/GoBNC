@@ -94,6 +94,7 @@ Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BN
   [--alt-nick=] [--nick-recovery=true|false]
 ./bin/gobnc network delete <name>
 ./bin/gobnc network reconnect <name>
+./bin/gobnc network disconnect <name>
 ./bin/gobnc rehash
 ./bin/gobnc stop
 ```
@@ -104,15 +105,18 @@ BNC status
 BNC network list
 BNC network add …
 BNC network mod …
+BNC reconnect
+BNC disconnect
 BNC network reconnect libera
+BNC network disconnect libera
 BNC rehash
 ```
 
-`BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
+`BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. From IRC, `reconnect` / `disconnect` (and `network reconnect` / `network disconnect` without a name) target the network of the current client connection. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
 
 Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
-`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, and `listen_addr`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
+`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now (or starts the network if it was disconnected). `network disconnect` stops the uplink without deleting the network. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, and `listen_addr`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
 
 ## Packaging
 

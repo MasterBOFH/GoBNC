@@ -34,6 +34,7 @@ func runCLI(args []string) error {
   network list
   network delete <name>
   network reconnect <name>
+  network disconnect <name>
 
 serve backgrounds by default (re-exec + pid file). Use -debug/-d or -foreground/-f
 to stay attached (required under systemd/rc.d). -debug also forces a debug console
@@ -54,7 +55,8 @@ stop asks the daemon to shut down (control socket, else SIGTERM via pid file).
 network mod updates SQLite and refreshes the running session config; the current
 uplink stays up and new host/port/TLS/SASL/cert/bind_host apply on the next reconnect.
 network reconnect reloads DB settings and drops the uplink so it dials again now
-(downlinks stay attached).
+(downlinks stay attached). If the network is stopped, reconnect starts it.
+network disconnect stops the uplink without deleting the network (use reconnect to bring it back).
 Flood pacing (--flood-burst bytes, --flood-rate bytes/sec) applies immediately; 0 disables.
 --alt-nick= sets a fallback nick when the primary is taken; --nick-recovery= (default true)
 enables the nick ladder and ISON reclaim of the primary/alt nick.

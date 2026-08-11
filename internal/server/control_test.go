@@ -152,15 +152,13 @@ func TestControlReconnectNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp, err := control.Client(sock, control.CmdReconnectNetwork+" net1"); err != nil {
-		t.Fatal(err)
-	} else if !strings.HasPrefix(resp, "ERR ") {
-		t.Fatalf("reconnect while stopped: %q", resp)
+	if resp, err := control.Client(sock, control.CmdReconnectNetwork+" net1"); err != nil || resp != "OK" {
+		t.Fatalf("reconnect while stopped should start: %q %v", resp, err)
+	}
+	if _, err := s.Session("net1"); err != nil {
+		t.Fatalf("expected network running after reconnect-start: %v", err)
 	}
 
-	if resp, err := control.Client(sock, control.CmdStartNetwork+" net1"); err != nil || resp != "OK" {
-		t.Fatalf("start: %q %v", resp, err)
-	}
 	n, err := s.Store().NetworkByName(ctx, "net1")
 	if err != nil {
 		t.Fatal(err)

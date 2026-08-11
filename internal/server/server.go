@@ -478,6 +478,7 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 
 // ReconnectNetwork reloads network settings from the DB and drops the uplink
 // connection so it dials again immediately. Downlinks stay attached.
+// If the network is not running, it is started instead.
 func (s *Server) ReconnectNetwork(name string) error {
 	if s.runCtx == nil {
 		return fmt.Errorf("server not running")
@@ -489,12 +490,19 @@ func (s *Server) ReconnectNetwork(name string) error {
 	if !n.Enabled {
 		return fmt.Errorf("network %q disabled", name)
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	sess := s.sess[name]
-	s.mu.RUnlock()
 	if sess == nil {
-		return fmt.Errorf("network %q not running", name)
+		err := s.startNetworkLocked(n)
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		s.log.Info("network started via reconnect", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
+		return nil
 	}
+	s.mu.Unlock()
+
 	sess.ApplyNetworkConfig(n)
 	if chs, err := s.store.ListChannels(s.runCtx, n.ID); err == nil {
 		if u := sess.Uplink(); u != nil {

@@ -57,6 +57,47 @@ func testDeps(t *testing.T, rt Runtime) Deps {
 	}
 }
 
+func TestNetworkDisconnectReconnectCurrent(t *testing.T) {
+	rt := &memRuntime{startOK: true, stopOK: true}
+	deps := testDeps(t, rt)
+	deps.CurrentNetwork = "libera"
+
+	lines, err := Run(context.Background(), deps, Options{}, []string{"disconnect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "disconnected libera" {
+		t.Fatalf("disconnect: %v", lines)
+	}
+	if len(rt.stopped) != 1 || rt.stopped[0] != "libera" {
+		t.Fatalf("stopped: %v", rt.stopped)
+	}
+
+	lines, err = Run(context.Background(), deps, Options{}, []string{"reconnect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "reconnect requested for libera" {
+		t.Fatalf("reconnect: %v", lines)
+	}
+	if len(rt.reconnected) != 1 || rt.reconnected[0] != "libera" {
+		t.Fatalf("reconnected: %v", rt.reconnected)
+	}
+
+	lines, err = Run(context.Background(), deps, Options{}, []string{"network", "disconnect", "oftc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines[0] != "disconnected oftc" {
+		t.Fatalf("named disconnect: %v", lines)
+	}
+
+	_, err = Run(context.Background(), testDeps(t, rt), Options{}, []string{"reconnect"})
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("CLI without current network: %v", err)
+	}
+}
+
 func TestRunHelpAndRejects(t *testing.T) {
 	deps := testDeps(t, &memRuntime{startOK: true})
 	lines, err := Run(context.Background(), deps, Options{AllowInlineSASLPass: true}, nil)
@@ -66,6 +107,9 @@ func TestRunHelpAndRejects(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "BNC commands:") || !strings.Contains(joined, "network list") || !strings.Contains(joined, "status") {
 		t.Fatalf("help: %q", joined)
+	}
+	if !strings.Contains(joined, "reconnect") || !strings.Contains(joined, "disconnect") {
+		t.Fatalf("help missing reconnect/disconnect: %q", joined)
 	}
 	for _, bad := range []string{"serve", "auth", "stop"} {
 		_, err := Run(context.Background(), deps, Options{}, []string{bad})
