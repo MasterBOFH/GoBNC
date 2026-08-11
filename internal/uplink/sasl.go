@@ -231,9 +231,8 @@ func (u *Uplink) handleSCRAM(c *connio.Conn, param, user, pass string) error {
 	if err != nil {
 		return u.abortSASL(c, err)
 	}
-	if conv.Done() && resp == "" {
-		return nil
-	}
+	// IRCv3: if the mechanism ends with a non-empty server challenge (SCRAM
+	// server-final), the client MUST still send an empty AUTHENTICATE +.
 	if resp == "" {
 		return writeAuthenticate(c, "+")
 	}

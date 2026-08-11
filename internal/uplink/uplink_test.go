@@ -512,6 +512,11 @@ func TestUplinkSASLSCRAMSHA256(t *testing.T) {
 			scriptDone <- err
 			return
 		}
+		line, err = read()
+		if err != nil || line != "AUTHENTICATE +" {
+			scriptDone <- fmt.Errorf("empty final: %q %v", line, err)
+			return
+		}
 		if err = write(":server 903 testnick :SASL authentication successful"); err != nil {
 			scriptDone <- err
 			return
