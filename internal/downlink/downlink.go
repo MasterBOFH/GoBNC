@@ -157,10 +157,21 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		log:  l.log,
 	}
 
+	// Cert-only: reject unknown/missing client certs before any IRC (CAP/PASS/…).
+	cfg := l.config()
+	peerFP, presentedCert := peerCertFingerprint(tc)
+	if cfg.AllowCertAuth && !cfg.AllowPasswordAuth {
+		if err := l.checkCertOnlyFingerprint(ctx, presentedCert, peerFP); err != nil {
+			l.log.Info("auth failed", "ip", peerIP(c), "err", err)
+			_ = cl.Send(irc.Message{Command: "ERROR", Params: []string{authFailedText(peerFP)}})
+			return
+		}
+	}
+
 	authed, network, err := l.authenticate(ctx, cl, tc)
 	if err != nil || !authed {
 		l.log.Info("auth failed", "ip", peerIP(c), "err", err)
-		_ = cl.Send(irc.Message{Command: "ERROR", Params: []string{"Authentication failed"}})
+		_ = cl.Send(irc.Message{Command: "ERROR", Params: []string{authFailedText(peerFP)}})
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
@@ -255,19 +266,14 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 	}
 
 	fpOK := false
-	presentedCert := false
 	cfg := l.config()
-	if cfg.AllowCertAuth {
-		if state := tc.ConnectionState(); len(state.PeerCertificates) > 0 {
-			presentedCert = true
-			sum := sha256.Sum256(state.PeerCertificates[0].Raw)
-			fp := hex.EncodeToString(sum[:])
-			ok, err := l.store.HasFingerprint(ctx, fp)
-			if err != nil {
-				return false, "", err
-			}
-			fpOK = ok
+	peerFP, presentedCert := peerCertFingerprint(tc)
+	if cfg.AllowCertAuth && presentedCert {
+		ok, err := l.store.HasFingerprint(ctx, peerFP)
+		if err != nil {
+			return false, "", err
 		}
+		fpOK = ok
 	}
 	passOK := false
 	passSecret := stripNetworkFromPass(pass)
@@ -313,6 +319,44 @@ func peerIP(c net.Conn) string {
 		return c.RemoteAddr().String()
 	}
 	return host
+}
+
+// peerCertFingerprint returns the SHA-256 hex of the leaf client cert, if any.
+func peerCertFingerprint(tc *tls.Conn) (fp string, presented bool) {
+	if tc == nil {
+		return "", false
+	}
+	state := tc.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return "", false
+	}
+	sum := sha256.Sum256(state.PeerCertificates[0].Raw)
+	return hex.EncodeToString(sum[:]), true
+}
+
+// authFailedText is the downlink ERROR text on auth failure.
+// When a client cert was presented, include its fingerprint so a legitimate
+// user can register it (cert add).
+func authFailedText(fp string) string {
+	if fp == "" {
+		return "Authentication failed"
+	}
+	return "Authentication failed (cert fingerprint: " + fp + ")"
+}
+
+// checkCertOnlyFingerprint enforces a known client cert when password auth is off.
+func (l *Listener) checkCertOnlyFingerprint(ctx context.Context, presented bool, fp string) error {
+	if !presented {
+		return fmt.Errorf("client certificate required")
+	}
+	ok, err := l.store.HasFingerprint(ctx, fp)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("invalid fingerprint")
+	}
+	return nil
 }
 
 // stripNetworkFromPass returns the password portion of PASS.

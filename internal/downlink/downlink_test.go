@@ -308,7 +308,7 @@ func TestAuthFailedLoggedInvalidFingerprint(t *testing.T) {
 	cfg := config.Default()
 	cfg.AllowPasswordAuth = false
 	cfg.AllowCertAuth = true
-	// No fingerprints registered — client cert must fail.
+	// No fingerprints registered — client cert must fail before IRC auth.
 
 	cap := &logCapture{}
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
@@ -327,10 +327,22 @@ func TestAuthFailedLoggedInvalidFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	_, _ = c.Write([]byte("PASS libera/\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	// CAP LS would hang waiting for a reply if we entered authenticate(); early reject must ERROR first.
+	_, _ = c.Write([]byte("CAP LS 302\r\nPASS libera/\r\nNICK me\r\nUSER me 0 * :me\r\n"))
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1024)
-	_, _ = c.Read(buf)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(buf[:n])
+	if contains(got, "CAP") {
+		t.Fatalf("cert-only reject must not answer CAP before auth: %q", got)
+	}
+	wantErr := "Authentication failed (cert fingerprint: " + fx.ClientSHA256 + ")"
+	if !contains(got, wantErr) {
+		t.Fatalf("ERROR missing fingerprint: got %q want substring %q", got, wantErr)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -340,6 +352,112 @@ func TestAuthFailedLoggedInvalidFingerprint(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("missing auth failed log for invalid fingerprint: %#v", cap.records)
+}
+
+func TestAuthFailedCertOnlyMissingCert(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = false
+	cfg.AllowCertAuth = true
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("PASS libera/\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	n, _ := c.Read(buf)
+	got := string(buf[:n])
+	if !contains(got, "Authentication failed") {
+		t.Fatalf("want Authentication failed, got %q", got)
+	}
+	if contains(got, "cert fingerprint:") {
+		t.Fatalf("no cert presented; ERROR must not invent a fingerprint: %q", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("auth failed") && cap.has("client certificate required") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing auth failed log for missing cert: %#v", cap.records)
+}
+
+func TestAuthCertOnlySuccess(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.AddFingerprint(ctx, fx.ClientSHA256, "test"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = false
+	cfg.AllowCertAuth = true
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(serveCtx, ln) }()
+
+	c, err := tls.Dial("tcp", ln.Addr().String(), fx.ClientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	write := func(s string) { _, _ = c.Write([]byte(s + "\r\n")) }
+	write("PASS libera/")
+	write("NICK me")
+	write("USER me 0 * :me")
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(buf[:n]), "001") {
+		t.Fatalf("cert-only auth got %q", buf[:n])
+	}
+}
+
+func TestAuthFailedText(t *testing.T) {
+	if got := authFailedText(""); got != "Authentication failed" {
+		t.Fatalf("empty fp: %q", got)
+	}
+	if got := authFailedText("abc"); got != "Authentication failed (cert fingerprint: abc)" {
+		t.Fatalf("with fp: %q", got)
+	}
 }
 
 func TestPeerIP(t *testing.T) {
