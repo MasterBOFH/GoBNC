@@ -48,7 +48,9 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		return d.Send(irc.InputTooLong(nick))
 	}
 	// IRCv3 UTF8ONLY: once advertised by the network, do not send non-UTF-8 upstream.
-	if s.isupport != nil && s.isupport.UTF8Only && !utf8.ValidString(msg.Encode()) {
+	// Check Wire(), not Encode() — Wire() is what actually reaches the uplink
+	// (it preserves Raw verbatim when the body is unrewritten).
+	if s.isupport != nil && s.isupport.UTF8Only && !utf8.ValidString(msg.Wire()) {
 		return s.failInvalidUTF8(d, msg.Command)
 	}
 	cmd := strings.ToUpper(msg.Command)

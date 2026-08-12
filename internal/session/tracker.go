@@ -757,7 +757,7 @@ func ParseWHOISTargets(params []string) []string {
 	return out
 }
 
-// ParseStatsLetter returns the folded STATS query letter, or "" if absent.
+// ParseStatsLetter returns the folded STATS query token, or "" if absent.
 func ParseStatsLetter(params []string) string {
 	if len(params) == 0 || params[0] == "" {
 		return ""
@@ -765,13 +765,12 @@ func ParseStatsLetter(params []string) string {
 	return foldStatsLetter(params[0])
 }
 
+// foldStatsLetter folds a STATS query token for use as a map key. Most ircds
+// use a single-letter type (m, u, l, …), but some (e.g. ircu's "iauth") use
+// multi-character tokens, so the whole token is folded rather than just the
+// first character.
 func foldStatsLetter(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	// Only the first character is the query type on most ircds.
-	return strings.ToLower(s[:1])
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func isLikelyReply(cmd string) bool {
