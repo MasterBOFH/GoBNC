@@ -20,6 +20,7 @@ import (
 type memDL struct {
 	id   session.ClientID
 	caps map[string]bool
+	seen map[string]bool
 	mu   sync.Mutex
 	sent []irc.Message
 }
@@ -30,6 +31,15 @@ func (d *memDL) Caps() map[string]bool {
 }
 func (d *memDL) HasCap(n string) bool { return d.caps[n] }
 func (d *memDL) ClearCap(n string)    { delete(d.caps, n) }
+func (d *memDL) HasSeenCap(n string) bool {
+	return d.seen[n]
+}
+func (d *memDL) MarkSeenCap(n string) {
+	if d.seen == nil {
+		d.seen = make(map[string]bool)
+	}
+	d.seen[n] = true
+}
 func (d *memDL) Send(m irc.Message) error {
 	d.mu.Lock()
 	d.sent = append(d.sent, m)

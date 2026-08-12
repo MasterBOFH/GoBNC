@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -209,11 +210,12 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	}
 
 	cl := &Client{
-		id:   session.ClientID(fmt.Sprintf("c%d", atomic.AddUint64(&l.idSeq, 1))),
-		conn: tc,
-		r:    bufio.NewReaderSize(tc, irc.MaxClientLine),
-		caps: make(map[string]bool),
-		log:  l.log,
+		id:       session.ClientID(fmt.Sprintf("c%d", atomic.AddUint64(&l.idSeq, 1))),
+		conn:     tc,
+		r:        bufio.NewReaderSize(tc, irc.MaxClientLine),
+		caps:     make(map[string]bool),
+		capsSeen: make(map[string]bool),
+		log:      l.log,
 	}
 
 	// Cert-only: reject unknown/missing client certs before any IRC (CAP/PASS/…).
@@ -304,6 +306,19 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 			_ = handleClientCAP(cl, msg)
 		case "PASS":
 			pass = msg.ParamsText()
+			// Resolve the network as soon as we know it so a CAP LS received
+			// before PASS can be answered with one collated list (including
+			// any uplink-backed caps already available) instead of CAP LS
+			// followed later by CAP NEW.
+			if net := networkFromPass(pass); net != "" {
+				if sess, err := l.mgr.Session(net); err == nil {
+					cl.provSess = sess
+				}
+			}
+			if cl.pendingLS {
+				cl.pendingLS = false
+				_ = cl.sendCapLSReply()
+			}
 		case "NICK":
 			nick = msg.Param(0)
 			cl.nick = nick
@@ -313,13 +328,16 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 			return false, "", fmt.Errorf("quit")
 		}
 		// NICK, USER, and CAP END may arrive in any order.
-		if registrationReady(nick, gotUser, cl.capStarted, cl.capEnded) {
+		if registrationReady(nick, gotUser, cl.capStarted, cl.capEnded, cl.pendingLS) {
 			break
 		}
 	}
-	if !registrationReady(nick, gotUser, cl.capStarted, cl.capEnded) {
+	if !registrationReady(nick, gotUser, cl.capStarted, cl.capEnded, cl.pendingLS) {
 		if nick == "" || !gotUser {
 			return false, "", fmt.Errorf("registration incomplete")
+		}
+		if cl.pendingLS {
+			return false, "", fmt.Errorf("CAP LS not resolved (missing PASS)")
 		}
 		return false, "", fmt.Errorf("CAP negotiation incomplete (missing CAP END)")
 	}
@@ -441,14 +459,18 @@ func networkFromPass(pass string) string {
 	return pass[:i]
 }
 
-// registrationReady is true when NICK and USER are set, and CAP END has been
-// received if the client started CAP negotiation (CAP LS / CAP REQ).
+// registrationReady is true when NICK and USER are set, CAP END has been
+// received if the client started CAP negotiation (CAP LS / CAP REQ), and any
+// CAP LS received before the network was known (via PASS) has been answered.
 // Order of NICK, USER, and CAP END does not matter.
-func registrationReady(nick string, gotUser, capStarted, capEnded bool) bool {
+func registrationReady(nick string, gotUser, capStarted, capEnded, lsPending bool) bool {
 	if nick == "" || !gotUser {
 		return false
 	}
 	if capStarted && !capEnded {
+		return false
+	}
+	if lsPending {
 		return false
 	}
 	return true
@@ -456,31 +478,27 @@ func registrationReady(nick string, gotUser, capStarted, capEnded bool) bool {
 
 func handleClientCAP(cl *Client, msg irc.Message) error {
 	sub := strings.ToUpper(msg.Param(0))
-	offered := caps.AlwaysOffer
-	if cl.sess != nil {
-		offered = cl.sess.OfferedCaps()
-	}
-	offeredSet := make(map[string]bool, len(offered))
-	for _, c := range offered {
-		offeredSet[caps.CapName(c)] = true
-	}
 	switch sub {
 	case "LS":
 		cl.capStarted = true
 		if msg.Param(1) == "302" {
 			cl.cap302 = true
 		}
-		list := offered
-		if !cl.cap302 {
-			list = caps.WithoutValues(offered)
+		if cl.sess == nil && cl.provSess == nil {
+			// Network not resolved yet (PASS not seen). Defer the reply so we
+			// can answer with one collated list — instead of a bare CAP LS now
+			// followed by a separate CAP NEW once the uplink's caps are known.
+			cl.pendingLS = true
+			return nil
 		}
-		return cl.Send(irc.Message{
-			Source:  CapServerName,
-			Command: "CAP",
-			Params:  []string{"*", "LS", strings.Join(list, " ")},
-		})
+		return cl.sendCapLSReply()
 	case "REQ":
 		cl.capStarted = true
+		offered := cl.offeredCaps()
+		offeredSet := make(map[string]bool, len(offered))
+		for _, c := range offered {
+			offeredSet[caps.CapName(c)] = true
+		}
 		req := strings.Fields(msg.Trailing())
 		if len(req) == 0 {
 			req = strings.Fields(msg.Param(1))
@@ -489,8 +507,13 @@ func handleClientCAP(cl *Client, msg irc.Message) error {
 		wantSASL := false
 		for _, c := range req {
 			name := caps.CapName(c)
-			if name == "sasl" && cl.sess != nil && cl.sess.OffersPassthroughSASL() {
-				wantSASL = true
+			if name == "sasl" {
+				// Passthrough SASL only works once the session is attached
+				// (RequestClientSASL needs the real uplink); never fall
+				// through to the generic offered-set ACK below.
+				if cl.sess != nil && cl.sess.OffersPassthroughSASL() {
+					wantSASL = true
+				}
 				continue
 			}
 			if offeredSet[name] {
@@ -513,6 +536,8 @@ func handleClientCAP(cl *Client, msg irc.Message) error {
 			return cl.sess.RequestClientSASL(cl)
 		}
 		return nil
+	case "LIST":
+		return cl.sendCapListReply()
 	case "END":
 		cl.capEnded = true
 		return nil
@@ -531,18 +556,24 @@ func (l *Listener) dispatch(cl *Client, sess *session.Session, msg irc.Message) 
 
 // Client is a connected downlink.
 type Client struct {
-	id         session.ClientID
-	conn       net.Conn
-	r          *bufio.Reader
-	mu         sync.Mutex
-	caps       map[string]bool
-	sess       *session.Session
+	id       session.ClientID
+	conn     net.Conn
+	r        *bufio.Reader
+	mu       sync.Mutex
+	caps     map[string]bool
+	capsSeen map[string]bool // cap names already advertised via CAP LS/NEW (avoids duplicate CAP NEW)
+	sess     *session.Session
+	// provSess is the network's session resolved from PASS, before the client
+	// has finished authenticating/attaching. Used only to compute the current
+	// capability offer for CAP LS/REQ; never used for message delivery.
+	provSess   *session.Session
 	nick       string // registration nick (before/without session)
 	log        *slog.Logger
 	wmu        sync.Mutex
 	capStarted bool // client sent CAP LS or CAP REQ
 	capEnded   bool // client sent CAP END
 	cap302     bool // client sent CAP LS 302
+	pendingLS  bool // CAP LS received before the network (PASS) was known
 	lastRXUnix int64
 }
 
@@ -637,6 +668,99 @@ func (c *Client) EnableCap(name string) {
 	c.mu.Lock()
 	c.caps[name] = true
 	c.mu.Unlock()
+}
+
+// HasSeenCap reports whether name was already advertised to this client via
+// CAP LS or CAP NEW (see session.notifyAttachCaps, which uses this to avoid
+// re-announcing caps the client already learned about).
+func (c *Client) HasSeenCap(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.capsSeen[name]
+}
+
+// MarkSeenCap records that name was advertised to this client.
+func (c *Client) MarkSeenCap(name string) {
+	c.mu.Lock()
+	if c.capsSeen == nil {
+		c.capsSeen = make(map[string]bool)
+	}
+	c.capsSeen[name] = true
+	c.mu.Unlock()
+}
+
+func (c *Client) markCapsSeen(list []string) {
+	c.mu.Lock()
+	if c.capsSeen == nil {
+		c.capsSeen = make(map[string]bool)
+	}
+	for _, n := range list {
+		c.capsSeen[caps.CapName(n)] = true
+	}
+	c.mu.Unlock()
+}
+
+// offeredCaps returns the capability set currently offered to this client:
+// the attached session's live offer, the provisionally resolved session's
+// offer (network known via PASS, pre-attach) with sasl stripped since
+// passthrough SASL isn't wired up until the session is attached, or the
+// bouncer-local always-on set if neither is known yet.
+func (c *Client) offeredCaps() []string {
+	if c.sess != nil {
+		return c.sess.OfferedCaps()
+	}
+	if c.provSess != nil {
+		return withoutSASL(c.provSess.OfferedCaps())
+	}
+	return caps.AlwaysOffer
+}
+
+func withoutSASL(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, c := range list {
+		if caps.CapName(c) != "sasl" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sendCapLSReply answers CAP LS with the current offer (see offeredCaps).
+// CAP LS 302 implies cap-notify support without an explicit CAP REQ (IRCv3).
+func (c *Client) sendCapLSReply() error {
+	offered := c.offeredCaps()
+	list := offered
+	if !c.cap302 {
+		list = caps.WithoutValues(offered)
+	}
+	c.markCapsSeen(offered)
+	if c.cap302 {
+		c.EnableCap("cap-notify")
+	}
+	return c.Send(irc.Message{
+		Source:  CapServerName,
+		Command: "CAP",
+		Params:  []string{"*", "LS", strings.Join(list, " ")},
+	})
+}
+
+// sendCapListReply answers CAP LIST with the capabilities currently
+// negotiated (enabled) for this client.
+func (c *Client) sendCapListReply() error {
+	c.mu.Lock()
+	names := make([]string, 0, len(c.caps))
+	for name, on := range c.caps {
+		if on {
+			names = append(names, name)
+		}
+	}
+	c.mu.Unlock()
+	sort.Strings(names)
+	return c.Send(irc.Message{
+		Source:  CapServerName,
+		Command: "CAP",
+		Params:  []string{"*", "LIST", strings.Join(names, " ")},
+	})
 }
 
 func (c *Client) Send(msg irc.Message) error {

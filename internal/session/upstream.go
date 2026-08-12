@@ -166,6 +166,12 @@ func (s *Session) broadcastCapNotify(sub string, names []string) {
 			for _, n := range names {
 				d.ClearCap(caps.CapName(n))
 			}
+		} else if sub == "NEW" {
+			// Record as seen so a later attach-time sync (notifyAttachCaps)
+			// does not re-announce it.
+			for _, n := range names {
+				d.MarkSeenCap(caps.CapName(n))
+			}
 		}
 		_ = d.Send(msg)
 	}

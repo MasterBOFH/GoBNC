@@ -336,6 +336,124 @@ func runEarlyRegServer(server net.Conn, deadline time.Time) error {
 	return write(":server 376 testnick :End of /MOTD command.")
 }
 
+// TestAwaitingClientGetsCapNewOnceWhenUplinkRegisters covers the "client
+// attached while the bouncer was still connecting to the upstream" case: the
+// client's own CAP LS only had AlwaysOffer (session/uplink not known yet), so
+// once the uplink registers with an uplink-backed cap the client must be told
+// via CAP NEW — but exactly once. OnRegistered both broadcasts a NEW/DEL diff
+// to all downlinks and separately syncs each newly-unblocked awaiting client
+// via notifyAttachCaps; both paths could otherwise announce the same cap.
+func TestAwaitingClientGetsCapNewOnceWhenUplinkRegisters(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
+	s := New(netCfg, nil, nil, nil)
+	u := uplink.New(uplink.Config{
+		Network:    netCfg,
+		MinBackoff: time.Hour,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return client, nil
+		},
+	}, s)
+	s.SetUplink(u)
+
+	d := &fakeDL{id: "early", caps: map[string]bool{"cap-notify": true}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+
+	scriptDone := make(chan error, 1)
+	go func() {
+		scriptDone <- runAwayNotifyRegServer(server, time.Now().Add(8*time.Second))
+	}()
+	runDone := make(chan error, 1)
+	go func() { runDone <- u.Run(ctx) }()
+
+	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
+	// Give any async CAP NEW sends from OnRegistered a moment to land.
+	time.Sleep(50 * time.Millisecond)
+
+	sent := d.snapshot()
+	var newCount int
+	for _, m := range sent {
+		if m.Command == "CAP" && m.Param(1) == "NEW" && strings.Contains(m.Trailing(), "away-notify") {
+			newCount++
+		}
+	}
+	if newCount != 1 {
+		t.Fatalf("want exactly one CAP NEW away-notify, got %d: %+v", newCount, sent)
+	}
+
+	select {
+	case err := <-scriptDone:
+		if err != nil {
+			t.Fatal("script:", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("script timeout")
+	}
+	cancel()
+	<-runDone
+}
+
+func runAwayNotifyRegServer(server net.Conn, deadline time.Time) error {
+	br := newLineBuf(server)
+	read := func() (string, error) {
+		_ = server.SetReadDeadline(deadline)
+		return br.readLine()
+	}
+	write := func(s string) error {
+		_, err := io.WriteString(server, s+"\r\n")
+		return err
+	}
+	for _, want := range []string{"CAP LS", "NICK", "USER"} {
+		line, err := read()
+		if err != nil || !strings.Contains(line, want) {
+			return fmt.Errorf("%s: %q %v", want, line, err)
+		}
+	}
+	if err := write("CAP * LS :message-tags cap-notify away-notify"); err != nil {
+		return err
+	}
+	line, err := read()
+	if err != nil || !strings.Contains(line, "CAP REQ") {
+		return fmt.Errorf("CAP REQ: %q %v", line, err)
+	}
+	if !strings.Contains(line, "away-notify") {
+		return fmt.Errorf("uplink should have requested away-notify: %q", line)
+	}
+	if err := write("CAP * ACK :message-tags cap-notify away-notify"); err != nil {
+		return err
+	}
+	line, err = read()
+	if err != nil || line != "CAP END" {
+		return fmt.Errorf("CAP END: %q %v", line, err)
+	}
+	if err := write(":server 001 testnick :Welcome to the network"); err != nil {
+		return err
+	}
+	if err := write(":server 002 testnick :Your host is server"); err != nil {
+		return err
+	}
+	if err := write(":server 003 testnick :This server was created once"); err != nil {
+		return err
+	}
+	if err := write(":server 004 testnick server ircd iow nt"); err != nil {
+		return err
+	}
+	if err := write(":server 375 testnick :- server Message of the Day -"); err != nil {
+		return err
+	}
+	if err := write(":server 372 testnick :- hello"); err != nil {
+		return err
+	}
+	return write(":server 376 testnick :End of /MOTD command.")
+}
+
 func TestOnDisconnectWhileAwaitingUplink(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
 	d := &fakeDL{id: "early", caps: map[string]bool{}}

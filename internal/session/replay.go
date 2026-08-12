@@ -183,20 +183,29 @@ func (s *Session) liveNickLocked() string {
 	return s.Network.Nick
 }
 
-// notifyAttachCaps tells cap-notify clients about uplink-backed caps available now
-// (auth-time CAP LS only had AlwaysOffer because the session was not attached yet).
+// notifyAttachCaps tells cap-notify clients about uplink-backed caps available
+// now that were not already included in the client's own CAP LS reply (e.g.
+// auth-time CAP LS only had AlwaysOffer because the network/uplink was not
+// yet known, or wasn't registered yet, when the client answered CAP LS).
 func (s *Session) notifyAttachCaps(d Downlink) {
 	if !d.HasCap("cap-notify") {
 		return
 	}
 	var names []string
 	for _, c := range s.OfferedCaps() {
-		if caps.IsUplinkOffer(c) || caps.CapName(c) == "sasl" {
+		name := caps.CapName(c)
+		if d.HasSeenCap(name) {
+			continue
+		}
+		if caps.IsUplinkOffer(c) || name == "sasl" {
 			names = append(names, c)
 		}
 	}
 	if len(names) == 0 {
 		return
+	}
+	for _, c := range names {
+		d.MarkSeenCap(caps.CapName(c))
 	}
 	_ = d.Send(irc.Message{
 		Source:  ServerName,

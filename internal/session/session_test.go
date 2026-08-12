@@ -1985,6 +1985,7 @@ type fakeDL struct {
 	id   ClientID
 	mu   sync.Mutex
 	caps map[string]bool
+	seen map[string]bool
 	sent []irc.Message
 }
 
@@ -2010,6 +2011,21 @@ func (f *fakeDL) ClearCap(n string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.caps, n)
+}
+
+func (f *fakeDL) HasSeenCap(n string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seen[n]
+}
+
+func (f *fakeDL) MarkSeenCap(n string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seen == nil {
+		f.seen = make(map[string]bool)
+	}
+	f.seen[n] = true
 }
 
 func (f *fakeDL) EnableCap(n string) {

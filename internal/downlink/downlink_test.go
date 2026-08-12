@@ -614,25 +614,26 @@ func TestReplaceListenerAcceptsOnNewAddr(t *testing.T) {
 
 func TestRegistrationReady(t *testing.T) {
 	cases := []struct {
-		name                       string
-		nick                       string
-		gotUser, capStarted, capEnded bool
-		want                       bool
+		name                                    string
+		nick                                    string
+		gotUser, capStarted, capEnded, lsPending bool
+		want                                    bool
 	}{
-		{"empty", "", false, false, false, false},
-		{"nick only", "me", false, false, false, false},
-		{"user only", "", true, false, false, false},
-		{"nick+user no cap", "me", true, false, false, true},
-		{"nick+user cap pending", "me", true, true, false, false},
-		{"nick+user cap end", "me", true, true, true, true},
-		{"cap end before nick/user", "", false, true, true, false},
-		{"cap end + nick only", "me", false, true, true, false},
-		{"cap end + user only", "", true, true, true, false},
-		{"cap end then nick+user", "me", true, true, true, true},
+		{"empty", "", false, false, false, false, false},
+		{"nick only", "me", false, false, false, false, false},
+		{"user only", "", true, false, false, false, false},
+		{"nick+user no cap", "me", true, false, false, false, true},
+		{"nick+user cap pending", "me", true, true, false, false, false},
+		{"nick+user cap end", "me", true, true, true, false, true},
+		{"cap end before nick/user", "", false, true, true, false, false},
+		{"cap end + nick only", "me", false, true, true, false, false},
+		{"cap end + user only", "", true, true, true, false, false},
+		{"cap end then nick+user", "me", true, true, true, false, true},
+		{"cap end but ls still pending", "me", true, true, true, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := registrationReady(tc.nick, tc.gotUser, tc.capStarted, tc.capEnded)
+			got := registrationReady(tc.nick, tc.gotUser, tc.capStarted, tc.capEnded, tc.lsPending)
 			if got != tc.want {
 				t.Fatalf("got %v want %v", got, tc.want)
 			}

@@ -19,6 +19,12 @@ type Downlink interface {
 	Caps() map[string]bool
 	HasCap(name string) bool
 	ClearCap(name string)
+	// HasSeenCap/MarkSeenCap track caps already advertised via CAP LS/NEW,
+	// distinct from HasCap/ClearCap (which track negotiated/enabled caps).
+	// Used to avoid re-announcing a cap as CAP NEW right after attach when
+	// it was already included in the client's initial CAP LS reply.
+	HasSeenCap(name string) bool
+	MarkSeenCap(name string)
 	Send(msg irc.Message) error
 	Close() error
 }
@@ -162,6 +168,13 @@ func (s *Session) GracefulQuit(ctx context.Context, reason string) {
 func (s *Session) SetRegisteredForTest(v bool) {
 	s.mu.Lock()
 	s.registered = v
+	s.mu.Unlock()
+}
+
+// SetUpCapsForTest sets the cached uplink capability map (tests only).
+func (s *Session) SetUpCapsForTest(m map[string]bool) {
+	s.mu.Lock()
+	s.upCaps = m
 	s.mu.Unlock()
 }
 
