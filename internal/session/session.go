@@ -12,6 +12,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/version"
 )
@@ -133,6 +134,14 @@ type Session struct {
 	heldFlushSent map[ClientID]map[string]time.Time
 	// admin handles the in-band BNC IRC command (nil if unset).
 	admin AdminFunc
+	// debugRegistry routes this network's raw traffic / log lines to
+	// clients that opted in via /bnc debug (nil if unset — matches admin's
+	// own nil-safe fallback for test/harness paths that never wire it up).
+	// debugTargets tracks the live subscription per requesting downlink,
+	// so /bnc debug off and Detach can find the exact same DebugTarget
+	// instance to unsubscribe (see debug.go).
+	debugRegistry *gobnclog.DebugRegistry
+	debugTargets  map[ClientID]*sessionDebugTarget
 }
 
 // pendingSelfEcho correlates an uplink-labeled self-echo with the originating client.
@@ -184,11 +193,20 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 		awaitingUplink:  make(map[ClientID]bool),
 		isupport:        irc.NewISUPPORT(),
 		upCaps:          make(map[string]bool),
+		debugTargets:    make(map[ClientID]*sessionDebugTarget),
 	}
 }
 
 // SetAdmin registers the handler for the IRC BNC command.
 func (s *Session) SetAdmin(fn AdminFunc) { s.admin = fn }
+
+// SetDebugRegistry wires the process-wide /bnc-debug routing table onto
+// this session (mirrors SetAdmin's own post-construction wiring pattern —
+// see internal/server.registerNetworkLocked). nil is a valid, silent
+// default: handleBNCDebug reports "debug unavailable" the same way
+// handleBNC already does for a nil admin, matching the class of test/
+// harness paths that construct a Session without ever calling this.
+func (s *Session) SetDebugRegistry(reg *gobnclog.DebugRegistry) { s.debugRegistry = reg }
 
 // NetworkID returns the keeper.NetworkID this session's uplink is addressed
 // by on the shared Driver.

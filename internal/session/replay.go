@@ -12,6 +12,17 @@ import (
 // when the uplink's 001 server name is not yet known.
 const ServerName = "gobnc"
 
+// DebugSource is the pseudo-nick /bnc debug relay messages are sent from
+// (see sessionDebugTarget.deliver in debug.go) — exported so
+// internal/downlink can recognize and skip logging them as ordinary
+// outgoing traffic. Without that exclusion, a debug relay message sent to
+// a client with raw/all mode active would itself get logged as downlink
+// traffic, get picked back up by the same subscription, and relay again —
+// an exponential feedback loop, confirmed live (found the hard way: a
+// single "/bnc debug all" turned into a multi-gigabyte runaway stream
+// within seconds).
+const DebugSource = ">debug"
+
 // serverPrefixLocked returns the source for attach-burst server messages.
 // Prefers the uplink 001 prefix when known. Caller must hold s.mu.
 func (s *Session) serverPrefixLocked() string {

@@ -35,6 +35,7 @@ func (s *Session) Detach(id ClientID) {
 	delete(s.heldFlushSent, id)
 	s.mu.Unlock()
 	s.tracker.DropClient(id)
+	s.unsubscribeDebug(id)
 }
 
 // HandleClientMessage processes a message from a downlink toward the uplink.

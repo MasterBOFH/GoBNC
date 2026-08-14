@@ -191,6 +191,13 @@ func (s *Server) Run(ctx context.Context) error {
 		defer s.wg.Done()
 		s.runDemux(ctx)
 	}()
+	if s.logSink != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.logSink.DebugRegistry().Run(ctx)
+		}()
+	}
 
 	nets, err := s.store.ListNetworks(ctx)
 	if err != nil {
@@ -517,6 +524,9 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name), s.driver)
 	netID := sess.NetworkID()
 	s.attachAdmin(sess)
+	if s.logSink != nil {
+		sess.SetDebugRegistry(s.logSink.DebugRegistry())
+	}
 	s.sess[n.Name] = sess
 	s.sessByNetID[netID] = sess
 
