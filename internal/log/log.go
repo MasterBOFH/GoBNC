@@ -24,9 +24,22 @@ type Options struct {
 
 // Sink owns the active log outputs and can Reload on rehash.
 type Sink struct {
-	swap   *swapHandler
-	mu     sync.Mutex
-	closer func() error
+	swap     *swapHandler
+	mu       sync.Mutex
+	closer   func() error
+	registry *DebugRegistry
+}
+
+// DebugRegistry returns the sink's live /bnc-debug routing table (see
+// internal/log/debug.go) — constructed once here, in Setup, and never
+// touched by Reload, so a live subscription survives a rehash. nil-safe:
+// returns nil for a nil Sink, matching this package's other nil-receiver
+// methods.
+func (s *Sink) DebugRegistry() *DebugRegistry {
+	if s == nil {
+		return nil
+	}
+	return s.registry
 }
 
 // New returns a JSON slog logger at the given level writing to w (default stderr).
@@ -47,7 +60,9 @@ func Setup(opts Options) (*slog.Logger, *Sink, error) {
 	}
 	sh := &swapHandler{}
 	sh.store(inner)
-	return slog.New(sh), &Sink{swap: sh, closer: closer}, nil
+	reg := NewDebugRegistry()
+	tee := newTeeHandler(sh, reg)
+	return slog.New(tee), &Sink{swap: sh, closer: closer, registry: reg}, nil
 }
 
 // Reload replaces the active handlers (level / log file) without replacing the Logger.

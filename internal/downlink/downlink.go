@@ -767,7 +767,13 @@ func (c *Client) Send(msg irc.Message) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	raw := msg.Wire()
-	gobnclog.IRC(c.log, c.logPeer(), ">>", raw)
+	// A /bnc debug relay message must never be logged as ordinary outgoing
+	// traffic — a raw/all-mode subscriber would otherwise see it fed right
+	// back into the same subscription and relay again, forever (see
+	// session.DebugSource's doc comment for how this was actually found).
+	if msg.Source != session.DebugSource {
+		gobnclog.IRC(c.log, c.logPeer(), ">>", raw)
+	}
 	_, err := io.WriteString(c.conn, raw+"\r\n")
 	return err
 }
