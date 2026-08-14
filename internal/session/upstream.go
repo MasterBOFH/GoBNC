@@ -47,7 +47,15 @@ var DesiredCaps = []string{
 // the right moment): there's no Uplink instance left to decide "the right
 // moment" on Session's behalf, so Session decides it here, from the raw
 // line stream directly, the same way registration.Step does.
-func (s *Session) HandleLine(raw []byte) {
+//
+// seq is the keeper's own sequence number for raw (keeper.LineMsg.Seq) —
+// stashed for maybeStoreHistory to key an idempotent insert on (see
+// store.Message.KeeperSeq's doc comment), since a resumed brain replays a
+// network's full retained backlog unconditionally on every reattach.
+func (s *Session) HandleLine(raw []byte, seq uint64) {
+	s.mu.Lock()
+	s.lineSeq = seq
+	s.mu.Unlock()
 	msg, err := irc.Parse(string(raw))
 	if err != nil {
 		s.log.Warn("parse error", "line", gobnclog.RedactIRC(string(raw)), "err", err)
@@ -632,7 +640,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	msg = ensureMessageID(msg)
 	pending, msg, selfEcho := s.consumeSelfEcho(msg)
 	if selfEcho {
-		s.maybeStoreHistory(msg)
+		s.maybeStoreHistory(msg, s.currentLineSeq())
 		s.applyState(msg)
 		if strings.EqualFold(msg.Command, "ACK") {
 			// Labeled ACK only goes to the originating client.
@@ -654,7 +662,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.fanoutSelfEcho(msg, pending)
 		return
 	}
-	s.maybeStoreHistory(msg) // before applyState so QUIT/NICK still see channel membership
+	s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
 	s.applyState(msg)
 
 	s.mu.RLock()
@@ -833,7 +841,12 @@ func ensureMessageID(msg irc.Message) irc.Message {
 	return msg
 }
 
-func (s *Session) maybeStoreHistory(msg irc.Message) {
+// keeperSeq identifies the keeper line msg came from (0 if it didn't come
+// from one at all, e.g. a locally-synthesized self-echo — see
+// downstream.go's echoSelfLocally) — see store.Message.KeeperSeq's doc
+// comment for why this, not msgid, is what makes a replayed line's
+// storage idempotent.
+func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) {
 	if s.hist == nil {
 		return
 	}
@@ -863,6 +876,7 @@ func (s *Session) maybeStoreHistory(msg irc.Message) {
 			Source:    msg.Source,
 			Raw:       raw,
 			Text:      text,
+			KeeperSeq: keeperSeq,
 		})
 	}
 }

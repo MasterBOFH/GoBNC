@@ -1886,13 +1886,13 @@ func TestMaybeStoreHistoryEvents(t *testing.T) {
 		Source:  "bob!u@h",
 		Command: "JOIN",
 		Params:  []string{"#dev"},
-	})
+	}, 0)
 	s.maybeStoreHistory(irc.Message{
 		Tags:    map[string]string{"time": "2024-06-01T12:01:00.000Z"},
 		Source:  "bob!u@h",
 		Command: "QUIT",
 		Params:  []string{"bye"},
-	})
+	}, 0)
 
 	msgs, err := db.QueryMessages(ctx, store.HistoryQuery{NetworkID: id, Target: "#dev", Latest: true, Limit: 10})
 	if err != nil {

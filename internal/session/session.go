@@ -97,6 +97,15 @@ type Session struct {
 	// "432", "433", "437" case).
 	lastNickErrorLine    irc.Message
 	hasLastNickErrorLine bool
+	// lineSeq is the keeper.LineMsg.Seq of whatever line HandleLine is
+	// currently dispatching, read via currentLineSeq() by maybeStoreHistory's
+	// HandleMessage call sites to give a stored message a stable,
+	// replay-safe identity — see store.Message.KeeperSeq's doc comment.
+	// Safe as ambient per-Session state, not an explicit parameter threaded
+	// through HandleMessage, because only one goroutine ever drives a given
+	// Session's HandleLine calls (internal/server's demux — see its own
+	// doc comment) and each is fully synchronous before the next begins.
+	lineSeq uint64
 	// awaitingUplink marks downlinks that attached before uplink registration
 	// finished and should receive live/buffered registration traffic.
 	awaitingUplink map[ClientID]bool
@@ -249,6 +258,14 @@ func (s *Session) Registered() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.registered
+}
+
+// currentLineSeq returns the keeper.LineMsg.Seq HandleLine is currently
+// dispatching — see currentLineSeq's field doc comment.
+func (s *Session) currentLineSeq() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lineSeq
 }
 
 // Name returns the network name.
