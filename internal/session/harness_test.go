@@ -174,7 +174,7 @@ func (tu *testUplink) demux(ctx context.Context) {
 				return
 			}
 			if line.Network == tu.netID {
-				tu.sess.HandleLine(line.Raw)
+				tu.sess.HandleLine(line.Raw, line.Seq)
 			}
 		case res, ok := <-tu.driver.Results():
 			if !ok {

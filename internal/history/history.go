@@ -25,6 +25,9 @@ type Record struct {
 	Source    string
 	Raw       string
 	Text      string
+	// KeeperSeq: see store.Message.KeeperSeq's doc comment. 0 for a record
+	// with no keeper line behind it.
+	KeeperSeq uint64
 }
 
 // Sender can receive IRC messages (downlink).
@@ -99,6 +102,7 @@ func (h *Store) Store(ctx context.Context, r Record) error {
 		Source:    r.Source,
 		Raw:       r.Raw,
 		Text:      r.Text,
+		KeeperSeq: r.KeeperSeq,
 	})
 }
 

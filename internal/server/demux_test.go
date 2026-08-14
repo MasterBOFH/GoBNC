@@ -19,7 +19,8 @@ import (
 // here (rather than exported and shared) because it's a handful of lines
 // and these are two different packages' test-only fixtures.
 type demuxFakeIRC struct {
-	ln net.Listener
+	ln     net.Listener
+	connCh chan net.Conn // accepted connection, published as soon as Accept succeeds
 }
 
 func newDemuxFakeIRC(t *testing.T) *demuxFakeIRC {
@@ -29,7 +30,23 @@ func newDemuxFakeIRC(t *testing.T) *demuxFakeIRC {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	return &demuxFakeIRC{ln: ln}
+	return &demuxFakeIRC{ln: ln, connCh: make(chan net.Conn, 1)}
+}
+
+// lastConn waits for and returns the connection serveOne accepted — for a
+// test that needs to write additional lines to it after the initial
+// registration burst (serveOne itself stops reading once registration
+// completes, so nothing consumes them, but Close on either end still
+// tears the connection down normally at test cleanup).
+func (f *demuxFakeIRC) lastConn(t *testing.T) net.Conn {
+	t.Helper()
+	select {
+	case c := <-f.connCh:
+		return c
+	case <-time.After(5 * time.Second):
+		t.Fatal("lastConn: no connection accepted")
+		return nil
+	}
 }
 
 func (f *demuxFakeIRC) addr(t *testing.T) (host string, port int) {
@@ -57,6 +74,7 @@ func (f *demuxFakeIRC) serveOne(t *testing.T, server string, closeAfter <-chan s
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	f.connCh <- conn
 
 	send := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
 	buf := make([]byte, 4096)

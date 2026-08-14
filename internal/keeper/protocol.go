@@ -94,6 +94,17 @@ type HelloMsg struct {
 	// NetworkID. A network the keeper holds but that's absent from this map
 	// is streamed from seq 0 (from oldest retained) — this is the normal
 	// case for a network the client has no prior checkpoint for yet.
+	//
+	// Deliberately always replayed in full, never reduced to "only what's
+	// new since some checkpoint": Session's entire state reconstruction on
+	// a resumed attach (registration completion, self nick, ISUPPORT,
+	// channel membership — not just chat history) depends on watching the
+	// complete transcript, since there is no separate state snapshot (the
+	// blob store docs/keeper-design.md defers). A brain-side checkpoint
+	// that skipped replay was tried and reverted — see internal/history's
+	// keeper_seq-based idempotent storage for how replay-safe duplication
+	// is actually avoided instead: by making replaying an already-stored
+	// line a safe no-op, not by not replaying it.
 	FromSeq map[NetworkID]uint64 `json:"from_seq,omitempty"`
 }
 

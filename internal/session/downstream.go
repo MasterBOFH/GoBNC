@@ -464,7 +464,10 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	}
 	echo = ensureMessageTime(echo)
 	echo = ensureMessageID(echo)
-	s.maybeStoreHistory(echo)
+	// keeperSeq=0: this echo is synthesized locally for clients when the
+	// network doesn't support echo-message, not derived from any keeper
+	// line — see maybeStoreHistory's own doc comment.
+	s.maybeStoreHistory(echo, 0)
 
 	// Snapshot then release before rewriteFor — see HandleMessage's own
 	// comment on this pattern for why holding s.mu across a call that

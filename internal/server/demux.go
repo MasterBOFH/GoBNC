@@ -31,7 +31,7 @@ func (s *Server) runDemux(ctx context.Context) {
 				return
 			}
 			if sess := s.sessionByNetwork(line.Network); sess != nil {
-				sess.HandleLine(line.Raw)
+				sess.HandleLine(line.Raw, line.Seq)
 			}
 		case res, ok := <-s.driver.Results():
 			if !ok {

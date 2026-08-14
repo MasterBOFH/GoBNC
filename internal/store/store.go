@@ -122,7 +122,8 @@ func (s *Store) migrate() error {
 			command TEXT NOT NULL,
 			source TEXT NOT NULL DEFAULT '',
 			raw TEXT NOT NULL,
-			text TEXT NOT NULL DEFAULT ''
+			text TEXT NOT NULL DEFAULT '',
+			keeper_seq INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_target_time ON messages(network_id, target, time)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(network_id, msgid)`,
@@ -158,6 +159,23 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN sasl INTEGER NOT NULL DEFAULT 0`)
 	// Existing networks with password SASL credentials keep doing SASL.
 	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
+	// Existing DBs created before keeper_seq — must run before the unique
+	// index below, which references the column.
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN keeper_seq INTEGER NOT NULL DEFAULT 0`)
+	// keeper_seq is the keeper's own per-network line sequence number (see
+	// internal/keeper.LineMsg.Seq) — a stable, deterministic identity for
+	// "this exact wire line" that survives however many times a brain
+	// restart replays it, unlike msgid (a fresh random UUID assigned per
+	// insert). target is part of the key too: one line can fan out to
+	// several stored rows (e.g. a QUIT stores once per channel the user
+	// was in), all sharing one keeper_seq — (network_id, keeper_seq) alone
+	// would wrongly treat the second and later rows from the same line as
+	// duplicates of the first. The partial WHERE clause exempts 0
+	// (messages with no keeper line behind them at all, e.g. a downstream
+	// client's own outgoing message stored via echoSelfLocally — see
+	// maybeStoreHistory's callers) from uniqueness entirely, so those never
+	// collide with each other or block on this index.
+	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_network_target_keeper_seq ON messages(network_id, target, keeper_seq) WHERE keeper_seq != 0`)
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS playback_cursors (
 		network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
 		target TEXT NOT NULL,
@@ -224,6 +242,12 @@ type Message struct {
 	Source    string
 	Raw       string
 	Text      string
+	// KeeperSeq is the keeper's own per-network line sequence number (see
+	// internal/keeper.LineMsg.Seq) — 0 for a message with no keeper line
+	// behind it (e.g. a downstream client's own outgoing message). See the
+	// idx_messages_network_target_keeper_seq index's migration comment for
+	// why this, not MsgID, is what InsertMessage dedupes on.
+	KeeperSeq uint64
 }
 
 // UpsertNetwork inserts or updates a network by name.
@@ -490,12 +514,21 @@ func parseFingerprintIndex(ref string) (int, bool) {
 	return n, true
 }
 
-// InsertMessage stores a chat message.
+// InsertMessage stores a chat message. A non-zero KeeperSeq already stored
+// for this (network, target) is a silent no-op (ON CONFLICT DO NOTHING
+// against idx_messages_network_target_keeper_seq) rather than a duplicate
+// row — this is what makes replaying an already-processed keeper line,
+// which a resumed brain does unconditionally on every reattach (see
+// keeper.HelloMsg.FromSeq's doc comment for why replay itself is never
+// reduced), safe: the caller doesn't need to know or care whether this
+// particular call is a first insert or a replay of one already stored.
+// KeeperSeq == 0 always inserts (see Message.KeeperSeq's doc comment).
 func (s *Store) InsertMessage(ctx context.Context, m Message) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO messages (network_id, target, time, msgid, command, source, raw, text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.NetworkID, m.Target, formatTime(m.Time), m.MsgID, m.Command, m.Source, m.Raw, m.Text)
+		INSERT INTO messages (network_id, target, time, msgid, command, source, raw, text, keeper_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(network_id, target, keeper_seq) WHERE keeper_seq != 0 DO NOTHING`,
+		m.NetworkID, m.Target, formatTime(m.Time), m.MsgID, m.Command, m.Source, m.Raw, m.Text, m.KeeperSeq)
 	return err
 }
 
