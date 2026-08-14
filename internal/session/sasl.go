@@ -3,20 +3,11 @@ package session
 import (
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
-	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 // CapEnabler is implemented by downlinks that can enable a negotiated capability.
 type CapEnabler interface {
 	EnableCap(name string)
-}
-
-func bouncerOwnsSASL(n store.Network, u *uplink.Uplink) bool {
-	if u != nil {
-		return u.OwnsSASL()
-	}
-	return n.SASL
 }
 
 // OffersPassthroughSASL reports whether sasl is advertised to clients.
@@ -33,15 +24,20 @@ func (s *Session) SetSASLOfferForTest(offer string) {
 	s.mu.Unlock()
 }
 
-func (s *Session) refreshSASLOffer(u *uplink.Uplink) (prev, now string) {
+// refreshSASLOffer recomputes the passthrough SASL offer from the uplink's
+// current sasl availability — Session's own upSASLAvailable/upSASLMechs
+// (kept current by HandleRegistered and HandleLine's CAP interpretation),
+// replacing the old uplink.Uplink.SASLAvailable() query. bouncerOwnsSASL is
+// just s.Network.SASL now: internal/uplink.Uplink.OwnsSASL() only ever
+// reduced to the same field (u.cfg.Network.SASL), so the indirection
+// through a live Uplink instance added nothing worth keeping.
+func (s *Session) refreshSASLOffer() (prev, now string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev = s.saslOffer
 	s.saslOffer = ""
-	if !bouncerOwnsSASL(s.Network, u) && u != nil {
-		if mechs, ok := u.SASLAvailable(); ok {
-			s.saslOffer = caps.FormatSASL(mechs)
-		}
+	if !s.Network.SASL && s.upSASLAvailable {
+		s.saslOffer = caps.FormatSASL(s.upSASLMechs)
 	}
 	now = s.saslOffer
 	return prev, now
@@ -65,16 +61,11 @@ func (s *Session) notifySASLOfferChange(prev, now string) {
 	}
 }
 
-// OnSASLOffer implements uplink.Handler — sasl available without bouncer REQ.
-func (s *Session) OnSASLOffer(u *uplink.Uplink, available bool) {
-	_ = available
-	prev, now := s.refreshSASLOffer(u)
-	s.notifySASLOfferChange(prev, now)
-}
-
-// OnCapNAK implements uplink.Handler.
-func (s *Session) OnCapNAK(u *uplink.Uplink, names []string) {
-	_ = u
+// OnCapNAK reacts to a post-registration CAP NAK for something Session
+// itself requested (see RequestClientSASL) — called from HandleLine's CAP
+// interpretation. Dropped the *uplink.Uplink parameter the old
+// uplink.Handler interface required: nothing in the body ever used it.
+func (s *Session) OnCapNAK(names []string) {
 	for _, n := range names {
 		if n == "sasl" {
 			s.finishSASLWaiters(false)
@@ -88,7 +79,7 @@ func (s *Session) RequestClientSASL(d Downlink) error {
 	if !s.OffersPassthroughSASL() {
 		return s.sendClientCapNAK(d, "sasl")
 	}
-	if s.uplink != nil && s.uplink.HasCap("sasl") {
+	if s.HasUpCap("sasl") {
 		return s.sendClientCapACK(d, "sasl")
 	}
 	s.mu.Lock()
@@ -99,14 +90,14 @@ func (s *Session) RequestClientSASL(d Downlink) error {
 	if !needReq {
 		return nil
 	}
-	if s.uplink == nil {
+	if s.driver == nil {
 		s.mu.Lock()
 		s.saslWaiters = nil
 		s.saslReqPending = false
 		s.mu.Unlock()
 		return s.sendClientCapNAK(d, "sasl")
 	}
-	return s.uplink.RequestCap("sasl")
+	return s.driver.WriteRaw(s.netID, "CAP REQ :sasl")
 }
 
 func (s *Session) sendClientCapACK(d Downlink, name string) error {
@@ -166,7 +157,7 @@ func (s *Session) routeSASLTraffic(msg irc.Message) {
 		return
 	}
 
-	if bouncerOwnsSASL(s.Network, s.uplink) {
+	if s.Network.SASL {
 		// AUTHENTICATE and 903–908 stay uplink-only.
 		return
 	}
@@ -220,9 +211,16 @@ func (s *Session) applyAccountFromSASL(msg irc.Message) {
 }
 
 func (s *Session) broadcastToDownlinks(msg irc.Message) {
+	// Snapshot then release before rewriteFor — see HandleMessage's own
+	// comment on this exact pattern for why holding s.mu across a call
+	// that nested-RLocks it again is a real deadlock hazard.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
+		downlinks = append(downlinks, d)
+	}
+	s.mu.RUnlock()
+	for _, d := range downlinks {
 		_ = d.Send(s.rewriteFor(d, msg))
 	}
 }
@@ -247,11 +245,11 @@ func (s *Session) rplLoggedInLocked() (irc.Message, bool) {
 }
 
 func (s *Session) forwardClientAuthenticate(d Downlink, msg irc.Message) error {
-	if bouncerOwnsSASL(s.Network, s.uplink) {
+	if s.Network.SASL {
 		// Bouncer handles SASL; clients never drive AUTHENTICATE.
 		return nil
 	}
-	if !d.HasCap("sasl") || s.uplink == nil {
+	if !d.HasCap("sasl") || s.driver == nil {
 		return nil
 	}
 	s.mu.Lock()
@@ -261,5 +259,5 @@ func (s *Session) forwardClientAuthenticate(d Downlink, msg irc.Message) error {
 	}
 	s.saslClient = d.ID()
 	s.mu.Unlock()
-	return s.uplink.WriteMessage(msg)
+	return s.WriteMessage(msg)
 }

@@ -248,10 +248,32 @@ type liveSession struct {
 	out  chan outMsg
 	kill func(error)
 
-	mu     sync.Mutex
-	active map[NetworkID]bool
+	mu      sync.Mutex
+	active  map[NetworkID]bool
+	stopped bool // set under mu before s.wg.Wait() in teardown — see beginWork
 
 	wg sync.WaitGroup
+}
+
+// beginWork registers one more goroutine with s.wg, unless teardown has
+// already begun — the two are made mutually exclusive via s.mu so there is
+// a real happens-before edge between "no more Add calls will succeed" and
+// the s.wg.Wait() teardown does next, not just a best-effort ctx check.
+// sync.WaitGroup's own docs are explicit that an Add racing a Wait that has
+// already observed the counter reach zero is undefined — readLoop calling
+// s.wg.Add(1) for a request it finished reading just as the connection
+// started teardown is exactly that race, caught live by the race detector
+// once this package started being exercised harder (many rapid
+// attach/detach cycles) than its own tests previously did. Returns false
+// if the caller should stop dispatching further requests.
+func (s *liveSession) beginWork() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return false
+	}
+	s.wg.Add(1)
+	return true
 }
 
 // serveLive waits for LiveReady, then streams every network in networks —
@@ -304,6 +326,22 @@ func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[Ne
 
 	defer func() {
 		connCancel()
+		// readLoop blocks in readFrame(s.conn) — a plain net.Conn read,
+		// not gated by connCtx at all — so canceling connCtx alone never
+		// unblocks it. Without closing conn here, readLoop can stay alive
+		// after this function has otherwise decided to tear down,
+		// including successfully reading one more request and calling
+		// s.wg.Add(1) for it (Dial/Close/QuitClose still dispatch via
+		// goroutines — see readLoop's own cases) at the same time the
+		// s.wg.Wait() below runs: a real, race-detector-caught instance
+		// of the exact "Add racing a Wait that's already observed zero"
+		// hazard flagged (for a different reason) in the comment above
+		// serveLive's DialRequest handling. handleConn's own deferred
+		// conn.Close() (the connection's other close path) fires too
+		// late to prevent this — only after this whole function, and its
+		// own deferred cleanup, has already returned. A second Close()
+		// call from handleConn afterward is a harmless no-op/error.
+		_ = conn.Close()
 		// Bounded best-effort wait for every fan-in/request-handler
 		// goroutine this session spawned to actually exit, now that
 		// they've all been told to via connCancel. Not required for
@@ -311,6 +349,13 @@ func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[Ne
 		// anyone waits here) but it turns "eventually stops leaking" into
 		// something a caller — or a test — can observe deterministically
 		// instead of polling runtime.NumGoroutine() and hoping.
+		// The happens-before edge beginWork/startFanIn depend on: no
+		// wg.Add(1) started after this point can succeed, since both
+		// check s.stopped inside the same s.mu critical section they
+		// call wg.Add in.
+		s.mu.Lock()
+		s.stopped = true
+		s.mu.Unlock()
 		done := make(chan struct{})
 		go func() {
 			s.wg.Wait()
@@ -387,34 +432,64 @@ func (s *liveSession) readLoop() {
 		if err != nil {
 			return
 		}
+		if s.ctx.Err() != nil {
+			// Cheap early exit once teardown has started (see serveLive's
+			// deferred cleanup, which closes s.conn to unblock the
+			// readFrame above) — beginWork/startFanIn's own s.stopped
+			// check below is what actually makes this race-free; this is
+			// just skipping needless decode work on a request nothing
+			// will use the result of anyway.
+			return
+		}
 		switch t {
 		case msgDialRequest:
 			req, err := decodeFrame[DialRequestMsg](t, msgDialRequest, body)
 			if err != nil {
 				return
 			}
-			s.wg.Add(1)
+			if !s.beginWork() {
+				return
+			}
 			go s.handleDial(req)
 		case msgCloseRequest:
 			req, err := decodeFrame[CloseRequestMsg](t, msgCloseRequest, body)
 			if err != nil {
 				return
 			}
-			s.wg.Add(1)
+			if !s.beginWork() {
+				return
+			}
 			go s.handleClose(req)
 		case msgWriteRequest:
 			req, err := decodeFrame[WriteRequestMsg](t, msgWriteRequest, body)
 			if err != nil {
 				return
 			}
-			s.wg.Add(1)
-			go s.handleWrite(req)
+			// Deliberately synchronous, unlike Dial/Close/QuitClose above:
+			// a caller that fires a rapid burst of writes to the same
+			// network (e.g. registration.Start's CAP LS/PASS/NICK/USER)
+			// needs them to reach the wire in the order they were sent.
+			// Dispatching each to its own goroutine -- which is exactly
+			// what this case used to do -- gave every write a race with
+			// every other write to the same network, with no ordering
+			// guarantee between them; found live, by hand, once a test
+			// harness switched from a net.Pipe (whose synchronous
+			// Read/Write happened to mask the race almost every time) to
+			// a real TCP loopback connection, which exposed it reliably.
+			// Keeper.WriteLine is a fast, buffered call under normal
+			// conditions, so serializing it here costs little: it only
+			// delays reading this connection's *next* request (for any
+			// network) behind one write actually reaching the wire, never
+			// blocks on a slow remote the way Dial legitimately can.
+			s.handleWrite(req)
 		case msgQuitCloseRequest:
 			req, err := decodeFrame[QuitCloseRequestMsg](t, msgQuitCloseRequest, body)
 			if err != nil {
 				return
 			}
-			s.wg.Add(1)
+			if !s.beginWork() {
+				return
+			}
 			go s.handleQuitClose(req)
 		default:
 			s.trySend(outMsg{msgError, ErrorMsg{Reason: fmt.Sprintf("unexpected message type %d on a live connection", t)}})
@@ -457,8 +532,11 @@ func (s *liveSession) handleClose(req CloseRequestMsg) {
 // verbatim via Keeper.WriteLine — this is the only path a brain-side
 // driver (e.g. internal/brain wiring registration.Action{Kind: ActionSend}
 // to the wire) has for actually sending anything.
+// handleWrite is called synchronously from readLoop (see its
+// msgWriteRequest case) — no s.wg tracking needed here, unlike
+// handleDial/handleClose/handleQuitClose, which still run on their own
+// goroutine.
 func (s *liveSession) handleWrite(req WriteRequestMsg) {
-	defer s.wg.Done()
 	k := s.l.mgr.Network(req.Network)
 	if k == nil {
 		// Same category as errNotConnected below: nothing to write to
@@ -500,14 +578,20 @@ func (s *liveSession) handleQuitClose(req QuitCloseRequestMsg) {
 // fan-in goroutine racing the first.
 func (s *liveSession) startFanIn(id NetworkID, k *Keeper, from uint64) {
 	s.mu.Lock()
-	if s.active[id] {
+	// stopped is checked in the same critical section as the wg.Add below
+	// for the same reason beginWork does — see its doc comment. A Dial
+	// that completes (via handleDial, itself dispatched through
+	// beginWork) after teardown has already begun must not register a
+	// new fan-in goroutine with s.wg once s.wg.Wait() may already be
+	// running.
+	if s.active[id] || s.stopped {
 		s.mu.Unlock()
 		return
 	}
 	s.active[id] = true
+	s.wg.Add(1)
 	s.mu.Unlock()
 
-	s.wg.Add(1)
 	go s.fanInNetwork(id, k, from)
 }
 

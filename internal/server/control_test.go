@@ -28,6 +28,7 @@ func TestControlStartStopNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	attachTestKeeper(t, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -83,6 +84,7 @@ func TestControlReloadNetworkConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	attachTestKeeper(t, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -136,6 +138,7 @@ func TestControlReconnectNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	attachTestKeeper(t, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -192,6 +195,7 @@ func TestControlStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	attachTestKeeper(t, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

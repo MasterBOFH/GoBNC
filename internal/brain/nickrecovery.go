@@ -81,6 +81,14 @@ func (d *Driver) startNickRecoveryIfNeeded(id keeper.NetworkID) {
 	go d.nickRecoveryLoop(id, stop)
 }
 
+// StopNickRecovery cancels id's recovery loop on demand — the exported
+// entry point for a client-driven NICK command (see
+// internal/session.Session's downstream dispatch): a client changing nick
+// manually should suppress automatic reclaim the same way
+// internal/uplink.Uplink.StopNickRecovery did, so the two don't fight over
+// what nick to hold.
+func (d *Driver) StopNickRecovery(id keeper.NetworkID) { d.stopNickRecovery(id) }
+
 // stopNickRecovery cancels id's recovery loop, if one is running —
 // synchronous (the stop channel close happens before returning, same
 // contract internal/uplink.StopNickRecovery had), called on a fresh

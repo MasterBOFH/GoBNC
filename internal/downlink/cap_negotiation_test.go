@@ -30,7 +30,7 @@ func TestClientCAPLS302EnablesCapNotifyImplicitly(t *testing.T) {
 		r:        bufio.NewReader(client),
 		caps:     map[string]bool{},
 		capsSeen: map[string]bool{},
-		sess:     session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil),
+		sess:     session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil),
 	}
 
 	_ = readCAPReply(t, server, func() {
@@ -53,7 +53,7 @@ func TestClientCAPLSWithoutVersionDoesNotEnableCapNotify(t *testing.T) {
 		r:        bufio.NewReader(client),
 		caps:     map[string]bool{},
 		capsSeen: map[string]bool{},
-		sess:     session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil),
+		sess:     session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil),
 	}
 
 	_ = readCAPReply(t, server, func() {
@@ -148,7 +148,7 @@ func TestCAPLSCollatedWhenUplinkAlreadyRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			netw, _ := db.NetworkByName(ctx, "libera")
-			sess := session.New(netw, db, nil, nil)
+			sess := session.New(netw, db, nil, nil, nil)
 			sess.SetRegisteredForTest(true)
 			sess.SetUpCapsForTest(map[string]bool{"away-notify": true, "chghost": true})
 

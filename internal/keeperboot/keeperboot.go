@@ -5,10 +5,9 @@
 // running, and if not, start one" for a caller that just wants an
 // attached *keeper.AttachClient back.
 //
-// This is new, standalone infrastructure. Nothing in cmd/gobnc's real
-// startup path calls it yet — internal/uplink hasn't been cut over to the
-// keeper, so there is nothing yet for the real bouncer to attach to a
-// keeper for. cmd/brain-register-demo is its first real caller.
+// internal/server.Server.bootstrapKeeper is the real bouncer's caller,
+// invoked once from Run before any network starts; cmd/brain-register-demo
+// remains a standalone demo of the same call.
 package keeperboot
 
 import (

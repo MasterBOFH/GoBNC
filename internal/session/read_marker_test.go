@@ -10,7 +10,7 @@ import (
 )
 
 func TestMARKREADGetSetBroadcast(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	a := &fakeDL{id: "a", caps: map[string]bool{"draft/read-marker": true}}
 	b := &fakeDL{id: "b", caps: map[string]bool{"draft/read-marker": true}}
@@ -59,7 +59,7 @@ func TestMARKREADGetSetBroadcast(t *testing.T) {
 }
 
 func TestMARKREADFailCodes(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{"draft/read-marker": true}}
 	s.registered = true
 	_ = s.Attach(d)
@@ -82,7 +82,7 @@ func TestMARKREADFailCodes(t *testing.T) {
 }
 
 func TestAttachMARKREADBefore366(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"me": {}}}
 	if _, _, err := s.setReadMarkerIfNewer("#c", "2019-01-04T14:33:26.123Z"); err != nil {
@@ -129,7 +129,7 @@ func TestAttachMARKREADBefore366(t *testing.T) {
 }
 
 func TestAttachMARKREADStarWhenUnset(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{}}
 	d := &fakeDL{id: "c1", caps: map[string]bool{"draft/read-marker": true}}
@@ -149,12 +149,12 @@ func TestAttachMARKREADStarWhenUnset(t *testing.T) {
 }
 
 func TestLiveSelfJOINInjectsMARKREAD(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{"draft/read-marker": true, "message-tags": true, "server-time": true}}
 	_ = s.Attach(d)
 	d.clearSent()
-	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#live"}})
+	s.HandleMessage(irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#live"}})
 	var joinIdx, markIdx = -1, -1
 	for i, m := range d.sent {
 		if m.Command == "JOIN" {
@@ -177,7 +177,7 @@ func TestMARKREADPersisted(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
-	s := New(netw, db, nil, nil)
+	s := New(netw, db, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{"draft/read-marker": true}}
 	_ = s.Attach(d)

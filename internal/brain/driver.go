@@ -95,6 +95,9 @@ type Driver struct {
 
 	registrationTimeout  time.Duration
 	nickRecoveryInterval time.Duration
+	minBackoff           time.Duration
+	maxBackoff           time.Duration
+	maxFloodQueue        int
 
 	mu           sync.Mutex
 	states       map[keeper.NetworkID]registration.State // presence = tracked
@@ -115,6 +118,18 @@ type Driver struct {
 	nickRecStops map[keeper.NetworkID]chan struct{}
 	isonPending  map[keeper.NetworkID]bool
 
+	// reconnMu guards auto-reconnect bookkeeping, separately from mu for the
+	// same reason nickRecMu is separate — see reconnect.go.
+	reconnMu        sync.Mutex
+	backoff         map[keeper.NetworkID]time.Duration
+	reconnectTimers map[keeper.NetworkID]*time.Timer
+	stopped         map[keeper.NetworkID]bool
+
+	// floodMu guards flood-pacing state, separately from mu for the same
+	// reason nickRecMu is — see flood.go.
+	floodMu sync.Mutex
+	flood   map[keeper.NetworkID]*floodState
+
 	results          chan Result
 	lines            chan keeper.LineMsg
 	dialResults      chan keeper.DialResultMsg
@@ -134,6 +149,8 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		client:               client,
 		registrationTimeout:  DefaultRegistrationTimeout,
 		nickRecoveryInterval: DefaultNickRecoveryInterval,
+		minBackoff:           DefaultMinBackoff,
+		maxBackoff:           DefaultMaxBackoff,
 		states:               make(map[keeper.NetworkID]registration.State),
 		configs:              make(map[keeper.NetworkID]NetworkConfig),
 		channels:             make(map[keeper.NetworkID][]ChannelJoin),
@@ -144,6 +161,10 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		closeWaiters:         make(map[keeper.NetworkID]chan keeper.CloseResultMsg),
 		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
 		isonPending:          make(map[keeper.NetworkID]bool),
+		backoff:              make(map[keeper.NetworkID]time.Duration),
+		reconnectTimers:      make(map[keeper.NetworkID]*time.Timer),
+		stopped:              make(map[keeper.NetworkID]bool),
+		flood:                make(map[keeper.NetworkID]*floodState),
 		results:              make(chan Result, 16),
 		lines:                make(chan keeper.LineMsg, 64),
 		dialResults:          make(chan keeper.DialResultMsg, 16),
@@ -273,6 +294,27 @@ func (d *Driver) RegisterNetwork(id keeper.NetworkID, cfg NetworkConfig) {
 	d.mu.Unlock()
 }
 
+// UpdateNetworkConfig replaces id's stored NetworkConfig for future
+// registration attempts (the next Reconnect or auto-redial) without
+// resetting anything about the current live connection or its
+// registration.State — unlike RegisterNetwork, which is for starting a
+// genuinely fresh attempt. Mirrors internal/uplink.Uplink.SetNetwork's
+// config-only side (nick/pass/SASL settings for next time); the flood and
+// channel equivalents are SetFloodParams and SetChannels. Also applies
+// NickRecovery's on/off change immediately to any currently running
+// recovery loop, the one part of SetNetwork that did take effect on the
+// live connection without waiting for a reconnect.
+func (d *Driver) UpdateNetworkConfig(id keeper.NetworkID, cfg NetworkConfig) {
+	d.mu.Lock()
+	d.configs[id] = cfg
+	d.mu.Unlock()
+	if cfg.NickRecovery {
+		d.startNickRecoveryIfNeeded(id)
+	} else {
+		d.stopNickRecovery(id)
+	}
+}
+
 // resetStateLocked installs a fresh registration.State for id from cfg and
 // discards any deadline left over from a prior attempt — shared by
 // RegisterNetwork and Reconnect (a redial needs the same fresh-State
@@ -301,7 +343,20 @@ func (d *Driver) Dial(id keeper.NetworkID, cfg keeper.DialConfig, fromSeq uint64
 	d.mu.Lock()
 	d.dialConfigs[id] = cfg
 	d.mu.Unlock()
+	d.clearStopped(id)
 	return d.client.SendDial(id, cfg, fromSeq)
+}
+
+// UpdateDialConfig records cfg as id's DialConfig for the next
+// Reconnect/auto-redial, without dialing anything itself — for a caller
+// that has new connection settings (e.g. a rehashed TLS cert path) it
+// wants a network's *next* reconnect to pick up, but isn't ready to
+// redial right now. Dial itself already records cfg as a side effect of
+// actually dialing; this is the same bookkeeping in isolation.
+func (d *Driver) UpdateDialConfig(id keeper.NetworkID, cfg keeper.DialConfig) {
+	d.mu.Lock()
+	d.dialConfigs[id] = cfg
+	d.mu.Unlock()
 }
 
 // Reconnect closes and redials network id using whatever DialConfig was
@@ -364,6 +419,7 @@ func (d *Driver) Reconnect(id keeper.NetworkID) error {
 	waiter := make(chan keeper.CloseResultMsg, 1)
 	d.closeWaiters[id] = waiter
 	d.mu.Unlock()
+	d.clearStopped(id)
 
 	if err := d.client.SendClose(id); err != nil {
 		d.mu.Lock()
@@ -458,6 +514,7 @@ func (d *Driver) armDeadline(id keeper.NetworkID) {
 	}
 	d.deadlines[id] = time.AfterFunc(d.registrationTimeout, func() {
 		d.failRegistration(id, fmt.Errorf("registration deadline exceeded (%s)", d.registrationTimeout))
+		d.armReconnect(id) // still connected at the wire level; failRegistration's Close needs a redial armed to actually retry
 	})
 }
 
@@ -475,11 +532,26 @@ func (d *Driver) disarmDeadline(id keeper.NetworkID) {
 }
 
 // failRegistration moves a still-registering network to PhaseFailed and
-// publishes the Result — the shared tail end of both the registration
-// deadline and a mid-registration disconnect. Guarded on Phase so it's
-// safe to call from either path (or both, racing) without double-firing a
+// publishes the Result — the shared tail end of the registration deadline,
+// a mid-registration disconnect, and a nick-ladder/SASL-required/ERROR
+// ActionFailed from handleLine. Guarded on Phase so it's safe to call from
+// any of those paths (or more than one, racing) without double-firing a
 // Result over a State that's already terminal: whichever gets d.mu first
 // wins, and the other becomes a no-op.
+//
+// Also deliberately closes id's connection, unconditionally: two of
+// failRegistration's three callers (the deadline timer, and handleLine's
+// ActionFailed branch for a nick ladder exhausted or SASL required but
+// failed) reach this while the connection is still fully alive at the wire
+// level — nothing else would ever tear it down, and a network stuck
+// unregistered forever on a live socket is exactly the kind of silent stall
+// this whole reconnect mechanism exists to avoid. Safe to call unconditionally
+// even when the connection is already gone (the mid-registration-disconnect
+// caller): Keeper.Close is a no-op when there's nothing to close. Callers
+// are responsible for calling armReconnect themselves afterward — this
+// function only closes, it doesn't schedule the redial, since one caller
+// (handleNetworkEvent) already has its own single armReconnect call
+// covering both the registering and already-registered disconnect cases.
 func (d *Driver) failRegistration(id keeper.NetworkID, err error) {
 	d.mu.Lock()
 	s, tracked := d.states[id]
@@ -496,6 +568,7 @@ func (d *Driver) failRegistration(id keeper.NetworkID, err error) {
 	}
 	d.mu.Unlock()
 	trySendResult(d.results, Result{Network: id, State: s})
+	_ = d.client.SendClose(id)
 }
 
 // State returns the current registration.State for id and whether it's
@@ -547,12 +620,18 @@ func (d *Driver) Run(ctx context.Context) error {
 		case ev.DialResult != nil:
 			if ev.DialResult.OK {
 				d.recordEpoch(ev.DialResult.Network, ev.DialResult.Epoch)
+				d.resetBackoff(ev.DialResult.Network)
+			} else {
+				d.armReconnect(ev.DialResult.Network)
 			}
 			trySendDialResult(d.dialResults, *ev.DialResult)
 		case ev.CloseResult != nil:
 			d.notifyCloseWaiter(*ev.CloseResult)
 			trySendCloseResult(d.closeResults, *ev.CloseResult)
 		case ev.WriteResult != nil:
+			if ev.WriteResult.Refused {
+				d.clearFloodQueue(ev.WriteResult.Network)
+			}
 			trySendWriteResult(d.writeResults, *ev.WriteResult)
 		case ev.QuitCloseResult != nil:
 			trySendQuitCloseResult(d.quitCloseResults, *ev.QuitCloseResult)
@@ -610,6 +689,14 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 		case registration.ActionFailed:
 			d.disarmDeadline(line.Network)
 			trySendResult(d.results, Result{Network: line.Network, State: newState})
+			// Still connected at the wire level (nick ladder exhausted,
+			// SASL required but failed, or a server ERROR that hasn't
+			// necessarily torn down the socket yet) — close and arm a
+			// redial, same treatment failRegistration's other callers
+			// give a still-live connection. See failRegistration's doc
+			// comment for why this doesn't happen on its own otherwise.
+			_ = d.client.SendClose(line.Network)
+			d.armReconnect(line.Network)
 		}
 	}
 }
@@ -647,6 +734,7 @@ func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
 		msg += ": " + ev.Error
 	}
 	d.failRegistration(ev.Network, fmt.Errorf("%s", msg))
+	d.armReconnect(ev.Network)
 }
 
 // recordEpoch remembers id's current epoch, taking the higher of what's

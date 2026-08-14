@@ -165,18 +165,12 @@ func (s *Session) networkIdent() string {
 	return "gobnc"
 }
 
-// liveNickLocked returns the nick to advertise to clients. Prefers the uplink's
-// live nick when registered so attach 001 matches reality after nick collisions.
+// liveNickLocked returns the nick to advertise to clients — s.self.Nick is
+// already the live nick (kept current by HandleRegistered/applyState/
+// HandleRegistrationLine directly, unlike the old design where it lagged
+// behind uplink.Uplink's own nick field until the next explicit sync).
 // Caller must hold s.mu.
 func (s *Session) liveNickLocked() string {
-	if s.uplink != nil {
-		if un := s.uplink.Nick(); un != "" {
-			if s.self == nil || s.self.Nick != un {
-				s.ensureSelfLocked(un)
-			}
-			return un
-		}
-	}
 	if s.self != nil && s.self.Nick != "" {
 		return s.self.Nick
 	}

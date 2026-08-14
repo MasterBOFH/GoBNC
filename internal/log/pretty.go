@@ -78,7 +78,7 @@ func redactIRCFallback(line string) string {
 type prettyHandler struct {
 	w      io.Writer
 	level  slog.Level
-	mu     sync.Mutex
+	mu     *sync.Mutex // shared across WithAttrs/WithGroup copies — see their doc comments
 	color  bool
 	attrs  []slog.Attr
 	groups []string
@@ -89,7 +89,7 @@ func newPrettyHandler(w io.Writer, level slog.Level) *prettyHandler {
 	if f, ok := w.(*os.File); ok {
 		color = isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 	}
-	return &prettyHandler{w: w, level: level, color: color}
+	return &prettyHandler{w: w, level: level, color: color, mu: &sync.Mutex{}}
 }
 
 func (h *prettyHandler) Enabled(_ context.Context, level slog.Level) bool {
@@ -151,12 +151,17 @@ func (h *prettyHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
+// WithAttrs shallow-copies h — including h.mu, a pointer, so the copy still
+// serializes its writes against h's own and every other derived handler's,
+// since they all still write to the same underlying w.
 func (h *prettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	nh := *h
 	nh.attrs = append(append([]slog.Attr(nil), h.attrs...), attrs...)
 	return &nh
 }
 
+// WithGroup: see WithAttrs's doc comment on why sharing h.mu (a pointer)
+// across the copy is deliberate.
 func (h *prettyHandler) WithGroup(name string) slog.Handler {
 	nh := *h
 	nh.groups = append(append([]string(nil), h.groups...), name)
