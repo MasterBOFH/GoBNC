@@ -148,7 +148,7 @@ func (d *Driver) nickRecoveryTick(id keeper.NetworkID) {
 	d.isonPending[id] = true
 	d.nickRecMu.Unlock()
 
-	_ = d.client.SendWrite(id, "ISON "+strings.Join(targets, " "))
+	_ = d.sendLine(id, "ISON "+strings.Join(targets, " "))
 }
 
 // isonTargets is isonTargets from internal/uplink/nick.go, ported
@@ -203,7 +203,7 @@ func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) {
 		want = cfg.AltNick
 	}
 	if want != "" {
-		_ = d.client.SendWrite(id, "NICK "+want)
+		_ = d.sendLine(id, "NICK "+want)
 	}
 }
 

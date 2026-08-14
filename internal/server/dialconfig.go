@@ -68,6 +68,7 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 		Pass:     n.Pass,
 		Username: n.Username,
 		Realname: n.Realname,
+		Name:     n.Name,
 	}
 }
 
