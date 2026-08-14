@@ -2,15 +2,18 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // Downlink is the session's view of a connected client.
@@ -49,19 +52,28 @@ type Session struct {
 	log     *slog.Logger
 	store   *store.Store
 	hist    *history.Store
-	uplink  *uplink.Uplink
+	driver  *brain.Driver
+	netID   keeper.NetworkID
 	tracker *RequestTracker
 
-	mu        sync.RWMutex
-	self      *User
-	users     map[string]*User         // folded nick → user
-	channels  map[string]*ChannelState // folded name
+	mu       sync.RWMutex
+	self     *User
+	users    map[string]*User         // folded nick → user
+	channels map[string]*ChannelState // folded name
 	// pendingJoinKeys remembers keys from client JOIN until the uplink self-JOIN
 	// confirms the channel (so refused joins are not persisted for auto-rejoin).
 	pendingJoinKeys map[string]string // folded name → key (may be "")
 	downlinks       map[ClientID]Downlink
-	isupport  *irc.ISUPPORT
-	upCaps    map[string]bool
+	isupport        *irc.ISUPPORT
+	upCaps          map[string]bool
+	// upSASLAvailable / upSASLMechs track whether the uplink currently
+	// offers sasl at all (CAP LS/NEW/DEL, post-registration too) — the
+	// Session-owned equivalent of internal/uplink.Uplink's own
+	// saslAvailable/saslMechs fields, needed because registration.State's
+	// Offered map is frozen at registration completion (see HandleLine's
+	// CAP interpretation for why this has to live here now instead).
+	upSASLAvailable bool
+	upSASLMechs     []string
 	// saslOffer is the CAP token advertised for passthrough SASL ("" if none).
 	saslOffer      string
 	saslWaiters    []ClientID
@@ -74,6 +86,17 @@ type Session struct {
 	uplinkServer   string // source prefix from uplink 001 when known
 	ircd           string // detected IRCd family (irc.IRCd*)
 	registered     bool   // true after uplink OnRegistered until OnDisconnect
+	// gotWelcome tracks 001 pre-registration, mirroring
+	// registration.State.GotWelcome — completeRegistration is only ever
+	// triggered by 376/422 after 001 has actually been seen, matching
+	// registration.Step's own guard (see HandleRegistrationLine).
+	gotWelcome bool
+	// lastNickErrorLine / hasLastNickErrorLine stash the most recent
+	// 432/433/437 seen pre-registration, surfaced by HandleDisconnect only
+	// when it turns out to be the terminal one (see HandleRegistrationLine's
+	// "432", "433", "437" case).
+	lastNickErrorLine    irc.Message
+	hasLastNickErrorLine bool
 	// awaitingUplink marks downlinks that attached before uplink registration
 	// finished and should receive live/buffered registration traffic.
 	awaitingUplink map[ClientID]bool
@@ -118,8 +141,13 @@ type heldClientMsg struct {
 // AdminFunc runs a BNC management command and returns NOTICE text lines.
 type AdminFunc func(args []string) (lines []string, err error)
 
-// New creates a session (uplink attached later via SetUplink / Run).
-func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logger) *Session {
+// New creates a session bound to one network's slice of a shared
+// *brain.Driver — driver serves every network internal/server holds in this
+// process (see docs/keeper-design.md's one-Driver-per-process shape), so
+// unlike the old *uplink.Uplink (one instance per network, constructed and
+// owned by the Session itself), driver is handed in already live and
+// running; Session only ever addresses it by netID.
+func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logger, driver *brain.Driver) *Session {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -136,6 +164,8 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 		log:             log,
 		store:           st,
 		hist:            hist,
+		driver:          driver,
+		netID:           keeper.NetworkID(net.ID),
 		tracker:         NewRequestTracker(),
 		self:            self,
 		users:           users,
@@ -148,20 +178,29 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 	}
 }
 
-// SetUplink associates the uplink.
-func (s *Session) SetUplink(u *uplink.Uplink) { s.uplink = u }
-
 // SetAdmin registers the handler for the IRC BNC command.
 func (s *Session) SetAdmin(fn AdminFunc) { s.admin = fn }
 
-// Uplink returns the associated uplink (may be nil).
-func (s *Session) Uplink() *uplink.Uplink { return s.uplink }
+// NetworkID returns the keeper.NetworkID this session's uplink is addressed
+// by on the shared Driver.
+func (s *Session) NetworkID() keeper.NetworkID { return s.netID }
 
-// GracefulQuit asks the uplink to flush paced sends and QUIT (bounded by ctx).
+// GracefulQuit asks the driver to flush paced sends and QUIT (bounded by ctx).
 func (s *Session) GracefulQuit(ctx context.Context, reason string) {
-	if s.uplink != nil {
-		s.uplink.GracefulQuit(ctx, reason)
+	if s.driver == nil {
+		return
 	}
+	if reason == "" {
+		reason = version.QuitMessage()
+	}
+	s.driver.WaitFloodDrained(ctx, s.netID)
+	var timeout time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := time.Until(deadline); d > 0 {
+			timeout = d
+		}
+	}
+	_ = s.driver.QuitNetwork(s.netID, reason, timeout)
 }
 
 // SetRegisteredForTest marks the session as uplink-registered (tests only).
@@ -178,15 +217,24 @@ func (s *Session) SetUpCapsForTest(m map[string]bool) {
 	s.mu.Unlock()
 }
 
-// ApplyNetworkConfig stores network settings for the next uplink (re)connect.
-// Does not drop the current uplink connection.
-func (s *Session) ApplyNetworkConfig(n store.Network) {
+// ApplyNetworkConfig stores network settings for the next uplink (re)connect
+// and updates the driver's registration config for the next attempt (cfg is
+// the resolved brain.NetworkConfig — SASL's HasClientCert in particular
+// needs disk/TLS-config resolution Session has no access to, so the caller
+// (internal/server, which already resolves this once at network start)
+// builds it). Does not drop the current connection or redrive registration
+// on it — the new settings take effect on the next Reconnect/redial, same
+// as internal/uplink.Uplink.SetNetwork's config-only side; flood pacing
+// applies immediately.
+func (s *Session) ApplyNetworkConfig(n store.Network, cfg brain.NetworkConfig) {
 	s.mu.Lock()
 	s.Network = n
 	s.mu.Unlock()
-	if s.uplink != nil {
-		s.uplink.SetNetwork(n)
+	if s.driver == nil {
+		return
 	}
+	s.driver.SetFloodParams(s.netID, n.FloodBurst, n.FloodRate)
+	s.driver.UpdateNetworkConfig(s.netID, cfg)
 }
 
 // DownlinkCount returns the number of attached clients on this network.
@@ -231,6 +279,27 @@ func (s *Session) SelfPrefix() string {
 		return ""
 	}
 	return s.self.Prefix()
+}
+
+// HasUpCap reports whether the uplink currently has name negotiated —
+// Session's own copy, kept current by HandleRegistered and HandleLine's CAP
+// ACK/DEL interpretation, replacing internal/uplink.Uplink.HasCap now that
+// there's no Uplink instance to ask.
+func (s *Session) HasUpCap(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.upCaps[name]
+}
+
+// WriteMessage sends msg to the uplink, flood-paced — replaces
+// internal/uplink.Uplink.WriteMessage, routed through the shared Driver
+// instead of a per-network raw connection. Uses Wire so a parsed client Raw
+// body is preserved; only the tag prefix changes.
+func (s *Session) WriteMessage(msg irc.Message) error {
+	if s.driver == nil {
+		return fmt.Errorf("uplink not ready")
+	}
+	return s.driver.WriteRaw(s.netID, msg.Wire())
 }
 
 // OfferedCaps returns capabilities currently available to downlinks.

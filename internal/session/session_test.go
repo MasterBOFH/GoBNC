@@ -14,7 +14,6 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/testutil"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 func TestRequestTrackerISON(t *testing.T) {
@@ -198,17 +197,18 @@ func TestRequestTrackerRouteRepliesParity(t *testing.T) {
 }
 
 func TestClientNICKBlockedUntilRegistered(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = false
-	s.uplink = nil
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.HandleClientMessage(d, irc.Message{Command: "NICK", Params: []string{"other"}}); err == nil {
 		t.Fatal("expected uplink error")
 	}
 
-	u := uplink.New(uplink.Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
-	s.SetUplink(u)
-	if u.Registered() {
+	// Port 1 is a real address nothing listens on, so the dial fails fast
+	// without needing a fake server at all (see newTestUplink's doc comment
+	// for why a keeper.DialConfig.Dial override can't be used here).
+	newTestUplink(t, s, store.Network{Name: "n", Nick: "me"}, "127.0.0.1", 1)
+	if s.Registered() {
 		t.Fatal("precondition: uplink not registered")
 	}
 	if err := s.HandleClientMessage(d, irc.Message{Command: "NICK", Params: []string{"other"}}); err != nil {
@@ -305,7 +305,7 @@ func TestRequestTrackerHELPAndADMINAndMAP(t *testing.T) {
 }
 
 func TestDetectIRCdOnWelcome(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.mu.Lock()
 	s.rpl002 = []string{"Your host is x running version u2.10.12.19"}
 	s.detectIRCdLocked()
@@ -555,7 +555,7 @@ func TestIsMODEEnquiry(t *testing.T) {
 }
 
 func TestMODEPlusBBanlistRoutedToRequester(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	_ = s.isupport.Modes.ParseCHANMODES("b,k,l,imnpst")
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
@@ -570,7 +570,7 @@ func TestMODEPlusBBanlistRoutedToRequester(t *testing.T) {
 	}
 	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "MODE", EnquiryTarget: "#undernet"})
 
-	s.OnMessage(nil, irc.Message{Command: "368", Params: []string{"me", "#undernet", "End of Channel Ban List"}})
+	s.HandleMessage(irc.Message{Command: "368", Params: []string{"me", "#undernet", "End of Channel Ban List"}})
 	if countCmds(a.snapshot(), "368") != 1 {
 		t.Fatalf("requester missing 368: %+v", a.snapshot())
 	}
@@ -613,7 +613,7 @@ func TestIsSILENCEEnquiry(t *testing.T) {
 }
 
 func TestSILENCEEnquiryRoutedToRequester(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
@@ -624,8 +624,8 @@ func TestSILENCEEnquiryRoutedToRequester(t *testing.T) {
 
 	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "SILENCE"})
 
-	s.OnMessage(nil, irc.Message{Command: "271", Params: []string{"me", "me", "*!*@spam.example"}})
-	s.OnMessage(nil, irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
+	s.HandleMessage(irc.Message{Command: "271", Params: []string{"me", "me", "*!*@spam.example"}})
+	s.HandleMessage(irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
 
 	if countCmds(a.snapshot(), "271") != 1 || countCmds(a.snapshot(), "272") != 1 {
 		t.Fatalf("requester a got %+v", a.snapshot())
@@ -636,7 +636,7 @@ func TestSILENCEEnquiryRoutedToRequester(t *testing.T) {
 }
 
 func TestSILENCEEmptyListEndRoutedToRequester(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
@@ -647,7 +647,7 @@ func TestSILENCEEmptyListEndRoutedToRequester(t *testing.T) {
 
 	// Empty silence list still ends with 272 only (no 271 rows).
 	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "SILENCE"})
-	s.OnMessage(nil, irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
+	s.HandleMessage(irc.Message{Command: "272", Params: []string{"me", "me", "End of Silence List"}})
 
 	if countCmds(a.snapshot(), "272") != 1 {
 		t.Fatalf("requester missing 272: %+v", a.snapshot())
@@ -658,7 +658,7 @@ func TestSILENCEEmptyListEndRoutedToRequester(t *testing.T) {
 }
 
 func TestMODEEnquiryRoutedToRequester(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
@@ -670,8 +670,8 @@ func TestMODEEnquiryRoutedToRequester(t *testing.T) {
 	// As HandleClientMessage does for MODE #c enquiry.
 	s.tracker.Begin(BeginOpts{Client: a.ID(), Cmd: "MODE", EnquiryTarget: "#c"})
 
-	s.OnMessage(nil, irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}})
-	s.OnMessage(nil, irc.Message{Command: "329", Params: []string{"me", "#c", "99"}})
+	s.HandleMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}})
+	s.HandleMessage(irc.Message{Command: "329", Params: []string{"me", "#c", "99"}})
 
 	if countCmds(a.snapshot(), "324") != 1 || countCmds(a.snapshot(), "329") != 1 {
 		t.Fatalf("requester a got %+v", a.snapshot())
@@ -682,7 +682,7 @@ func TestMODEEnquiryRoutedToRequester(t *testing.T) {
 
 	a.clearSent()
 	b.clearSent()
-	s.OnMessage(nil, irc.Message{Source: "op!u@h", Command: "MODE", Params: []string{"#c", "+v", "x"}})
+	s.HandleMessage(irc.Message{Source: "op!u@h", Command: "MODE", Params: []string{"#c", "+v", "x"}})
 	if countCmds(a.snapshot(), "MODE") != 1 || countCmds(b.snapshot(), "MODE") != 1 {
 		t.Fatalf("MODE change fan-out a=%v b=%v", a.snapshot(), b.snapshot())
 	}
@@ -926,7 +926,7 @@ func TestInjectWHOXToken(t *testing.T) {
 }
 
 func TestCapRewrite(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d1 := &fakeDL{id: "a", caps: map[string]bool{"server-time": true, "message-tags": true}}
 	d2 := &fakeDL{id: "b", caps: map[string]bool{}}
 	msg := irc.Message{
@@ -968,7 +968,7 @@ func TestCapRewrite(t *testing.T) {
 }
 
 func TestCapNotifyFiltering(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	with := &fakeDL{id: "a", caps: map[string]bool{
 		"away-notify": true, "chghost": true, "invite-notify": true, "batch": true, "account-notify": true,
 	}}
@@ -1041,7 +1041,7 @@ func TestCapNotifyFiltering(t *testing.T) {
 }
 
 func TestEchoMessageFiltering(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	with := &fakeDL{id: "a", caps: map[string]bool{"echo-message": true}}
 	without := &fakeDL{id: "b", caps: map[string]bool{}}
 
@@ -1060,7 +1060,7 @@ func TestEchoMessageFiltering(t *testing.T) {
 }
 
 func TestEchoSelfLocallyRequiresEchoMessage(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	with := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true}}
 	without := &fakeDL{id: "c3", caps: map[string]bool{}}
 	_ = s.Attach(with)
@@ -1082,7 +1082,7 @@ func TestEchoSelfLocallyRequiresEchoMessage(t *testing.T) {
 }
 
 func TestEchoSelfLocallyPreservesOriginLabel(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	origin := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true, "labeled-response": true}}
 	other := &fakeDL{id: "c3", caps: map[string]bool{"echo-message": true, "labeled-response": true}}
 	_ = s.Attach(origin)
@@ -1111,7 +1111,7 @@ func TestEchoSelfLocallyPreservesOriginLabel(t *testing.T) {
 }
 
 func TestUplinkSelfEchoRestoresClientLabel(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "nakaka"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "nakaka"}, nil, nil, nil, nil)
 	origin := &fakeDL{id: "c2", caps: map[string]bool{"echo-message": true, "labeled-response": true, "message-tags": true, "server-time": true}}
 	other := &fakeDL{id: "c3", caps: map[string]bool{"echo-message": true, "message-tags": true}}
 	_ = s.Attach(origin)
@@ -1124,7 +1124,7 @@ func TestUplinkSelfEchoRestoresClientLabel(t *testing.T) {
 	other.clearSent()
 
 	upLabel := s.registerSelfEcho(origin.ID(), "104")
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Tags:    map[string]string{"label": upLabel},
 		Source:  "nakaka!naka@host",
 		Command: "PRIVMSG",
@@ -1149,7 +1149,7 @@ func TestUplinkSelfEchoRestoresClientLabel(t *testing.T) {
 }
 
 func TestExtendedJoinRewrite(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	with := &fakeDL{id: "a", caps: map[string]bool{"extended-join": true}}
 	without := &fakeDL{id: "b", caps: map[string]bool{}}
 	ext := irc.Message{
@@ -1175,7 +1175,7 @@ func TestExtendedJoinRewrite(t *testing.T) {
 }
 
 func TestCapNotifyNewDel(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{"cap-notify": true, "away-notify": true}}
 	s.mu.Lock()
 	s.downlinks[d.id] = d
@@ -1247,7 +1247,7 @@ func TestPersistJoinPart(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
-	s := New(netw, db, nil, nil)
+	s := New(netw, db, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	_ = s.Attach(d)
@@ -1265,7 +1265,7 @@ func TestPersistJoinPart(t *testing.T) {
 		t.Fatalf("still waiting for self-JOIN: %+v err=%v", chs, err)
 	}
 	for _, name := range []string{"#a", "#b", "#c"} {
-		s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{name}})
+		s.HandleMessage(irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{name}})
 	}
 	chs, err = db.ListChannels(ctx, id)
 	if err != nil || len(chs) != 3 {
@@ -1280,7 +1280,7 @@ func TestPersistJoinPart(t *testing.T) {
 	}
 
 	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#secret", "hunter2"}})
-	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
+	s.HandleMessage(irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
 	chs, err = db.ListChannels(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -1295,7 +1295,7 @@ func TestPersistJoinPart(t *testing.T) {
 		t.Fatalf("missing #secret: %+v", chs)
 	}
 
-	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "PART", Params: []string{"#secret"}})
+	s.HandleMessage(irc.Message{Source: "me!u@h", Command: "PART", Params: []string{"#secret"}})
 	chs, err = db.ListChannels(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -1315,14 +1315,14 @@ func TestPersistSkipsRefusedJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
-	s := New(netw, db, nil, nil)
+	s := New(netw, db, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	_ = s.Attach(d)
 
 	_ = s.HandleClientMessage(d, irc.Message{Command: "JOIN", Params: []string{"#nope", "secret"}})
 	// Server refuses; never sends self-JOIN.
-	s.OnMessage(nil, irc.Message{Command: "403", Params: []string{"me", "#nope", "No such channel"}})
+	s.HandleMessage(irc.Message{Command: "403", Params: []string{"me", "#nope", "No such channel"}})
 	chs, err := db.ListChannels(ctx, id)
 	if err != nil || len(chs) != 0 {
 		t.Fatalf("refused join must not persist: %+v err=%v", chs, err)
@@ -1340,7 +1340,7 @@ func TestInviteAutoJoinsRememberedUnjoinedChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
-	s := New(netw, db, nil, nil)
+	s := New(netw, db, nil, nil, nil)
 	s.registered = true
 
 	// Remembered but not currently joined (e.g. invite-only failure on reconnect).
@@ -1350,13 +1350,13 @@ func TestInviteAutoJoinsRememberedUnjoinedChannel(t *testing.T) {
 	}
 
 	// Already joined: do not retry.
-	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
+	s.HandleMessage(irc.Message{Source: "me!u@h", Command: "JOIN", Params: []string{"#secret"}})
 	if got := s.inviteAutoJoinLine(invite); got != "" {
 		t.Fatalf("already joined: got %q", got)
 	}
 
 	// Intentional PART forgets the channel: invite must not rejoin.
-	s.OnMessage(nil, irc.Message{Source: "me!u@h", Command: "PART", Params: []string{"#secret"}})
+	s.HandleMessage(irc.Message{Source: "me!u@h", Command: "PART", Params: []string{"#secret"}})
 	chs, err := db.ListChannels(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -1379,7 +1379,7 @@ func TestInviteAutoJoinsRememberedUnjoinedChannel(t *testing.T) {
 }
 
 func TestSelfPrefix(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
 	if got := s.SelfPrefix(); got != "me!u" {
 		t.Fatalf("seeded=%q", got)
 	}
@@ -1407,7 +1407,7 @@ func TestSelfPrefix(t *testing.T) {
 }
 
 func TestAttachWelcomeBurst(t *testing.T) {
-	s := New(store.Network{Name: "ircu2", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "ircu2", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.uplinkServer = "ircu2.example"
 	s.isupport.Parse005([]string{"me", "CHANMODES=b,k,l,imnpst", "PREFIX=(ov)@+", "WHOX", "NETWORK=upstream", "are supported by this server"})
@@ -1469,7 +1469,7 @@ func TestAttachWelcomeBurst(t *testing.T) {
 }
 
 func TestLive221PreservesUplinkColonation(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.mu.Lock()
 	s.registered = true
 	s.mu.Unlock()
@@ -1482,7 +1482,7 @@ func TestLive221PreservesUplinkColonation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.OnMessage(nil, msg)
+	s.HandleMessage(msg)
 
 	if len(d.sent) != 1 || d.sent[0].Command != "221" {
 		t.Fatalf("sent=%+v", d.sent)
@@ -1497,8 +1497,8 @@ func TestLive221PreservesUplinkColonation(t *testing.T) {
 }
 
 func TestAttachWelcomeUsesUplinkServerFrom001(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
-	s.OnRegistrationLine(nil, irc.Message{
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.HandleRegistrationLine(irc.Message{
 		Source:  "undernet.org",
 		Command: "001",
 		Params:  []string{"me", "Welcome"},
@@ -1529,7 +1529,7 @@ func TestAttachISUPPORTChatHistoryMsgRefTypes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	hist := history.New(db)
-	s := New(store.Network{Name: "n", Nick: "me"}, db, hist, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, db, hist, nil, nil)
 	s.registered = true
 	s.isupport.Parse005([]string{"me", "NETWORK=x", "are supported by this server"})
 	d := &fakeDL{id: "c1", caps: map[string]bool{"chathistory": true}}
@@ -1551,7 +1551,7 @@ func TestAttachISUPPORTChatHistoryMsgRefTypes(t *testing.T) {
 }
 
 func TestHandleClientMessageRejectsCRLF(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	err := s.HandleClientMessage(d, irc.Message{
 		Command: "PRIVMSG",
@@ -1569,10 +1569,10 @@ func TestHandleClientMessageRejectsCRLF(t *testing.T) {
 }
 
 func TestHandleClientMessageUTF8Only(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.isupport.UTF8Only = true
-	s.uplink = nil // must not reach WriteMessage
+	// driver is nil (see New's last arg) — must not reach WriteMessage
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 
 	bad := irc.Message{Command: "PRIVMSG", Params: []string{"#c", "bad\xffutf8"}}
@@ -1602,10 +1602,9 @@ func TestHandleClientMessageUTF8Only(t *testing.T) {
 }
 
 func TestClientPONGNotForwarded(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
-	// If PONG were forwarded, a nil uplink would error on WriteMessage.
-	s.uplink = nil
+	// If PONG were forwarded, a nil driver (see New's last arg) would error on WriteMessage.
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.HandleClientMessage(d, irc.Message{Command: "PONG", Params: []string{"gobnc"}}); err != nil {
 		t.Fatal(err)
@@ -1613,20 +1612,20 @@ func TestClientPONGNotForwarded(t *testing.T) {
 }
 
 func TestOnMessageDropsUplinkPINGPONG(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "a", caps: map[string]bool{}}
 	_ = s.Attach(d)
 	d.sent = nil
-	s.OnMessage(nil, irc.Message{Command: "PING", Params: []string{"server"}})
-	s.OnMessage(nil, irc.Message{Command: "PONG", Params: []string{"gobnc"}})
+	s.HandleMessage(irc.Message{Command: "PING", Params: []string{"server"}})
+	s.HandleMessage(irc.Message{Command: "PONG", Params: []string{"gobnc"}})
 	if len(d.sent) != 0 {
 		t.Fatalf("uplink PING/PONG must not reach clients: %+v", d.sent)
 	}
 }
 
 func TestFanOutTwoClients(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d1 := &fakeDL{id: "a", caps: map[string]bool{"server-time": true, "message-tags": true}}
 	d2 := &fakeDL{id: "b", caps: map[string]bool{}}
@@ -1634,7 +1633,7 @@ func TestFanOutTwoClients(t *testing.T) {
 	_ = s.Attach(d2)
 	d1.sent = nil
 	d2.sent = nil
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Tags:    map[string]string{"time": "2024-01-01T00:00:00.000Z"},
 		Source:  "x!u@h",
 		Command: "PRIVMSG",
@@ -1692,7 +1691,7 @@ func TestFanOutNICKTimeAndMsgID(t *testing.T) {
 		t.Fatal(err)
 	}
 	hist := history.New(db)
-	s := New(store.Network{ID: netID, Name: "n", Nick: "me"}, db, hist, nil)
+	s := New(store.Network{ID: netID, Name: "n", Nick: "me"}, db, hist, nil, nil)
 	s.registered = true
 	s.mu.Lock()
 	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"bob": {}}}
@@ -1705,7 +1704,7 @@ func TestFanOutNICKTimeAndMsgID(t *testing.T) {
 	both.sent, timeOnly.sent = nil, nil
 
 	raw := ":bob!u@h NICK :robert"
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Source:  "bob!u@h",
 		Command: "NICK",
 		Params:  []string{"robert"},
@@ -1758,7 +1757,7 @@ func TestFanOutNICKTimeAndMsgID(t *testing.T) {
 }
 
 func TestFanOutMsgID(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	withTags := &fakeDL{id: "a", caps: map[string]bool{"message-tags": true, "server-time": true}}
 	noTags := &fakeDL{id: "b", caps: map[string]bool{"server-time": true}}
@@ -1768,7 +1767,7 @@ func TestFanOutMsgID(t *testing.T) {
 	_ = s.Attach(withTags2)
 	withTags.sent, noTags.sent, withTags2.sent = nil, nil, nil
 
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Source:  "x!u@h",
 		Command: "PRIVMSG",
 		Params:  []string{"#c", "hi"},
@@ -1786,7 +1785,7 @@ func TestFanOutMsgID(t *testing.T) {
 	}
 
 	withTags.sent, withTags2.sent = nil, nil
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Tags:    map[string]string{"msgid": "net-xyz", "time": "2024-01-01T00:00:00.000Z"},
 		Source:  "x!u@h",
 		Command: "NOTICE",
@@ -1798,7 +1797,7 @@ func TestFanOutMsgID(t *testing.T) {
 }
 
 func TestQUITPreservesTrailingColon(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "a", caps: map[string]bool{"message-tags": true, "server-time": true}}
 	_ = s.Attach(d)
@@ -1809,7 +1808,7 @@ func TestQUITPreservesTrailingColon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.OnMessage(nil, msg)
+	s.HandleMessage(msg)
 	if len(d.sent) != 1 {
 		t.Fatalf("sent=%+v", d.sent)
 	}
@@ -1823,7 +1822,7 @@ func TestQUITPreservesTrailingColon(t *testing.T) {
 }
 
 func TestHistoryTargetsQUITNICK(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.mu.Lock()
 	s.channels["#a"] = &ChannelState{Name: "#a", Members: map[string]struct{}{"bob": {}, "me": {}}}
 	s.channels["#b"] = &ChannelState{Name: "#b", Members: map[string]struct{}{"bob": {}}}
@@ -1870,7 +1869,7 @@ func TestMaybeStoreHistoryEvents(t *testing.T) {
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
 	hist := history.New(db)
-	s := New(netw, db, hist, nil)
+	s := New(netw, db, hist, nil, nil)
 	s.mu.Lock()
 	s.Network.ID = id
 	s.channels["#dev"] = &ChannelState{
@@ -1908,7 +1907,7 @@ func TestMaybeStoreHistoryEvents(t *testing.T) {
 }
 
 func TestPassthroughSASLOffer(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	// No credentials: offer when uplink advertises.
 	s.mu.Lock()
 	s.saslOffer = caps.FormatSASL([]string{"PLAIN", "EXTERNAL"})
@@ -1919,11 +1918,11 @@ func TestPassthroughSASLOffer(t *testing.T) {
 	}
 
 	// Bouncer credentials: never advertise.
-	s2 := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
+	s2 := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil, nil)
 	s2.mu.Lock()
 	s2.saslOffer = "sasl=PLAIN" // stale; refresh clears
 	s2.mu.Unlock()
-	prev, now := s2.refreshSASLOffer(nil)
+	prev, now := s2.refreshSASLOffer()
 	if now != "" || prev != "sasl=PLAIN" {
 		t.Fatalf("prev=%q now=%q", prev, now)
 	}
@@ -1933,7 +1932,7 @@ func TestPassthroughSASLOffer(t *testing.T) {
 }
 
 func TestPassthroughSASLRoute(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{"sasl": true}}
 	s.mu.Lock()
 	s.downlinks[d.id] = d
@@ -1960,7 +1959,7 @@ func TestPassthroughSASLRoute(t *testing.T) {
 }
 
 func TestRequestClientSASLAlreadyEnabled(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	s.mu.Lock()
 	s.saslOffer = "sasl=PLAIN"
@@ -2056,4 +2055,3 @@ func (f *fakeDL) clearSent() {
 	defer f.mu.Unlock()
 	f.sent = nil
 }
-

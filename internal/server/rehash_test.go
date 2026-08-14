@@ -304,6 +304,7 @@ func TestRehashReloadsNetworkConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	attachTestKeeper(t, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
 
@@ -79,39 +80,39 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		return nil
 	case "JOIN":
 		s.rememberJoinKeys(msg)
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "PART":
 		// Removal from DB happens when uplink echoes our PART (applyState).
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "PRIVMSG", "NOTICE", "TAGMSG":
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		if cmd == "TAGMSG" && !s.uplink.HasCap("message-tags") {
+		if cmd == "TAGMSG" && !s.HasUpCap("message-tags") {
 			return nil
 		}
 		clientLabel, _ := msg.Tag("label")
 		out := s.toUplink(msg)
 		// Uplink will echo: remap client label so we can restore it for the sender only.
-		if clientLabel != "" && s.uplink.HasCap("labeled-response") && s.uplink.HasCap("echo-message") {
+		if clientLabel != "" && s.HasUpCap("labeled-response") && s.HasUpCap("echo-message") {
 			upLabel := s.registerSelfEcho(d.ID(), clientLabel)
 			if out.Tags == nil {
 				out.Tags = map[string]string{}
 			}
 			out.Tags["label"] = upLabel
-			return s.uplink.WriteMessage(out)
+			return s.WriteMessage(out)
 		}
-		if err := s.uplink.WriteMessage(out); err != nil {
+		if err := s.WriteMessage(out); err != nil {
 			return err
 		}
 		// No server echo: fan out locally so every attached client sees the line.
-		if !s.uplink.HasCap("echo-message") {
+		if !s.HasUpCap("echo-message") {
 			s.echoSelfLocally(d, msg)
 		}
 		return nil
@@ -123,13 +124,13 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		if enquiry && s.skipDuplicateAfterHold(d, msg) {
 			return nil
 		}
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
 		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "TOPIC":
 		if s.holdUntilRegistered(d, msg) {
 			return nil
@@ -138,13 +139,13 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		if enquiry && s.skipDuplicateAfterHold(d, msg) {
 			return nil
 		}
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
 		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "SILENCE":
 		if s.holdUntilRegistered(d, msg) {
 			return nil
@@ -153,28 +154,28 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		if enquiry && s.skipDuplicateAfterHold(d, msg) {
 			return nil
 		}
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
 		if enquiry {
 			return s.forwardSolicitous(d, msg)
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "INVITE", "KICK":
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	case "NICK":
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
 		// Avoid racing the registration nick ladder / reclaim.
-		if !s.uplink.Registered() {
+		if !s.Registered() {
 			return nil
 		}
-		s.uplink.StopNickRecovery()
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		s.driver.StopNickRecovery(s.netID)
+		return s.WriteMessage(s.toUplink(msg))
 	default:
 		if IsSolicitous(cmd) {
 			if s.holdUntilRegistered(d, msg) {
@@ -185,10 +186,10 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 			}
 			return s.forwardSolicitous(d, msg)
 		}
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	}
 }
 
@@ -358,10 +359,10 @@ func (s *Session) forwardHeldMessage(d Downlink, msg irc.Message) error {
 		if IsSolicitous(cmd) {
 			return s.forwardSolicitous(d, msg)
 		}
-		if s.uplink == nil {
+		if s.driver == nil {
 			return fmt.Errorf("uplink not ready")
 		}
-		return s.uplink.WriteMessage(s.toUplink(msg))
+		return s.WriteMessage(s.toUplink(msg))
 	}
 }
 
@@ -369,7 +370,7 @@ func (s *Session) forwardHeldMessage(d Downlink, msg irc.Message) error {
 func (s *Session) toUplink(msg irc.Message) irc.Message {
 	out := msg
 	out.Tags = nil
-	if s.uplink == nil || !s.uplink.HasCap("message-tags") {
+	if s.driver == nil || !s.HasUpCap("message-tags") {
 		return out
 	}
 	out.Tags = msg.CopyTags()
@@ -384,8 +385,8 @@ func (s *Session) toUplink(msg irc.Message) irc.Message {
 }
 
 func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
-	preferLabel := s.uplink != nil && s.uplink.HasCap("labeled-response")
-	preferWHOX := s.uplink != nil && s.uplink.ISUPPORT() != nil && s.uplink.ISUPPORT().WHOX
+	preferLabel := s.driver != nil && s.HasUpCap("labeled-response")
+	preferWHOX := s.driver != nil && s.isupport != nil && s.isupport.WHOX
 	cmd := strings.ToUpper(msg.Command)
 	clientLabel, _ := msg.Tag("label")
 	// WHOX tokens only when the client already used WHOX syntax — never upgrade plain
@@ -440,7 +441,7 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 	if wait != nil {
 		<-wait // hold until prior exchange's end-numeric
 	}
-	return s.uplink.WriteMessage(out)
+	return s.WriteMessage(out)
 }
 
 // echoSelfLocally synthesizes a self PRIVMSG/NOTICE/TAGMSG when the uplink
@@ -465,9 +466,17 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	echo = ensureMessageID(echo)
 	s.maybeStoreHistory(echo)
 
+	// Snapshot then release before rewriteFor — see HandleMessage's own
+	// comment on this pattern for why holding s.mu across a call that
+	// nested-RLocks it again is a real deadlock hazard.
 	s.mu.RLock()
-	legacyHit := false
+	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
+		downlinks = append(downlinks, d)
+	}
+	s.mu.RUnlock()
+	legacyHit := false
+	for _, d := range downlinks {
 		out := s.rewriteFor(d, echo)
 		if out.Command == "" {
 			continue
@@ -483,7 +492,6 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 			legacyHit = true
 		}
 	}
-	s.mu.RUnlock()
 	s.advanceLegacyPlaybackIfDelivered(echo, legacyHit)
 }
 
@@ -536,9 +544,17 @@ func (s *Session) consumeSelfEcho(msg irc.Message) (pendingSelfEcho, irc.Message
 }
 
 func (s *Session) fanoutSelfEcho(msg irc.Message, pending pendingSelfEcho) {
+	// Snapshot then release before rewriteFor — see HandleMessage's own
+	// comment on this pattern for why holding s.mu across a call that
+	// nested-RLocks it again is a real deadlock hazard.
 	s.mu.RLock()
-	legacyHit := false
+	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
+		downlinks = append(downlinks, d)
+	}
+	s.mu.RUnlock()
+	legacyHit := false
+	for _, d := range downlinks {
 		out := s.rewriteFor(d, msg)
 		if out.Command == "" {
 			continue
@@ -554,7 +570,6 @@ func (s *Session) fanoutSelfEcho(msg irc.Message, pending pendingSelfEcho) {
 			legacyHit = true
 		}
 	}
-	s.mu.RUnlock()
 	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 }
 
@@ -697,7 +712,6 @@ func parseWHOXParam(p string) (flags, fields, token string) {
 	return flags, fields, token
 }
 
-
 // rememberJoinKeys records channel keys from a client JOIN until the uplink
 // echoes our self-JOIN (refused joins must not be persisted for auto-rejoin).
 func (s *Session) rememberJoinKeys(msg irc.Message) {
@@ -765,12 +779,16 @@ func (s *Session) persistRemoveChannel(name string) {
 }
 
 func (s *Session) syncUplinkChannels() {
-	if s.uplink == nil || s.store == nil || s.Network.ID == 0 {
+	if s.driver == nil || s.store == nil || s.Network.ID == 0 {
 		return
 	}
 	chs, err := s.store.ListChannels(context.Background(), s.Network.ID)
 	if err != nil {
 		return
 	}
-	s.uplink.SetChannels(chs)
+	joins := make([]brain.ChannelJoin, 0, len(chs))
+	for _, ch := range chs {
+		joins = append(joins, brain.ChannelJoin{Name: ch.Name, Key: ch.Key})
+	}
+	s.driver.SetChannels(s.netID, joins)
 }

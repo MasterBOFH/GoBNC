@@ -81,7 +81,7 @@ func TestAuthPasswordAndCert(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "libera")
-	sess := session.New(netw, db, nil, nil)
+	sess := session.New(netw, db, nil, nil, nil)
 	mgr := &memMgr{s: sess}
 
 	cfg := config.Default()
@@ -156,7 +156,7 @@ func TestAuthFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -226,7 +226,7 @@ func TestAuthFailedLoggedUnknownNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -271,7 +271,7 @@ func TestAuthFailedLoggedInvalidPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -316,7 +316,7 @@ func TestAuthFailedLoggedInvalidFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -371,7 +371,7 @@ func TestAuthFailedCertOnlyMissingCert(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -425,7 +425,7 @@ func TestAuthCertOnlySuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
 	serveCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -502,7 +502,7 @@ func TestPlainTCPRejected(t *testing.T) {
 	defer ln.Close()
 	db, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer db.Close()
-	l := NewListener(config.Default(), db, &memMgr{s: session.New(store.Network{Name: "n"}, db, nil, nil)}, fx.ServerTLS, nil)
+	l := NewListener(config.Default(), db, &memMgr{s: session.New(store.Network{Name: "n"}, db, nil, nil, nil)}, fx.ServerTLS, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = l.Serve(ctx, ln) }()
@@ -540,7 +540,7 @@ func TestReplaceListenerAcceptsOnNewAddr(t *testing.T) {
 	cfg := config.Default()
 	cfg.AllowPasswordAuth = true
 	cfg.AllowCertAuth = false
-	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil)
+	sess := session.New(store.Network{Name: "libera", Nick: "x"}, db, nil, nil, nil)
 	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
 
 	ln1, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
@@ -689,7 +689,7 @@ func dialAuthClient(t *testing.T, withClientCert bool) *tls.Conn {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "libera")
-	sess := session.New(netw, db, nil, nil)
+	sess := session.New(netw, db, nil, nil, nil)
 
 	cfg := config.Default()
 	cfg.AllowPasswordAuth = true
@@ -750,7 +750,7 @@ func TestMaxClientsRejectsExcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "libera")
-	sess := session.New(netw, db, nil, nil)
+	sess := session.New(netw, db, nil, nil, nil)
 	mgr := &memMgr{s: sess}
 
 	cfg := config.Default()
@@ -807,7 +807,7 @@ func TestDownlinkLineTooLongSends417(t *testing.T) {
 		t.Fatal(err)
 	}
 	netw, _ := db.NetworkByName(ctx, "libera")
-	sess := session.New(netw, db, nil, nil)
+	sess := session.New(netw, db, nil, nil, nil)
 	mgr := &memMgr{s: sess}
 
 	cfg := config.Default()

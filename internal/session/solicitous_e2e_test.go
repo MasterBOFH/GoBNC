@@ -12,41 +12,38 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 // TestSolicitousE2EConcurrentWHOXAndHold exercises two downlinks against a
 // scripted uplink: concurrent WHOX demux with lag, plus LIST hold-until-end.
 func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	ln, host, port := newFakeIRCListener(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	s := New(store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "me", Username: "u"}, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "me", Username: "u", Realname: "r"},
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "me", Username: "u", Realname: "r"}
+	s := New(netCfg, nil, nil, nil, nil)
 
 	uplinkWHO := make(chan string, 8)
 	uplinkLIST := make(chan string, 4)
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runSolicitousServer(server, time.Now().Add(12*time.Second), uplinkWHO, uplinkLIST)
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runSolicitousServer(conn, time.Now().Add(12*time.Second), uplinkWHO, uplinkLIST)
 	}()
-
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
 	waitUntil(t, 5*time.Second, func() bool {
-		return u.Registered() && u.ISUPPORT() != nil && u.ISUPPORT().WHOX
+		if !s.Registered() {
+			return false
+		}
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.isupport != nil && s.isupport.WHOX
 	})
 
 	d1 := &fakeDL{id: "c1", caps: map[string]bool{}}
@@ -95,10 +92,10 @@ func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 	}
 
 	time.Sleep(50 * time.Millisecond)
-	s.OnMessage(u, irc.Message{Command: "354", Params: []string{"me", tok2, "#b", "n2"}})
-	s.OnMessage(u, irc.Message{Command: "354", Params: []string{"me", tok1, "#a", "n1"}})
-	s.OnMessage(u, irc.Message{Command: "315", Params: []string{"me", "#a", "End"}})
-	s.OnMessage(u, irc.Message{Command: "315", Params: []string{"me", "#b", "End"}})
+	s.HandleMessage(irc.Message{Command: "354", Params: []string{"me", tok2, "#b", "n2"}})
+	s.HandleMessage(irc.Message{Command: "354", Params: []string{"me", tok1, "#a", "n1"}})
+	s.HandleMessage(irc.Message{Command: "315", Params: []string{"me", "#a", "End"}})
+	s.HandleMessage(irc.Message{Command: "315", Params: []string{"me", "#b", "End"}})
 
 	waitUntil(t, 2*time.Second, func() bool {
 		return countCmd(d1, "354") >= 1 && countCmd(d2, "354") >= 1
@@ -154,7 +151,7 @@ func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 	}
 
 	time.Sleep(50 * time.Millisecond)
-	s.OnMessage(u, irc.Message{Command: "323", Params: []string{"me", "End of LIST"}})
+	s.HandleMessage(irc.Message{Command: "323", Params: []string{"me", "End of LIST"}})
 	select {
 	case err := <-listDone:
 		if err != nil {
@@ -171,7 +168,7 @@ func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second LIST not released after 323")
 	}
-	s.OnMessage(u, irc.Message{Command: "323", Params: []string{"me", "End of LIST"}})
+	s.HandleMessage(irc.Message{Command: "323", Params: []string{"me", "End of LIST"}})
 	select {
 	case err := <-secondDone:
 		if err != nil {
@@ -181,14 +178,9 @@ func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 		t.Fatal("second LIST handler stuck")
 	}
 
-	cancel()
-	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-	}
 	select {
 	case err := <-scriptDone:
-		if err != nil && ctx.Err() == nil {
+		if err != nil {
 			t.Log("script:", err)
 		}
 	case <-time.After(2 * time.Second):

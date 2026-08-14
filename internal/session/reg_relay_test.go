@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -11,11 +10,10 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 func TestAttachPendingBeforeUplink(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
@@ -43,7 +41,7 @@ func TestAttachPendingBeforeUplink(t *testing.T) {
 }
 
 func TestHoldSolicitousUntilRegistered(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
@@ -84,7 +82,7 @@ func TestHoldSolicitousUntilRegistered(t *testing.T) {
 }
 
 func TestSkipDuplicateUSERHOSTAfterFlush(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
@@ -116,11 +114,12 @@ func TestSkipDuplicateUSERHOSTAfterFlush(t *testing.T) {
 		t.Fatal("dedup marker should be consumed")
 	}
 
-	// A later intentional USERHOST must still go through (no marker).
-	u := uplink.New(uplink.Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
-	s.SetUplink(u)
-	// WriteMessage will fail without a conn; we only care that we enter forwardSolicitous
-	// (tracker begins) rather than skipping again.
+	// A later intentional USERHOST must still go through (no marker). A real
+	// (if never-connected) Driver is enough — forwardSolicitous only needs
+	// to reach WriteMessage, not have it succeed. Port 1 is a real address
+	// nothing listens on, so the dial itself fails fast without needing a
+	// fake server at all.
+	newTestUplink(t, s, store.Network{Name: "n", Nick: "me"}, "127.0.0.1", 1)
 	_ = s.HandleClientMessage(d, msg)
 	if _, ok := s.tracker.ActiveClient(); !ok {
 		t.Fatal("second USERHOST after dedup window should forward")
@@ -128,11 +127,11 @@ func TestSkipDuplicateUSERHOSTAfterFlush(t *testing.T) {
 }
 
 func TestAttachMidRegistrationCatchUp(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
-	s.OnRegistrationLine(nil, irc.Message{
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "NOTICE", Params: []string{"AUTH", "*** Looking up your hostname"},
 	})
-	s.OnRegistrationLine(nil, irc.Message{
+	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "001", Params: []string{"me", "Welcome"},
 	})
 
@@ -151,7 +150,7 @@ func TestAttachMidRegistrationCatchUp(t *testing.T) {
 		t.Fatalf("want buffered NOTICE: %+v", d.sent)
 	}
 
-	s.OnRegistrationLine(nil, irc.Message{
+	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "376", Params: []string{"me", "End of MOTD"},
 	})
 	if countMsgCmd(d.snapshot(), "376") != 1 {
@@ -160,7 +159,7 @@ func TestAttachMidRegistrationCatchUp(t *testing.T) {
 }
 
 func TestOnDisconnectERRORClosesClients(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{}}
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
@@ -170,7 +169,7 @@ func TestOnDisconnectERRORClosesClients(t *testing.T) {
 	a.clearSent()
 	b.clearSent()
 
-	s.OnDisconnect(nil, fmt.Errorf("server ERROR: Closing Link: me (Ping timeout)"))
+	s.HandleDisconnect(fmt.Errorf("server ERROR: Closing Link: me (Ping timeout)"))
 
 	for _, d := range []*fakeDL{a, b} {
 		if len(d.sent) != 1 || d.sent[0].Command != "ERROR" {
@@ -191,12 +190,12 @@ func TestOnDisconnectERRORClosesClients(t *testing.T) {
 }
 
 func TestOnDisconnectGenericReason(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	_ = s.Attach(d)
 	d.clearSent()
-	s.OnDisconnect(nil, nil)
+	s.HandleDisconnect(nil)
 	if len(d.sent) != 1 || d.sent[0].Command != "ERROR" {
 		t.Fatalf("%+v", d.sent)
 	}
@@ -210,22 +209,10 @@ func TestOnDisconnectGenericReason(t *testing.T) {
 }
 
 func TestEarlyAttachRelaysRegistrationE2E(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	d := &fakeDL{id: "early", caps: map[string]bool{"cap-notify": true}}
 	if err := s.Attach(d); err != nil {
@@ -237,15 +224,20 @@ func TestEarlyAttachRelaysRegistrationE2E(t *testing.T) {
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runEarlyRegServer(server, time.Now().Add(8*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runEarlyRegServer(conn, time.Now().Add(8*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
 	waitUntil(t, 5*time.Second, func() bool {
 		return countMsgCmd(d.snapshot(), "NOTICE") >= 1 &&
 			countMsgCmd(d.snapshot(), "376") >= 1 &&
-			s.registered
+			s.Registered()
 	})
 
 	sent := d.snapshot()
@@ -269,8 +261,6 @@ func TestEarlyAttachRelaysRegistrationE2E(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func assertNoEmptyFakeMOTD(t *testing.T, msgs []irc.Message) {
@@ -340,26 +330,15 @@ func runEarlyRegServer(server net.Conn, deadline time.Time) error {
 // attached while the bouncer was still connecting to the upstream" case: the
 // client's own CAP LS only had AlwaysOffer (session/uplink not known yet), so
 // once the uplink registers with an uplink-backed cap the client must be told
-// via CAP NEW — but exactly once. OnRegistered both broadcasts a NEW/DEL diff
-// to all downlinks and separately syncs each newly-unblocked awaiting client
-// via notifyAttachCaps; both paths could otherwise announce the same cap.
+// via CAP NEW — but exactly once. completeRegistration both broadcasts a
+// NEW/DEL diff to all downlinks and separately syncs each newly-unblocked
+// awaiting client via notifyAttachCaps; both paths could otherwise announce
+// the same cap.
 func TestAwaitingClientGetsCapNewOnceWhenUplinkRegisters(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	d := &fakeDL{id: "early", caps: map[string]bool{"cap-notify": true}}
 	if err := s.Attach(d); err != nil {
@@ -368,13 +347,18 @@ func TestAwaitingClientGetsCapNewOnceWhenUplinkRegisters(t *testing.T) {
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runAwayNotifyRegServer(server, time.Now().Add(8*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runAwayNotifyRegServer(conn, time.Now().Add(8*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
 	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
-	// Give any async CAP NEW sends from OnRegistered a moment to land.
+	// Give any async CAP NEW sends from completeRegistration a moment to land.
 	time.Sleep(50 * time.Millisecond)
 
 	sent := d.snapshot()
@@ -396,8 +380,6 @@ func TestAwaitingClientGetsCapNewOnceWhenUplinkRegisters(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func runAwayNotifyRegServer(server net.Conn, deadline time.Time) error {
@@ -455,17 +437,17 @@ func runAwayNotifyRegServer(server net.Conn, deadline time.Time) error {
 }
 
 func TestOnDisconnectWhileAwaitingUplink(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "early", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	s.OnRegistrationLine(nil, irc.Message{
+	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "NOTICE", Params: []string{"AUTH", "*** Looking up your hostname"},
 	})
 	d.clearSent()
 
-	s.OnDisconnect(nil, fmt.Errorf("connection reset by peer"))
+	s.HandleDisconnect(fmt.Errorf("connection reset by peer"))
 
 	if len(d.sent) != 1 || d.sent[0].Command != "NOTICE" {
 		t.Fatalf("want NOTICE while awaiting (keep client): %+v", d.sent)
@@ -489,7 +471,7 @@ func TestOnDisconnectWhileAwaitingUplink(t *testing.T) {
 }
 
 func TestOnDisconnectUnregisteredKeepsBNCUsable(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.SetAdmin(func(args []string) ([]string, error) {
 		return []string{"ok " + strings.Join(args, " ")}, nil
 	})
@@ -497,7 +479,7 @@ func TestOnDisconnectUnregisteredKeepsBNCUsable(t *testing.T) {
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	s.OnDisconnect(nil, fmt.Errorf("dial tcp: connection refused"))
+	s.HandleDisconnect(fmt.Errorf("dial tcp: connection refused"))
 	d.clearSent()
 	if err := s.HandleClientMessage(d, irc.Message{Command: "BNC", Params: []string{"status"}}); err != nil {
 		t.Fatal(err)
@@ -508,7 +490,7 @@ func TestOnDisconnectUnregisteredKeepsBNCUsable(t *testing.T) {
 }
 
 func TestTwoConcurrentEarlyAwaitingClients(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	a := &fakeDL{id: "a", caps: map[string]bool{"cap-notify": true}}
 	b := &fakeDL{id: "b", caps: map[string]bool{"cap-notify": true}}
 	if err := s.Attach(a); err != nil {
@@ -528,9 +510,9 @@ func TestTwoConcurrentEarlyAwaitingClients(t *testing.T) {
 	notice := irc.Message{Source: "irc.example", Command: "NOTICE", Params: []string{"AUTH", "*** Checking ident"}}
 	welcome := irc.Message{Source: "irc.example", Command: "001", Params: []string{"me", "Welcome"}}
 	motdEnd := irc.Message{Source: "irc.example", Command: "376", Params: []string{"me", "End of MOTD"}}
-	s.OnRegistrationLine(nil, notice)
-	s.OnRegistrationLine(nil, welcome)
-	s.OnRegistrationLine(nil, motdEnd)
+	s.HandleRegistrationLine(notice)
+	s.HandleRegistrationLine(welcome)
+	s.HandleRegistrationLine(motdEnd)
 
 	for _, d := range []*fakeDL{a, b} {
 		if countMsgCmd(d.snapshot(), "NOTICE") != 1 || countMsgCmd(d.snapshot(), "001") != 1 || countMsgCmd(d.snapshot(), "376") != 1 {
@@ -539,43 +521,18 @@ func TestTwoConcurrentEarlyAwaitingClients(t *testing.T) {
 	}
 
 	s.mu.RLock()
-	if len(s.awaitingUplink) != 2 {
-		t.Fatalf("both should still await until OnRegistered: %d", len(s.awaitingUplink))
-	}
-	s.mu.RUnlock()
-
-	// Finish the way OnRegistered does for awaiters (without a live uplink).
-	s.mu.Lock()
-	s.registered = true
-	s.awaitingUplink = make(map[ClientID]bool)
-	s.regBuffer = nil
-	s.mu.Unlock()
-
-	s.mu.RLock()
 	nAwait := len(s.awaitingUplink)
 	s.mu.RUnlock()
 	if nAwait != 0 {
-		t.Fatalf("awaiting still set: %d", nAwait)
+		t.Fatalf("both should already be flushed by the live 376 (see completeRegistration): %d", nAwait)
 	}
 }
 
 func TestNickInUseRelayedThenDisconnect(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "taken", NickRecovery: false}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
@@ -590,10 +547,15 @@ func TestNickInUseRelayedThenDisconnect(t *testing.T) {
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runNickInUseServer(server, time.Now().Add(6*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runNickInUseServer(conn, time.Now().Add(6*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
 	waitUntil(t, 5*time.Second, func() bool {
 		return countMsgCmd(a.snapshot(), "433") >= 1 && countMsgCmd(a.snapshot(), "NOTICE") >= 1
@@ -637,8 +599,6 @@ func TestNickInUseRelayedThenDisconnect(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func runNickInUseServer(server net.Conn, deadline time.Time) error {
@@ -675,24 +635,12 @@ func runNickInUseServer(server net.Conn, deadline time.Time) error {
 }
 
 func TestNickLadderSwallowsMid433(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{
 		Name: "test", Host: "pipe", Port: 1, Nick: "taken", AltNick: "alt", NickRecovery: true,
 	}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	d := &fakeDL{id: "a", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
@@ -702,12 +650,17 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runNickLadderAcceptServer(server, time.Now().Add(6*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runNickLadderAcceptServer(conn, time.Now().Add(6*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
-	waitUntil(t, 5*time.Second, func() bool { return u.Registered() })
+	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
 	snap := d.snapshot()
 	if countMsgCmd(snap, "433") != 0 {
 		t.Fatalf("mid-ladder 433 must not reach client: %+v", snap)
@@ -731,18 +684,16 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 		}
 	}
 	if welcome.Command != "001" || welcome.Param(0) != "alt" || !strings.Contains(welcome.Trailing(), "Welcome to GoBNC") {
-		t.Fatalf("late attach 001: %+v (session nick=%q uplink=%q)", welcome, s.Nick(), u.Nick())
+		t.Fatalf("late attach 001: %+v (session nick=%q)", welcome, s.Nick())
 	}
 
-	cancel()
-	<-runDone
 	if err := <-scriptDone; err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestAttachPendingThenSelfNickOnCollision(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "MrIron", Username: "u"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "MrIron", Username: "u"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
@@ -752,7 +703,7 @@ func TestAttachPendingThenSelfNickOnCollision(t *testing.T) {
 	}
 	d.clearSent()
 
-	s.OnRegistrationLine(nil, irc.Message{
+	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "001", Params: []string{"MrIron_", "Welcome"},
 	})
 	snap := d.snapshot()
@@ -765,38 +716,6 @@ func TestAttachPendingThenSelfNickOnCollision(t *testing.T) {
 	}
 	if snap[1].Param(0) != "MrIron_" {
 		t.Fatalf("real 001: %+v", snap[1])
-	}
-}
-
-func TestAttachWelcomeUsesUplinkNickWhenSelfStale(t *testing.T) {
-	// Simulate desync: configured/self still primary, uplink already on collision nick.
-	netCfg := store.Network{Name: "n", Nick: "MrIron"}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{Network: netCfg}, s)
-	s.SetUplink(u)
-	s.SetRegisteredForTest(true)
-	// Uplink nick after 433 ladder (unit-level: set via 001 handling path).
-	u.SetNickForTest("MrIron_")
-	s.mu.Lock()
-	s.rpl002 = []string{"Your host is irc.example"}
-	s.mu.Unlock()
-
-	d := &fakeDL{id: "c1", caps: map[string]bool{}}
-	if err := s.Attach(d); err != nil {
-		t.Fatal(err)
-	}
-	var welcome irc.Message
-	for _, m := range d.snapshot() {
-		if m.Command == "001" {
-			welcome = m
-			break
-		}
-	}
-	if welcome.Param(0) != "MrIron_" {
-		t.Fatalf("001 nick=%q want MrIron_ (self was stale at %q)", welcome.Param(0), "MrIron")
-	}
-	if s.Nick() != "MrIron_" {
-		t.Fatalf("session nick not synced: %q", s.Nick())
 	}
 }
 
@@ -835,4 +754,3 @@ func runNickLadderAcceptServer(server net.Conn, deadline time.Time) error {
 	}
 	return nil
 }
-

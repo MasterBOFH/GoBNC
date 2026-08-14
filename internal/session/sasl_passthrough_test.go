@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -12,35 +11,27 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 func TestSASLPassthroughE2E(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	ln, host, port := newFakeIRCListener(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	s := New(store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"},
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
+	s := New(netCfg, nil, nil, nil, nil)
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runPassthroughServer(server, time.Now().Add(6*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runPassthroughServer(conn, time.Now().Add(6*time.Second))
 	}()
+	newTestUplink(t, s, netCfg, host, port)
 
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
-
-	waitUntil(t, 3*time.Second, func() bool { return u.Registered() && s.OffersPassthroughSASL() })
+	waitUntil(t, 3*time.Second, func() bool { return s.Registered() && s.OffersPassthroughSASL() })
 
 	d := &fakeDL{id: "c1", caps: map[string]bool{"cap-notify": true}}
 	if err := s.Attach(d); err != nil {
@@ -94,8 +85,6 @@ func TestSASLPassthroughE2E(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func runPassthroughServer(server net.Conn, deadline time.Time) error {
@@ -161,21 +150,10 @@ func runPassthroughServer(server net.Conn, deadline time.Time) error {
 }
 
 func TestSASLCAPNewDelPassthrough(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	ln, host, port := newFakeIRCListener(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	s := New(store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"},
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
+	s := New(netCfg, nil, nil, nil, nil)
 
 	d := &fakeDL{id: "c1", caps: map[string]bool{"cap-notify": true}}
 	s.mu.Lock()
@@ -184,6 +162,12 @@ func TestSASLCAPNewDelPassthrough(t *testing.T) {
 
 	scriptDone := make(chan error, 1)
 	go func() {
+		server, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = server.Close() })
 		br := newLineBuf(server)
 		deadline := time.Now().Add(6 * time.Second)
 		read := func() (string, error) {
@@ -222,7 +206,7 @@ func TestSASLCAPNewDelPassthrough(t *testing.T) {
 		_ = write(":server 001 testnick :Welcome")
 		_ = write(":server 376 testnick :End of MOTD")
 
-		waitUntilPoll(2*time.Second, func() bool { return u.Registered() })
+		waitUntilPoll(2*time.Second, func() bool { return s.Registered() })
 		if err := write("CAP * NEW :sasl=PLAIN,SCRAM-SHA-256"); err != nil {
 			scriptDone <- err
 			return
@@ -236,8 +220,7 @@ func TestSASLCAPNewDelPassthrough(t *testing.T) {
 		scriptDone <- nil
 	}()
 
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
 	select {
 	case err := <-scriptDone:
@@ -255,12 +238,10 @@ func TestSASLCAPNewDelPassthrough(t *testing.T) {
 	if !findCapSub(sent, "DEL", "sasl") {
 		t.Fatalf("expected CAP DEL sasl: %+v", capMsgs(sent))
 	}
-	cancel()
-	<-runDone
 }
 
 func TestSASLMultiClientRouting(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	a := &fakeDL{id: "a", caps: map[string]bool{"sasl": true}}
 	b := &fakeDL{id: "b", caps: map[string]bool{"sasl": true}}
 	s.mu.Lock()
@@ -304,7 +285,7 @@ func TestSASLMultiClientRouting(t *testing.T) {
 }
 
 func TestSASLNoFallbackWithoutClient(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	a := &fakeDL{id: "a", caps: map[string]bool{"sasl": true}}
 	s.mu.Lock()
 	s.downlinks[a.id] = a
@@ -320,7 +301,7 @@ func TestSASLNoFallbackWithoutClient(t *testing.T) {
 }
 
 func TestBouncerOwnedSASLOnlyEmitsLoggedIn(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me", SASL: true, SASLUser: "u", SASLPass: "p"}, nil, nil, nil, nil)
 	a := &fakeDL{id: "a", caps: map[string]bool{}}
 	b := &fakeDL{id: "b", caps: map[string]bool{}}
 	s.mu.Lock()
@@ -350,7 +331,7 @@ func TestBouncerOwnedSASLOnlyEmitsLoggedIn(t *testing.T) {
 }
 
 func TestAttachReplaysLoggedIn(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
 	s.mu.Lock()
 	s.registered = true
 	s.self.Account = "acct"
@@ -385,7 +366,7 @@ func TestAttachReplaysLoggedIn(t *testing.T) {
 }
 
 func TestAttachOmitsLoggedInAfterLogout(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	s.routeSASLTraffic(irc.Message{
 		Command: "900",
@@ -407,7 +388,7 @@ func TestAttachOmitsLoggedInAfterLogout(t *testing.T) {
 }
 
 func TestSASLCapNAK(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	s.mu.Lock()
 	s.saslOffer = "sasl=PLAIN"
@@ -416,7 +397,7 @@ func TestSASLCapNAK(t *testing.T) {
 	s.saslReqPending = true
 	s.mu.Unlock()
 
-	s.OnCapNAK(nil, []string{"sasl"})
+	s.OnCapNAK([]string{"sasl"})
 	if len(d.sent) != 1 || d.sent[0].Param(1) != "NAK" {
 		t.Fatalf("want NAK: %+v", d.sent)
 	}

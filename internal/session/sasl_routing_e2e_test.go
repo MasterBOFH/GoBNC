@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 // saslCmds are AUTHENTICATE and SASL outcome/error numerics that must not leak
@@ -47,49 +45,30 @@ func assertNoSASLPrivate(t *testing.T, label string, msgs []irc.Message) {
 	}
 }
 
-func waitRegistered(t *testing.T, u *uplink.Uplink, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if u.Registered() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("uplink not registered")
-}
-
 // TestMultiDownstreamBouncerSASL: bouncer owns credentials; two attached clients
 // see only RPL_LOGGEDIN — never AUTHENTICATE or outcome/error numerics.
 func TestMultiDownstreamBouncerSASL(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{
 		Name: "test", Host: "pipe", Port: 1, Nick: "testnick",
 		Username: "u", Realname: "r", SASL: true, SASLUser: "acct", SASLPass: "secret",
 	}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runBouncerSASLServer(server, time.Now().Add(8*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runBouncerSASLServer(conn, time.Now().Add(8*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
-	waitRegistered(t, u, 5*time.Second)
+	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
 	waitUntil(t, 2*time.Second, func() bool {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
@@ -118,9 +97,9 @@ func TestMultiDownstreamBouncerSASL(t *testing.T) {
 	// Live post-registration SASL chatter from the uplink must not leak either.
 	a.clearSent()
 	b.clearSent()
-	s.OnMessage(u, irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
-	s.OnMessage(u, irc.Message{Command: "904", Params: []string{"testnick", "SASL authentication failed"}})
-	s.OnMessage(u, irc.Message{Command: "903", Params: []string{"testnick", "ok"}})
+	s.HandleMessage(irc.Message{Command: "AUTHENTICATE", Params: []string{"+"}})
+	s.HandleMessage(irc.Message{Command: "904", Params: []string{"testnick", "SASL authentication failed"}})
+	s.HandleMessage(irc.Message{Command: "903", Params: []string{"testnick", "ok"}})
 	assertNoSASLPrivate(t, "a live", a.snapshot())
 	assertNoSASLPrivate(t, "b live", b.snapshot())
 
@@ -142,8 +121,6 @@ func TestMultiDownstreamBouncerSASL(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func runBouncerSASLServer(server net.Conn, deadline time.Time) error {
@@ -202,33 +179,26 @@ func runBouncerSASLServer(server net.Conn, deadline time.Time) error {
 // TestMultiDownstreamClientSASL: one client drives AUTHENTICATE; the other only
 // sees RPL_LOGGEDIN; the bouncer never starts its own SASL negotiation.
 func TestMultiDownstreamClientSASL(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
+	ln, host, port := newFakeIRCListener(t)
 
 	netCfg := store.Network{Name: "test", Host: "pipe", Port: 1, Nick: "testnick"}
-	s := New(netCfg, nil, nil, nil)
-	u := uplink.New(uplink.Config{
-		Network:    netCfg,
-		MinBackoff: time.Hour,
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return client, nil
-		},
-	}, s)
-	s.SetUplink(u)
+	s := New(netCfg, nil, nil, nil, nil)
 
 	scriptDone := make(chan error, 1)
 	go func() {
-		scriptDone <- runClientSASLMultiServer(server, time.Now().Add(10*time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runClientSASLMultiServer(conn, time.Now().Add(10*time.Second))
 	}()
-	runDone := make(chan error, 1)
-	go func() { runDone <- u.Run(ctx) }()
+	newTestUplink(t, s, netCfg, host, port)
 
-	waitRegistered(t, u, 5*time.Second)
+	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
 	waitUntil(t, 2*time.Second, func() bool { return s.OffersPassthroughSASL() })
-	if u.OwnsSASL() {
+	if netCfg.SASL {
 		t.Fatal("bouncer must not own SASL without credentials")
 	}
 
@@ -301,8 +271,6 @@ func TestMultiDownstreamClientSASL(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("script timeout")
 	}
-	cancel()
-	<-runDone
 }
 
 func runClientSASLMultiServer(server net.Conn, deadline time.Time) error {

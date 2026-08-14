@@ -13,7 +13,7 @@ import (
 )
 
 func TestClientCAPLSAdvertisesPassthroughSASL(t *testing.T) {
-	s := session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.SetSASLOfferForTest("sasl=PLAIN,EXTERNAL")
 
 	server, client := net.Pipe()
@@ -51,7 +51,7 @@ func TestClientCAPLSAdvertisesPassthroughSASL(t *testing.T) {
 }
 
 func TestClientCAPREQSASLWithoutUplinkNAKs(t *testing.T) {
-	s := session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := session.New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.SetSASLOfferForTest("sasl=PLAIN")
 
 	server, client := net.Pipe()

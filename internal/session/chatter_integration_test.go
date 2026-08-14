@@ -82,7 +82,7 @@ func TestHighChatterMultiClientPlayback(t *testing.T) {
 	}
 	netw, _ := db.NetworkByName(ctx, "n")
 	hist := history.New(db)
-	sess := session.New(netw, db, hist, nil)
+	sess := session.New(netw, db, hist, nil, nil)
 
 	const nClients = 8
 	const nMsgs = 500
@@ -105,7 +105,7 @@ func TestHighChatterMultiClientPlayback(t *testing.T) {
 	}
 
 	// Simulate JOIN state so history target is known
-	sess.OnMessage(nil, irc.Message{Source: "bouncernick!u@h", Command: "JOIN", Params: []string{"#busy"}})
+	sess.HandleMessage(irc.Message{Source: "bouncernick!u@h", Command: "JOIN", Params: []string{"#busy"}})
 
 	var wg sync.WaitGroup
 	var injected atomic.Int64
@@ -126,7 +126,7 @@ func TestHighChatterMultiClientPlayback(t *testing.T) {
 					Command: "PRIVMSG",
 					Params:  []string{"#busy", fmt.Sprintf("chatter %d from w%d", n, worker)},
 				}
-				sess.OnMessage(nil, msg)
+				sess.HandleMessage(msg)
 			}
 		}(w)
 	}

@@ -7,13 +7,10 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 func TestBNCHelpAndRejects(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
-	u := uplink.New(uplink.Config{Network: store.Network{Name: "n", Nick: "me"}}, nil)
-	s.SetUplink(u)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.SetAdmin(func(args []string) ([]string, error) {
 		if len(args) == 0 || args[0] == "help" {
 			return []string{"BNC commands:", "  help", "  reconnect [<name>]", "  disconnect [<name>]", "  network list"}, nil
@@ -88,7 +85,7 @@ func TestBNCHelpAndRejects(t *testing.T) {
 }
 
 func TestBNCUnavailable(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.HandleClientMessage(d, irc.Message{Command: "BNC"}); err != nil {
 		t.Fatal(err)

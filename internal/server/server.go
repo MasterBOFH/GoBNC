@@ -1,4 +1,5 @@
-// Package server wires store, sessions, uplink, and downlink.
+// Package server wires store, sessions, the shared keeper/brain uplink, and
+// downlink.
 package server
 
 import (
@@ -14,33 +15,52 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
 	"github.com/MasterBOFH/GoBNC/internal/downlink"
 	"github.com/MasterBOFH/GoBNC/internal/history"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	"github.com/MasterBOFH/GoBNC/internal/keeperboot"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/internal/uplink"
 )
 
 // Server is the bouncer process.
 type Server struct {
-	cfg       config.Config
-	cfgPath   string // bootstrap JSON path for REHASH / SIGHUP
-	log       *slog.Logger
-	logSink   *gobnclog.Sink
-	logCons   io.Writer // console writer for log Reload (default stderr)
-	debugCons bool      // serve -debug: keep console at debug across rehash
-	daemonLog bool      // resolve empty log_file to state-dir default
-	store     *store.Store
-	hist      *history.Store
-	mu        sync.RWMutex
-	sess      map[string]*session.Session
-	netCancel map[string]context.CancelFunc
-	runCtx    context.Context
-	wg        sync.WaitGroup
-	cancel    context.CancelFunc
+	cfg         config.Config
+	cfgPath     string // bootstrap JSON path for REHASH / SIGHUP
+	log         *slog.Logger
+	logSink     *gobnclog.Sink
+	logCons     io.Writer // console writer for log Reload (default stderr)
+	debugCons   bool      // serve -debug: keep console at debug across rehash
+	daemonLog   bool      // resolve empty log_file to state-dir default
+	store       *store.Store
+	hist        *history.Store
+	mu          sync.RWMutex
+	sess        map[string]*session.Session
+	sessByNetID map[keeper.NetworkID]*session.Session
+	runCtx      context.Context
+	wg          sync.WaitGroup
+	cancel      context.CancelFunc
+
+	// keeperClient / driver are the one shared attach and one shared
+	// Driver every session on this process addresses by its own
+	// keeper.NetworkID — internal/keeper and internal/brain were designed
+	// for one connection serving every network a process holds, not one
+	// attach per network (see docs/keeper-design.md). Set up once in Run,
+	// via internal/keeperboot.
+	keeperClient *keeper.AttachClient
+	driver       *brain.Driver
+
+	// resumedAtBoot records, for Run's initial startNetworkLocked pass
+	// only, which networks the keeper already held live at attach time
+	// (from keeperClient.Networks) — see startNetworkLocked's own comment
+	// for why those must skip Dial. Each entry is deleted as it's
+	// consumed, so a later admin-triggered StartNetworkByName/
+	// ReconnectNetwork for the same network always dials for real.
+	resumedAtBoot map[keeper.NetworkID]bool
 
 	certs *certHolder
 	dl    *downlink.Listener
@@ -55,14 +75,53 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	hist := history.NewWithLimits(st, cfg.ChatHistoryMax, cfg.LegacyPlaybackMax)
 	hist.SetLogger(log)
 	return &Server{
-		cfg:       cfg,
-		log:       log,
-		store:     st,
-		hist:      hist,
-		sess:      make(map[string]*session.Session),
-		netCancel: make(map[string]context.CancelFunc),
-		certs:     &certHolder{},
+		cfg:         cfg,
+		log:         log,
+		store:       st,
+		hist:        hist,
+		sess:        make(map[string]*session.Session),
+		sessByNetID: make(map[keeper.NetworkID]*session.Session),
+		certs:       &certHolder{},
 	}, nil
+}
+
+// bootstrapKeeper finds or starts the keeper process and attaches to it,
+// mirroring cmd/brain-register-demo's own bootstrap exactly — this is the
+// real bouncer's first caller of internal/keeperboot, closing the gap
+// deliberately left open since keeperboot was built (see its package doc).
+//
+// Deliberately does NOT send LiveReady itself: that must wait until every
+// network Run is about to start has already been registered (session
+// created, driver.RegisterNetwork/sessByNetID populated) — see Run's own
+// comment on why. Attach's own Hello/HelloAck handshake (inside
+// keeperboot.EnsureRunning) is what populates res.Client.Networks, and
+// that already happens before LiveReady is ever sent, so resumedAtBoot is
+// accurate regardless of when LiveReady itself goes out.
+func (s *Server) bootstrapKeeper(ctx context.Context) error {
+	bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := keeperboot.EnsureRunning(bootCtx, keeperboot.Options{
+		Hello: keeper.HelloMsg{Mode: keeper.ModeLive},
+	})
+	if err != nil {
+		return fmt.Errorf("keeperboot: %w", err)
+	}
+	if res.Spawned {
+		s.log.Info("spawned a new keeper", "pid", res.KeeperPID)
+	} else {
+		s.log.Info("attached to an existing keeper")
+	}
+	s.keeperClient = res.Client
+	s.driver = brain.NewDriver(s.keeperClient)
+	s.driver.SetMaxFloodQueue(s.cfg.MaxFloodQueue)
+
+	s.resumedAtBoot = make(map[keeper.NetworkID]bool, len(res.Client.Networks))
+	for _, st := range res.Client.Networks {
+		if st.State == keeper.Connected {
+			s.resumedAtBoot[st.ID] = true
+		}
+	}
+	return nil
 }
 
 // SetConfigPath records the bootstrap JSON path used by Rehash (SIGHUP / REHASH).
@@ -99,37 +158,90 @@ func (s *Server) Session(network string) (*session.Session, error) {
 	return sess, nil
 }
 
-// Close cancels the run context, stops networks, and closes the DB.
+// Close cancels the run context, detaches from the keeper (see
+// detachFromKeeper — this never disconnects any uplink), and closes the DB.
 func (s *Server) Close() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.stopAllNetworks()
+	s.detachFromKeeper()
 	s.wg.Wait()
 	return s.store.Close()
 }
 
-// Run starts uplinks, control socket, and the TLS listener until ctx is done.
+// Run starts the shared keeper attach, sessions, control socket, and the
+// TLS listener until ctx is done.
 func (s *Server) Run(ctx context.Context) error {
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.runCtx = ctx
+
+	if err := s.bootstrapKeeper(ctx); err != nil {
+		s.cancel()
+		return err
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := s.driver.Run(ctx); err != nil {
+			s.log.Debug("driver.Run exited", "err", err)
+		}
+	}()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runDemux(ctx)
+	}()
 
 	nets, err := s.store.ListNetworks(ctx)
 	if err != nil {
 		return err
 	}
+	// Every enabled network's Session and driver bookkeeping must exist
+	// before SendLiveReady goes out. The keeper starts streaming a
+	// resumed network's backlog the instant LiveReady arrives — if that
+	// happened before this brain had registered the network (RegisterNetwork
+	// populating brain.Driver's own tracking, sessByNetID populating the
+	// demux's routing table), the earliest replayed lines (including the
+	// original 001) would arrive at Driver.handleLine/runDemux with nowhere
+	// to go and be silently dropped, permanently stalling that Session's
+	// own self-detected registration (see upstream.go's HandleLine). Dialing
+	// a genuinely fresh network, by contrast, must happen *after*
+	// LiveReady: the keeper's serveLive doesn't read DialRequest frames —
+	// or anything else — until LiveReady is the first frame it sees.
+	type pendingNet struct {
+		n    store.Network
+		sess *session.Session
+	}
+	pending := make([]pendingNet, 0, len(nets))
+	s.mu.Lock()
 	for _, n := range nets {
 		if !n.Enabled {
 			continue
 		}
-		s.mu.Lock()
-		err := s.startNetworkLocked(n)
-		s.mu.Unlock()
+		sess, err := s.registerNetworkLocked(n)
 		if err != nil {
+			s.mu.Unlock()
+			s.cancel()
+			return err
+		}
+		pending = append(pending, pendingNet{n: n, sess: sess})
+	}
+	s.mu.Unlock()
+
+	if err := s.keeperClient.SendLiveReady(); err != nil {
+		s.cancel()
+		return fmt.Errorf("keeper SendLiveReady: %w", err)
+	}
+
+	s.mu.Lock()
+	for _, p := range pending {
+		if err := s.dialNetworkLocked(p.n, p.sess); err != nil {
+			s.mu.Unlock()
 			s.cancel()
 			return err
 		}
 	}
+	s.mu.Unlock()
 
 	if err := s.serveControl(ctx); err != nil {
 		s.cancel()
@@ -163,68 +275,39 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.gracefulShutdown()
-		s.stopAllNetworks()
+		s.detachFromKeeper()
 		s.wg.Wait()
 		return nil
 	case err := <-errCh:
 		s.cancel()
-		s.gracefulShutdown()
-		s.stopAllNetworks()
+		s.detachFromKeeper()
 		s.wg.Wait()
 		return err
 	}
 }
 
-// gracefulShutdown flushes uplink send queues and sends QUIT, bounded by ShutdownTimeout.
-func (s *Server) gracefulShutdown() {
-	timeout := config.ShutdownTimeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	s.mu.RLock()
-	reason := s.cfg.QuitReason()
-	s.mu.RUnlock()
-	s.log.Info("graceful shutdown", "quit", reason, "timeout", timeout)
-
-	s.mu.RLock()
-	sessions := make([]*session.Session, 0, len(s.sess))
-	for _, sess := range s.sess {
-		sessions = append(sessions, sess)
+// detachFromKeeper closes the shared keeper attach (unblocking
+// driver.Run/runDemux, per Driver.Run's own doc comment on why ctx alone
+// can't stop it) and clears session bookkeeping. Deliberately does NOT
+// send QUIT to any network and does NOT ask the keeper to close any
+// uplink: gobnc (the brain) exiting — whether for a SIGTERM, a `gobnc
+// stop`, or a code upgrade — must never be conflated with a deliberate
+// per-network disconnect (see brain.Driver.QuitNetwork's doc comment,
+// which states this as the one mistake that costs everything on this
+// project). The keeper process and every uplink it holds keep running,
+// completely unaffected by this call, ready for the next `gobnc` process
+// to attach and resume — that persistence is this project's entire point.
+// A real full stop (actually disconnecting from IRC) means stopping the
+// keeper process itself, a separate, deliberate operator action this
+// method does not take on the caller's behalf.
+func (s *Server) detachFromKeeper() {
+	if s.keeperClient != nil {
+		_ = s.keeperClient.Close()
 	}
-	s.mu.RUnlock()
-
-	var wg sync.WaitGroup
-	for _, sess := range sessions {
-		wg.Add(1)
-		go func(sess *session.Session) {
-			defer wg.Done()
-			sess.GracefulQuit(ctx, reason)
-		}(sess)
-	}
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		s.log.Info("shutdown timeout; proceeding to close uplinks")
-	}
-}
-
-func (s *Server) stopAllNetworks() {
 	s.mu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(s.netCancel))
-	for name, cancel := range s.netCancel {
-		cancels = append(cancels, cancel)
-		delete(s.netCancel, name)
-		delete(s.sess, name)
-	}
+	s.sess = make(map[string]*session.Session)
+	s.sessByNetID = make(map[keeper.NetworkID]*session.Session)
 	s.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
-	}
 }
 
 // RetentionInterval is how often history prune runs (overridable in tests).
@@ -409,47 +492,95 @@ func (s *Server) StartNetworkByName(name string) error {
 
 // caller must hold s.mu
 func (s *Server) startNetworkLocked(n store.Network) error {
-	chs, err := s.store.ListChannels(s.runCtx, n.ID)
+	sess, err := s.registerNetworkLocked(n)
 	if err != nil {
 		return err
 	}
-	nctx, cancel := context.WithCancel(context.Background())
-	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name))
-	u := uplink.New(uplink.Config{
-		Network:             n,
-		Channels:            chs,
-		Logger:              s.log.With("uplink", n.Name),
-		MaxFloodQueue:       s.cfg.MaxFloodQueue,
-		GlobalTLSClientCert: s.cfg.TLSClientCert,
-		GlobalTLSClientKey:  s.cfg.TLSClientKey,
-		GlobalBindHost:      s.cfg.BindHost,
-	}, sess)
-	sess.SetUplink(u)
+	return s.dialNetworkLocked(n, sess)
+}
+
+// registerNetworkLocked creates n's Session and every piece of driver/demux
+// bookkeeping a line arriving for it needs to be routed anywhere
+// (brain.Driver.RegisterNetwork, sessByNetID) — everything short of
+// actually dialing or resuming. Split out of startNetworkLocked for Run's
+// own bootstrap sequence, which must register every network before
+// SendLiveReady goes out (see Run's comment); the admin/StartNetworkByName
+// path (startNetworkLocked, called long after LiveReady is already active)
+// just calls this immediately followed by dialNetworkLocked.
+//
+// caller must hold s.mu
+func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error) {
+	chs, err := s.store.ListChannels(s.runCtx, n.ID)
+	if err != nil {
+		return nil, err
+	}
+	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name), s.driver)
+	netID := sess.NetworkID()
 	s.attachAdmin(sess)
 	s.sess[n.Name] = sess
-	s.netCancel[n.Name] = cancel
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		_ = u.Run(nctx)
-	}()
+	s.sessByNetID[netID] = sess
+
+	s.driver.RegisterNetwork(netID, s.networkConfigForLocked(n))
+	s.driver.SetChannels(netID, channelJoinsFor(chs))
+	s.driver.SetFloodParams(netID, n.FloodBurst, n.FloodRate)
+	return sess, nil
+}
+
+// dialNetworkLocked dials n's uplink, unless the keeper already held it
+// live at this brain's own attach (see resumedAtBoot), in which case it
+// just records cfg for a later Reconnect without redialing. Caller must
+// already have called registerNetworkLocked for sess (or equivalent) and
+// must hold s.mu.
+func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error {
+	netID := sess.NetworkID()
+	if s.resumedAtBoot[netID] {
+		// The keeper already holds this network's uplink live — this
+		// brain process is resuming after a restart, not starting fresh.
+		// Dial would only get keeper.ErrAlreadyConnected back, which
+		// Driver's Dial-failure path can't tell apart from a genuine
+		// failure: it would arm a perpetual auto-reconnect that retries
+		// forever and never succeeds, since the connection was never
+		// actually down (see brain.Driver.StartRegistration's doc
+		// comment on why a resumed network must never reach it either).
+		// Nothing else to do here: the keeper's own serveLive already
+		// resumes streaming this network's lines to our attach from Hello
+		// time, and Session self-detects registration completion purely
+		// from that replayed transcript (see upstream.go's HandleLine) —
+		// as long as registerNetworkLocked ran before SendLiveReady, so
+		// nothing in that replay was dropped for lack of somewhere to go.
+		// UpdateDialConfig still records cfg so a later real Reconnect
+		// has something to redial with.
+		s.driver.UpdateDialConfig(netID, s.dialConfigForLocked(n))
+		delete(s.resumedAtBoot, netID)
+		s.log.Info("network resumed", "name", n.Name)
+		return nil
+	}
+	if err := s.driver.Dial(netID, s.dialConfigForLocked(n), 0); err != nil {
+		delete(s.sess, n.Name)
+		delete(s.sessByNetID, netID)
+		return err
+	}
 	s.log.Info("network started", "name", n.Name)
 	return nil
 }
 
-// StopNetwork stops a running network uplink.
+// StopNetwork stops a running network uplink — the connection closes and
+// does not auto-redial (see brain.Driver.StopNetwork) until a later
+// StartNetworkByName/ReconnectNetwork resumes it.
 func (s *Server) StopNetwork(name string) error {
 	s.mu.Lock()
-	cancel, ok := s.netCancel[name]
+	sess, ok := s.sess[name]
 	if ok {
-		delete(s.netCancel, name)
 		delete(s.sess, name)
+		delete(s.sessByNetID, sess.NetworkID())
 	}
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("network %q not running", name)
 	}
-	cancel()
+	if err := s.driver.StopNetwork(sess.NetworkID()); err != nil {
+		return err
+	}
 	s.log.Info("network stopped", "name", name)
 	return nil
 }
@@ -466,12 +597,14 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 	}
 	s.mu.RLock()
 	sess := s.sess[name]
-	s.mu.RUnlock()
 	if sess == nil {
+		s.mu.RUnlock()
 		// Not running yet — next START_NETWORK / process start will use DB.
 		return nil
 	}
-	sess.ApplyNetworkConfig(n)
+	cfg := s.networkConfigForLocked(n)
+	s.mu.RUnlock()
+	sess.ApplyNetworkConfig(n, cfg)
 	s.log.Info("network config reloaded", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
 	return nil
 }
@@ -503,17 +636,18 @@ func (s *Server) ReconnectNetwork(name string) error {
 	}
 	s.mu.Unlock()
 
-	sess.ApplyNetworkConfig(n)
+	s.mu.RLock()
+	netCfg := s.networkConfigForLocked(n)
+	dialCfg := s.dialConfigForLocked(n)
+	s.mu.RUnlock()
+	sess.ApplyNetworkConfig(n, netCfg)
 	if chs, err := s.store.ListChannels(s.runCtx, n.ID); err == nil {
-		if u := sess.Uplink(); u != nil {
-			u.SetChannels(chs)
-		}
+		s.driver.SetChannels(sess.NetworkID(), channelJoinsFor(chs))
 	}
-	u := sess.Uplink()
-	if u == nil {
-		return fmt.Errorf("network %q has no uplink", name)
+	s.driver.UpdateDialConfig(sess.NetworkID(), dialCfg)
+	if err := s.driver.Reconnect(sess.NetworkID()); err != nil {
+		return err
 	}
-	u.ForceReconnect()
 	s.log.Info("network reconnect requested", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
 	return nil
 }
@@ -580,10 +714,8 @@ func (s *Server) Rehash(cfgPath string) error {
 	s.cfg = newCfg
 	dl := s.dl
 	names := make([]string, 0, len(s.sess))
-	sessions := make([]*session.Session, 0, len(s.sess))
-	for name, sess := range s.sess {
+	for name := range s.sess {
 		names = append(names, name)
-		sessions = append(sessions, sess)
 	}
 	s.mu.Unlock()
 
@@ -592,12 +724,17 @@ func (s *Server) Rehash(cfgPath string) error {
 	}
 	s.hist.SetMaxLimit(newCfg.ChatHistoryMax)
 	s.hist.SetLegacyPlaybackMax(newCfg.LegacyPlaybackMax)
-	for _, sess := range sessions {
-		if u := sess.Uplink(); u != nil {
-			u.SetMaxFloodQueue(newCfg.MaxFloodQueue)
-			u.SetGlobalTLSClient(newCfg.TLSClientCert, newCfg.TLSClientKey)
-			u.SetGlobalBindHost(newCfg.BindHost)
-		}
+	// Global TLS client cert / bind host need no push: dialConfigForLocked
+	// resolves them fresh from s.cfg (updated above) on each Dial/Reconnect,
+	// matching the "keeper reads TLS material fresh per dial, brain caches
+	// nothing" invariant one level up (see dialConfigForLocked's doc comment) —
+	// unlike internal/uplink.Uplink, which cached these in its own Config
+	// and needed them explicitly pushed on rehash. Guarded on non-nil: a
+	// handful of tests drive Rehash directly against a *Server built via
+	// New (never through Run, so bootstrapKeeper never ran) to exercise
+	// TLS/listen_addr/log behavior in isolation from the keeper entirely.
+	if s.driver != nil {
+		s.driver.SetMaxFloodQueue(newCfg.MaxFloodQueue)
 	}
 	for _, name := range names {
 		if err := s.ReloadNetworkConfig(name); err != nil {
@@ -632,25 +769,6 @@ func (s *Server) Rehash(cfgPath string) error {
 
 	s.log.Info("rehash complete", "tls_cert", newCfg.TLSCert, "networks", len(names))
 	return nil
-}
-
-// StartNetwork starts a single network uplink (for tests).
-func (s *Server) StartNetwork(ctx context.Context, n store.Network, cfg uplink.Config) (*session.Session, *uplink.Uplink) {
-	s.runCtx = ctx
-	chs, _ := s.store.ListChannels(ctx, n.ID)
-	sess := session.New(n, s.store, s.hist, s.log)
-	cfg.Network = n
-	cfg.Channels = chs
-	if cfg.Logger == nil {
-		cfg.Logger = s.log
-	}
-	u := uplink.New(cfg, sess)
-	sess.SetUplink(u)
-	s.attachAdmin(sess)
-	s.mu.Lock()
-	s.sess[n.Name] = sess
-	s.mu.Unlock()
-	return sess, u
 }
 
 // ListenTLS is a helper for tests.

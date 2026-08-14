@@ -49,7 +49,7 @@ func storeLine(t *testing.T, hist *history.Store, id int64, ts time.Time, cmd, t
 
 func sessionWithChan(t *testing.T, db *store.Store, hist *history.Store, id int64) *Session {
 	t.Helper()
-	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, hist, nil)
+	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, hist, nil, nil)
 	s.registered = true
 	s.mu.Lock()
 	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"me": {}, "bob": {}}}
@@ -163,7 +163,7 @@ func TestCHATHISTORYDoesNotAdvancePlaybackCursor(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		storeLine(t, hist, id, t0.Add(time.Duration(i)*time.Minute), "PRIVMSG", "#c", "x")
 	}
-	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, hist, nil)
+	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, hist, nil, nil)
 	sender := &fakeDL{id: "c", caps: map[string]bool{"chathistory": true, "batch": true, "server-time": true}}
 	if err := hist.HandleCHATHISTORY(sender, id, irc.Message{
 		Command: "CHATHISTORY",
@@ -180,13 +180,13 @@ func TestCHATHISTORYDoesNotAdvancePlaybackCursor(t *testing.T) {
 }
 
 func TestLiveLegacyDeliveryAdvancesCursor(t *testing.T) {
-	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil)
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
 	d := &fakeDL{id: "a", caps: map[string]bool{}}
 	_ = s.Attach(d)
 	d.sent = nil
 	ts := "2024-06-01T12:00:00.000Z"
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Tags:    map[string]string{"time": ts, "msgid": "1"},
 		Source:  "bob!u@h",
 		Command: "PRIVMSG",
@@ -207,7 +207,7 @@ func TestChathistoryOnlyLiveDoesNotAdvanceCursor(t *testing.T) {
 
 	ts := time.Now().UTC().Add(-time.Minute)
 	storeLine(t, hist, id, ts, "PRIVMSG", "#c", "offline-for-legacy")
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Tags:    map[string]string{"time": ts.Format("2006-01-02T15:04:05.000Z"), "msgid": "m1"},
 		Source:  "bob!u@h",
 		Command: "PRIVMSG",
@@ -316,7 +316,7 @@ func TestLiveFanoutMsgIDMatchesCHATHISTORY(t *testing.T) {
 	_ = s.Attach(d)
 	d.clearSent()
 
-	s.OnMessage(nil, irc.Message{
+	s.HandleMessage(irc.Message{
 		Source:  "me!u@h",
 		Command: "JOIN",
 		Params:  []string{"#join"},
