@@ -45,6 +45,8 @@ services:
     image: ghcr.io/ergochat/ergo:stable
     ports:
       - "127.0.0.1:6667:6667"
+      - "127.0.0.1:6697:6697" # TLS — self-signed, see certs/ergo.{crt,key}
     volumes:
       - ./ergo.yaml:/ircd.yaml:ro
+      - ./certs:/certs:ro
     command: ["ergo", "run", "--conf", "/ircd.yaml"]

@@ -1,0 +1,19 @@
+# label=ircd-irc2 host=127.0.0.1 port=4440 tls=false nick=gci8534 captured=2026-08-13T22:08:56Z
+5ms :ircd.example.irc.com 020 * :Please wait while we process your connection.
+70262ms :ircd.example.irc.com 001 gci8534 :Welcome to the Internet Relay Network gci8534!~gci8534@172.27.0.1
+70262ms :ircd.example.irc.com 002 gci8534 :Your host is ircd.example.irc.com, running version 2.11.2p3
+70262ms :ircd.example.irc.com 003 gci8534 :This server was created Thu Mar 28 2019 at 03:01:15 UTC
+70262ms :ircd.example.irc.com 004 gci8534 ircd.example.irc.com 2.11.2p3 aoOirw abeiIklmnoOpqrRstv
+70262ms :ircd.example.irc.com 005 gci8534 RFC2812 PREFIX=(ov)@+ CHANTYPES=#&!+ MODES=3 CHANLIMIT=#&!+:21 NICKLEN=15 TOPICLEN=255 KICKLEN=255 MAXLIST=beIR:64 CHANNELLEN=50 IDCHAN=!:5 CHANMODES=beIR,k,l,imnpstaqr :are supported by this server
+70262ms :ircd.example.irc.com 005 gci8534 PENALTY FNC EXCEPTS=e INVEX=I CASEMAPPING=ascii NETWORK=ExampleNet :are supported by this server
+70262ms :ircd.example.irc.com 042 gci8534 000AAAAAC :your unique ID
+70262ms :ircd.example.irc.com 251 gci8534 :There are 1 users and 0 services on 1 servers
+70262ms :ircd.example.irc.com 254 gci8534 14 :channels formed
+70262ms :ircd.example.irc.com 255 gci8534 :I have 1 users, 0 services and 0 servers
+70262ms :ircd.example.irc.com 265 gci8534 1 1 :Current local users 1, max 1
+70262ms :ircd.example.irc.com 266 gci8534 1 1 :Current global users 1, max 1
+70262ms :ircd.example.irc.com 375 gci8534 :- ircd.example.irc.com Message of the Day - 
+70262ms :ircd.example.irc.com 372 gci8534 :- 28/3/2019 2:23
+70262ms :ircd.example.irc.com 372 gci8534 :- This is the MOTD
+70262ms :ircd.example.irc.com 376 gci8534 :End of MOTD command.
+70262ms :ircd.example.irc.com NOTICE gci8534 :Server is currently in split-mode.

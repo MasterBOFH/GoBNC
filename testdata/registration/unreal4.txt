@@ -1,0 +1,23 @@
+# label=unreal4 host=127.0.0.1 port=4441 tls=false nick=gc7252 captured=2026-08-13T21:53:37Z
+0ms :unreal4.example.irc.com NOTICE * :*** Looking up your hostname...
+3ms :unreal4.example.irc.com NOTICE * :*** Couldn't resolve your hostname; using your IP address instead
+47ms :unreal4.example.irc.com CAP * LS :unrealircd.org/plaintext-policy=user=allow,oper=warn,server=deny unrealircd.org/link-security=2 extended-join chghost cap-notify userhost-in-names multi-prefix away-notify account-notify tls
+47ms PING :E160C199
+47ms :unreal4.example.irc.com CAP gc7252 ACK :cap-notify account-notify extended-join away-notify chghost 
+47ms :unreal4.example.irc.com 001 gc7252 :Welcome to the ExampleNet IRC Network gc7252!gc7252@172.27.0.1
+47ms :unreal4.example.irc.com 002 gc7252 :Your host is unreal4.example.irc.com, running version UnrealIRCd-4.2.2
+47ms :unreal4.example.irc.com 003 gc7252 :This server was created Thu Mar 28 2019 at 03:28:28 UTC
+47ms :unreal4.example.irc.com 004 gc7252 unreal4.example.irc.com UnrealIRCd-4.2.2 iowrsxzdHtIDZRqpWGTSB lvhopsmntikraqbeIzMQNRTOVKDdGLPZSCcf
+47ms :unreal4.example.irc.com 005 gc7252 AWAYLEN=307 CASEMAPPING=ascii CHANLIMIT=#:10 CHANMODES=beI,kLf,l,psmntirzMQNRTOVKDdGPZSCc CHANNELLEN=32 CHANTYPES=# DEAF=d ELIST=MNUCT EXCEPTS EXTBAN=~,tmTSOcaRrnqj HCN INVEX :are supported by this server
+48ms :unreal4.example.irc.com 005 gc7252 KICKLEN=307 KNOCK MAP MAXCHANNELS=10 MAXLIST=b:60,e:60,I:60 MAXNICKLEN=30 MODES=12 NAMESX NETWORK=ExampleNet NICKLEN=30 PREFIX=(qaohv)~&@%+ QUITLEN=307 :are supported by this server
+48ms :unreal4.example.irc.com 005 gc7252 SAFELIST SILENCE=15 STATUSMSG=~&@%+ TARGMAX=DCCALLOW:,ISON:,JOIN:,KICK:4,KILL:,LIST:,NAMES:1,NOTICE:1,PART:,PRIVMSG:4,SAJOIN:,SAPART:,USERHOST:,USERIP:,WATCH:,WHOIS:1,WHOWAS:1 TOPICLEN=360 UHNAMES USERIP WALLCHOPS WATCH=128 WATCHOPTS=A :are supported by this server
+48ms :unreal4.example.irc.com 396 gc7252 B0B199C0.80723DD7.FB43CCAE.IP :is now your displayed host
+48ms :unreal4.example.irc.com 251 gc7252 :There are 1 users and 0 invisible on 1 servers
+48ms :unreal4.example.irc.com 255 gc7252 :I have 1 clients and 0 servers
+48ms :unreal4.example.irc.com 265 gc7252 1 1 :Current local users 1, max 1
+48ms :unreal4.example.irc.com 266 gc7252 1 1 :Current global users 1, max 1
+91ms :unreal4.example.irc.com 375 gc7252 :- unreal4.example.irc.com Message of the Day - 
+91ms :unreal4.example.irc.com 372 gc7252 :- 28/3/2019 3:15
+91ms :unreal4.example.irc.com 372 gc7252 :- This is the MOTD
+91ms :unreal4.example.irc.com 376 gc7252 :End of /MOTD command.
+91ms :gc7252 MODE gc7252 :+iwx

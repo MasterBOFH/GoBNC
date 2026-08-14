@@ -5,6 +5,10 @@ server:
   name: ergo.test
   listeners:
     ":6667":
+    ":6697":
+      tls:
+        cert: /certs/ergo.crt
+        key: /certs/ergo.key
   max-sendq: 16k
   enforce-ident: false
   lookup-hostnames: false

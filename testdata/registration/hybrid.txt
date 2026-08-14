@@ -1,0 +1,24 @@
+# label=hybrid host=127.0.0.1 port=4442 tls=false nick=gc3477 captured=2026-08-13T21:52:53Z
+0ms :hybrid.example.irc.com NOTICE * :*** Looking up your hostname
+0ms :hybrid.example.irc.com NOTICE * :*** Checking Ident
+2ms :hybrid.example.irc.com NOTICE * :*** Couldn't look up your hostname
+10511ms :hybrid.example.irc.com NOTICE * :*** No Ident response
+10511ms :hybrid.example.irc.com CAP * LS :account-notify away-notify chghost extended-join invite-notify multi-prefix userhost-in-names
+10511ms :hybrid.example.irc.com CAP gc3477 ACK :account-notify away-notify chghost extended-join invite-notify
+10511ms :hybrid.example.irc.com NOTICE gc3477 :*** You are exempt from user limits
+10511ms :hybrid.example.irc.com NOTICE gc3477 :*** You are exempt from flood protection
+10511ms :hybrid.example.irc.com 001 gc3477 :Welcome to the ExampleNet Internet Relay Chat Network gc3477!~gc3477@172.27.0.1
+10512ms :hybrid.example.irc.com 002 gc3477 :Your host is hybrid.example.irc.com[0.0.0.0/4442], running version hybrid(TRUNK)
+10512ms :hybrid.example.irc.com 003 gc3477 :This server was created Apr 12 2019 at 06:06:54
+10512ms :hybrid.example.irc.com 004 gc3477 hybrid.example.irc.com hybrid(TRUNK) DFGHRSWabcdefgijklnopqrsuwy bchiklmnoprstuveCILMNORST bkloveIh
+10512ms :hybrid.example.irc.com 005 gc3477 CALLERID CASEMAPPING=ascii DEAF=D KICKLEN=180 MODES=6 PREFIX=(ohv)@%+ STATUSMSG=@%+ EXCEPTS INVEX NICKLEN=9 NETWORK=ExampleNet MAXLIST=beI:100 MAXTARGETS=4 :are supported by this server
+10512ms :hybrid.example.irc.com 005 gc3477 CHANTYPES=# CHANLIMIT=#:25 CHANNELLEN=50 TOPICLEN=160 CHANMODES=beI,k,l,cimnprstuCLMNORST KNOCK ELIST=CMNTU SAFELIST AWAYLEN=180 WATCH=50 :are supported by this server
+10512ms :hybrid.example.irc.com 251 gc3477 :There are 0 users and 1 invisible on 1 servers
+10512ms :hybrid.example.irc.com 255 gc3477 :I have 1 clients and 0 servers
+10512ms :hybrid.example.irc.com 265 gc3477 :Current local users: 1  Max: 1
+10512ms :hybrid.example.irc.com 266 gc3477 :Current global users: 1  Max: 1
+10512ms :hybrid.example.irc.com 250 gc3477 :Highest connection count: 1 (1 clients) (1 connections received)
+10512ms :hybrid.example.irc.com 375 gc3477 :- hybrid.example.irc.com Message of the Day - 
+10512ms :hybrid.example.irc.com 372 gc3477 :- This is the MOTD
+10512ms :hybrid.example.irc.com 376 gc3477 :End of /MOTD command.
+10512ms :gc3477!~gc3477@172.27.0.1 MODE gc3477 :+i
