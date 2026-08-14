@@ -578,9 +578,18 @@ type Client struct {
 }
 
 // Keepalive timing (overridable in tests).
+//
+// 300s/120s, not the old 120s/60s: a 180s total budget was tight enough
+// that a client sending its own periodic keepalive ping (e.g. "PING
+// :TIMEOUTCHECK") on a real-world interval of 3-5 minutes — comfortably
+// under what a typical ircd tolerates — could still get closed by gobnc
+// itself between two of its own pings, even though every ping it did send
+// was answered. A 420s total budget gives room for a slower client-side
+// interval while still catching genuinely dead connections well within
+// what any real ircd would.
 var (
-	KeepaliveIdle  = 120 * time.Second
-	KeepaliveGrace = 60 * time.Second
+	KeepaliveIdle  = 300 * time.Second
+	KeepaliveGrace = 120 * time.Second
 )
 
 func (c *Client) touch() {
