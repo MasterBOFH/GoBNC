@@ -112,7 +112,7 @@ func (s *Server) bootstrapKeeper(ctx context.Context) error {
 		s.log.Info("attached to an existing keeper")
 	}
 	s.keeperClient = res.Client
-	s.driver = brain.NewDriver(s.keeperClient)
+	s.driver = brain.NewDriver(s.keeperClient, brain.WithLogger(s.log))
 	s.driver.SetMaxFloodQueue(s.cfg.MaxFloodQueue)
 
 	s.resumedAtBoot = make(map[keeper.NetworkID]bool, len(res.Client.Networks))

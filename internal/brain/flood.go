@@ -75,7 +75,7 @@ func (d *Driver) floodStateFor(id keeper.NetworkID) *floodState {
 func (d *Driver) WriteRaw(id keeper.NetworkID, line string) error {
 	fs := d.floodStateFor(id)
 	if !fs.bucket.Enabled() {
-		return d.client.SendWrite(id, line)
+		return d.sendLine(id, line)
 	}
 	d.floodMu.Lock()
 	max := d.maxFloodQueue
@@ -118,7 +118,7 @@ func (d *Driver) floodDrainLoop(ctx context.Context, id keeper.NetworkID, fs *fl
 			if err := fs.bucket.Take(ctx, wireBytes(line)); err != nil {
 				return
 			}
-			_ = d.client.SendWrite(id, line) // best-effort; outcome surfaces as a later WriteResult
+			_ = d.sendLine(id, line) // best-effort; outcome surfaces as a later WriteResult
 			select {
 			case <-ctx.Done():
 				return

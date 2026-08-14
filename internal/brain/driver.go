@@ -11,11 +11,13 @@ package brain
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/registration"
 )
 
@@ -49,6 +51,14 @@ func WithRegistrationTimeout(d time.Duration) DriverOption {
 	return func(drv *Driver) { drv.registrationTimeout = d }
 }
 
+// WithLogger sets where Driver logs raw uplink traffic (see Driver.log's
+// doc comment). Omitted entirely by tests that construct a Driver
+// directly — a nil logger silently disables this logging, not a panic or
+// a fallback to slog.Default().
+func WithLogger(log *slog.Logger) DriverOption {
+	return func(drv *Driver) { drv.log = log }
+}
+
 // NetworkConfig is what Driver needs to register one network. PrimaryNick/
 // AltNick/NickRecovery/SASL go straight to registration.New; Pass/Username/
 // Realname are only used to build the opening lines (see
@@ -62,6 +72,12 @@ type NetworkConfig struct {
 	Pass     string
 	Username string
 	Realname string
+
+	// Name is a purely cosmetic display label for this network (e.g. the
+	// store.Network.Name a caller already has) — used only for raw-traffic
+	// log lines (see Driver.log's doc comment); Driver has no other notion
+	// of network identity beyond the opaque keeper.NetworkID.
+	Name string
 }
 
 // Result is published once a network's registration reaches a terminal
@@ -92,6 +108,18 @@ type ChannelJoin struct {
 // corresponding result from Driver, not from the client directly.
 type Driver struct {
 	client *keeper.AttachClient
+
+	// log, if set (see WithLogger), gets every raw uplink line Driver
+	// sends or receives, via gobnclog.IRC — the brain-side replacement for
+	// what internal/uplink.Uplink used to get for free by owning a
+	// connio.Conn with SetLogger attached directly. The keeper deliberately
+	// never logs raw content itself (see keeper.Dial's doc comment on
+	// c.SetLogger) — Driver is the only remaining single choke point for
+	// every uplink line in the new split (see this type's own doc comment),
+	// matching connio.Conn's old role. nil is a valid, silent default
+	// (gobnclog.IRC no-ops on a nil logger) — tests that construct a Driver
+	// directly don't need one.
+	log *slog.Logger
 
 	registrationTimeout  time.Duration
 	nickRecoveryInterval time.Duration
@@ -259,7 +287,7 @@ func (d *Driver) joinChannels(id keeper.NetworkID) {
 		if ch.Key != "" {
 			line += " " + ch.Key
 		}
-		_ = d.client.SendWrite(id, line) // best-effort, matching ActionSend's own handling
+		_ = d.sendLine(id, line) // best-effort, matching ActionSend's own handling
 	}
 }
 
@@ -292,6 +320,31 @@ func (d *Driver) RegisterNetwork(id keeper.NetworkID, cfg NetworkConfig) {
 	d.configs[id] = cfg
 	d.resetStateLocked(id, cfg)
 	d.mu.Unlock()
+}
+
+// peerLabel returns id's display name (see NetworkConfig.Name) for a log
+// line, falling back to the bare numeric ID for a network logged before
+// RegisterNetwork ever ran for it (shouldn't happen in practice — see
+// handleLine's own tracked guard — but a label is better than a panic).
+func (d *Driver) peerLabel(id keeper.NetworkID) string {
+	d.mu.Lock()
+	name := d.configs[id].Name
+	d.mu.Unlock()
+	if name == "" {
+		return fmt.Sprintf("net-%d", id)
+	}
+	return name
+}
+
+// sendLine is the one path every outgoing uplink line must go through —
+// registration's opening burst and ongoing protocol responses, nick
+// recovery's ISON/NICK, WriteRaw's paced client/session traffic, all of
+// it — so raw-traffic logging (see Driver.log's doc comment) only needs
+// instrumenting once, matching connio.Conn.WriteLine's old role as the
+// single write choke point for internal/uplink.
+func (d *Driver) sendLine(id keeper.NetworkID, line string) error {
+	gobnclog.IRC(d.log, d.peerLabel(id), ">>", line)
+	return d.client.SendWrite(id, line)
 }
 
 // UpdateNetworkConfig replaces id's stored NetworkConfig for future
@@ -493,7 +546,7 @@ func (d *Driver) StartRegistration(id keeper.NetworkID) error {
 		return fmt.Errorf("brain: StartRegistration: network %d not registered", id)
 	}
 	for _, a := range registration.Start(cfg.PrimaryNick, cfg.Pass, cfg.Username, cfg.Realname, false) {
-		if err := d.client.SendWrite(id, a.Line); err != nil {
+		if err := d.sendLine(id, a.Line); err != nil {
 			return err
 		}
 	}
@@ -653,6 +706,7 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 		return
 	}
 
+	gobnclog.IRC(d.log, d.peerLabel(line.Network), "<<", string(line.Raw))
 	trySendLine(d.lines, line)
 
 	// LineMsg.Raw is []byte specifically because server-sent content isn't
@@ -679,7 +733,7 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	for _, a := range actions {
 		switch a.Kind {
 		case registration.ActionSend:
-			_ = d.client.SendWrite(line.Network, a.Line) // best-effort; a write failure surfaces as a later WriteResult or a dead connection
+			_ = d.sendLine(line.Network, a.Line) // best-effort; a write failure surfaces as a later WriteResult or a dead connection
 		case registration.ActionRegistered:
 			d.disarmDeadline(line.Network)
 			d.setCurrentNick(line.Network, newState.Nick)
