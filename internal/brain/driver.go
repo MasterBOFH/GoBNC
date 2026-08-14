@@ -1,0 +1,717 @@
+// Package brain is the wiring layer between internal/keeper's transport
+// and internal/registration's pure protocol logic — it owns no protocol
+// logic of its own (that's internal/registration) and no transport of its
+// own (that's internal/keeper); it only connects the two. This is new
+// code with no consumers yet: internal/uplink is untouched, and nothing in
+// the existing bouncer depends on this package. See docs/keeper-design.md
+// for the split this completes and cmd/brain-register-demo for a runnable
+// end-to-end proof against real servers.
+package brain
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	"github.com/MasterBOFH/GoBNC/internal/registration"
+)
+
+// DefaultRegistrationTimeout bounds how long a network is given to reach a
+// terminal registration phase (PhaseComplete or PhaseFailed) after
+// StartRegistration, measured once from the opening lines, not reset on
+// each line received. This is a brain decision, not a keeper one — see
+// docs/keeper-design.md's Part 3a section — because the keeper's own
+// ReadIdleTimeout is a socket-liveness backstop (default 10 minutes) with
+// no notion of "registration" at all; a server that keeps a trickle of
+// traffic flowing (or one that just completes the TCP handshake and says
+// nothing) without ever reaching 001/376/422 would sit well within that
+// backstop indefinitely.
+//
+// 90s, not internal/uplink's old 60s: the real transcript corpus
+// (testdata/registration/) includes a genuine ~70s ident-lookup wait on
+// two old ircds (bahamut, ircd-irc2) — 60s would have failed both. 90s
+// keeps comfortable margin above the slowest real capture without
+// approaching the keeper's 10-minute socket backstop, so a merely slow
+// (but real) registration still succeeds while a genuinely stalled one
+// fails in well under two minutes instead of not failing at all.
+const DefaultRegistrationTimeout = 90 * time.Second
+
+// DriverOption configures optional Driver behavior at construction time.
+type DriverOption func(*Driver)
+
+// WithRegistrationTimeout overrides DefaultRegistrationTimeout — mainly for
+// tests, which need this in the millisecond range rather than waiting out
+// 90 real seconds to prove the deadline fires.
+func WithRegistrationTimeout(d time.Duration) DriverOption {
+	return func(drv *Driver) { drv.registrationTimeout = d }
+}
+
+// NetworkConfig is what Driver needs to register one network. PrimaryNick/
+// AltNick/NickRecovery/SASL go straight to registration.New; Pass/Username/
+// Realname are only used to build the opening lines (see
+// registration.Start) and aren't otherwise known to the state machine.
+type NetworkConfig struct {
+	PrimaryNick  string
+	AltNick      string
+	NickRecovery bool
+	SASL         registration.SASLConfig
+
+	Pass     string
+	Username string
+	Realname string
+}
+
+// Result is published once a network's registration reaches a terminal
+// state (registration.PhaseComplete or registration.PhaseFailed).
+type Result struct {
+	Network keeper.NetworkID
+	State   registration.State
+}
+
+// ChannelJoin is one channel to auto-join once a network finishes
+// registering — deliberately a small, brain-local type rather than
+// importing internal/store.Channel, matching keeper.NetworkID's own
+// doc-commented reasoning: this package shouldn't take on a dependency on
+// a larger one just to reuse a field shape.
+type ChannelJoin struct {
+	Name string
+	Key  string // empty: no key
+}
+
+// Driver pumps one keeper.AttachClient's live event stream: Line events
+// for a network still registering are stepped through
+// registration.Step, and any resulting ActionSend is turned into a real
+// keeper.AttachClient.SendWrite call. Driver is the only reader of the
+// client's event stream (AttachClient has no fan-out — only one goroutine
+// can call Next in a loop), so it also republishes every other event kind
+// (DialResult, CloseResult, NetworkEvent) on its own channels; a caller
+// that issues a Dial or Close over the same client must read the
+// corresponding result from Driver, not from the client directly.
+type Driver struct {
+	client *keeper.AttachClient
+
+	registrationTimeout  time.Duration
+	nickRecoveryInterval time.Duration
+
+	mu           sync.Mutex
+	states       map[keeper.NetworkID]registration.State // presence = tracked
+	configs      map[keeper.NetworkID]NetworkConfig
+	channels     map[keeper.NetworkID][]ChannelJoin
+	dialConfigs  map[keeper.NetworkID]keeper.DialConfig          // last config passed to Dial; see Reconnect
+	epochs       map[keeper.NetworkID]uint64                     // current known epoch per network; see handleNetworkEvent
+	deadlines    map[keeper.NetworkID]*time.Timer                // armed while registering; see armDeadline
+	currentNick  map[keeper.NetworkID]string                     // see nickrecovery.go
+	closeWaiters map[keeper.NetworkID]chan keeper.CloseResultMsg // see Reconnect
+
+	// nickRecMu guards the three maps below, separately from mu — matches
+	// internal/uplink's own separate nickRecMu, since nick-recovery state
+	// transitions (start/stop/isonPending) are logically independent of
+	// registration/config state and giving them their own lock avoids
+	// nick-recovery bookkeeping contending with the hot registration path.
+	nickRecMu    sync.Mutex
+	nickRecStops map[keeper.NetworkID]chan struct{}
+	isonPending  map[keeper.NetworkID]bool
+
+	results          chan Result
+	lines            chan keeper.LineMsg
+	dialResults      chan keeper.DialResultMsg
+	closeResults     chan keeper.CloseResultMsg
+	writeResults     chan keeper.WriteResultMsg
+	quitCloseResults chan keeper.QuitCloseResultMsg
+	netEvents        chan keeper.NetworkEventMsg
+}
+
+// NewDriver wraps an already-attached, live-mode client. Call SendLiveReady
+// on it before Run, same as any other live-mode use of AttachClient —
+// Driver doesn't do that for you, since the caller may want to finish
+// setting up (e.g. calling RegisterNetwork for networks already listed in
+// client.Networks) before delivery starts.
+func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
+	d := &Driver{
+		client:               client,
+		registrationTimeout:  DefaultRegistrationTimeout,
+		nickRecoveryInterval: DefaultNickRecoveryInterval,
+		states:               make(map[keeper.NetworkID]registration.State),
+		configs:              make(map[keeper.NetworkID]NetworkConfig),
+		channels:             make(map[keeper.NetworkID][]ChannelJoin),
+		dialConfigs:          make(map[keeper.NetworkID]keeper.DialConfig),
+		epochs:               make(map[keeper.NetworkID]uint64),
+		deadlines:            make(map[keeper.NetworkID]*time.Timer),
+		currentNick:          make(map[keeper.NetworkID]string),
+		closeWaiters:         make(map[keeper.NetworkID]chan keeper.CloseResultMsg),
+		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
+		isonPending:          make(map[keeper.NetworkID]bool),
+		results:              make(chan Result, 16),
+		lines:                make(chan keeper.LineMsg, 64),
+		dialResults:          make(chan keeper.DialResultMsg, 16),
+		closeResults:         make(chan keeper.CloseResultMsg, 16),
+		writeResults:         make(chan keeper.WriteResultMsg, 16),
+		quitCloseResults:     make(chan keeper.QuitCloseResultMsg, 16),
+		netEvents:            make(chan keeper.NetworkEventMsg, 16),
+	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// Results publishes one Result per network, once it reaches a terminal
+// registration phase.
+func (d *Driver) Results() <-chan Result { return d.results }
+
+// Lines republishes every line Driver sees for a tracked network,
+// unconditionally — before registration, during it, and forever after.
+// registration.Step only cares about registration-phase traffic and is a
+// no-op past a terminal Phase, so without this, everything a network says
+// after it finishes registering would simply vanish inside Driver. This
+// is the channel a future session-equivalent consumer reads for its own
+// message fan-out, state tracking, and reply routing — Driver itself does
+// not interpret post-registration content at all, only relays it (the
+// same "keeper stores bytes, the layer above interprets them" principle
+// applied one level up).
+func (d *Driver) Lines() <-chan keeper.LineMsg { return d.lines }
+
+// DialResults, CloseResults, WriteResults, QuitCloseResults, and
+// NetworkEvents republish every frame of that kind Driver's read loop
+// sees, since Driver owns the only read of the underlying client.
+func (d *Driver) DialResults() <-chan keeper.DialResultMsg           { return d.dialResults }
+func (d *Driver) CloseResults() <-chan keeper.CloseResultMsg         { return d.closeResults }
+func (d *Driver) WriteResults() <-chan keeper.WriteResultMsg         { return d.writeResults }
+func (d *Driver) QuitCloseResults() <-chan keeper.QuitCloseResultMsg { return d.quitCloseResults }
+func (d *Driver) NetworkEvents() <-chan keeper.NetworkEventMsg       { return d.netEvents }
+
+// QuitNetwork deliberately disconnects from network: it asks the keeper
+// (via QuitCloseRequest) to write a final line — reason wrapped as
+// "QUIT :reason", or bare "QUIT" if reason is empty — with a bounded
+// deadline, then close the uplink. timeout<=0 uses the keeper's default.
+//
+// This is the ONLY Driver method that sends anything resembling QUIT.
+// Driver.Run returning (ctx canceled, e.g. because the brain process
+// itself is exiting for a code reload) never calls this and never will —
+// it just stops reading, and the keeper keeps holding every uplink
+// exactly as it was. Conflating "the brain is going away" with "disconnect
+// this network" is the one mistake that costs everything on this project
+// (see docs/keeper-design.md): every reload would send QUIT and drop
+// every uplink, which is the exact failure the keeper/brain split exists
+// to prevent. If a future caller ever needs "disconnect every network on
+// brain exit," that has to be an explicit decision made by whoever drives
+// shutdown, spelled out in real code — never a side effect of Run
+// returning.
+func (d *Driver) QuitNetwork(id keeper.NetworkID, reason string, timeout time.Duration) error {
+	line := "QUIT"
+	if reason != "" {
+		line += " :" + reason
+	}
+	return d.client.SendQuitClose(id, line, timeout)
+}
+
+// SetChannels sets the channels Driver auto-joins for id the moment its
+// registration next reaches PhaseComplete — mirrors
+// internal/uplink.Uplink.SetChannels/joinChannels, which did the same
+// thing synchronously inside the old finishRegister. registration.Step
+// deliberately stops at PhaseComplete and takes no further action (join
+// isn't a registration concern), so without this there is nothing left to
+// perform the join at all. Safe to call before or after RegisterNetwork,
+// and at any point before the network finishes registering again (e.g.
+// before a Reconnect) — it only takes effect on the next ActionRegistered
+// this Driver observes for id.
+func (d *Driver) SetChannels(id keeper.NetworkID, channels []ChannelJoin) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.channels[id] = append([]ChannelJoin(nil), channels...)
+}
+
+// joinChannels sends JOIN for every channel configured via SetChannels for
+// id — called once, right when Driver itself observes ActionRegistered
+// for id (see handleLine), not by a downstream consumer of Results(),
+// since coupling this to something reading a channel would make "does the
+// join actually happen" depend on whether anyone happens to be listening.
+func (d *Driver) joinChannels(id keeper.NetworkID) {
+	d.mu.Lock()
+	channels := d.channels[id]
+	d.mu.Unlock()
+	for _, ch := range channels {
+		line := "JOIN " + ch.Name
+		if ch.Key != "" {
+			line += " " + ch.Key
+		}
+		_ = d.client.SendWrite(id, line) // best-effort, matching ActionSend's own handling
+	}
+}
+
+// RegisterNetwork (re)starts registration tracking for id with a fresh
+// registration.State. Call it before the network's first Line arrives —
+// typically right after issuing (or observing) a Dial for it. Lines for a
+// network with no tracked state are ignored, not buffered or errored: a
+// network the caller isn't trying to register through this driver (e.g.
+// one already fully attached from a prior brain instance) is simply not
+// this driver's concern.
+//
+// Do not call this for a network you're merely re-attaching to (already
+// connected and already registered on the keeper, e.g. this Driver
+// instance is a fresh process resuming after a restart) unless you
+// actually want to redrive registration. There is no wire-level
+// distinction between "genuinely new traffic" and "this network's
+// retained backlog being replayed because you just attached" — both
+// arrive as ordinary Line events. A fresh registration.State fed that
+// backlog steps through it (CAP negotiation, welcome numerics, MOTD) all
+// over again, reaching PhaseComplete a second time and re-firing
+// ActionRegistered's side effects (auto-join, nick-recovery start)
+// against a connection that was never actually re-registered — found by
+// running cmd/brain-register-demo live against its own resumed session.
+// Same class of hazard registration.Start's replay guard exists for (see
+// docs/keeper-design.md); a real fix is resume support built on the blob
+// store, not available yet — until then, simply don't call RegisterNetwork
+// for a network you're only resuming.
+func (d *Driver) RegisterNetwork(id keeper.NetworkID, cfg NetworkConfig) {
+	d.mu.Lock()
+	d.configs[id] = cfg
+	d.resetStateLocked(id, cfg)
+	d.mu.Unlock()
+}
+
+// resetStateLocked installs a fresh registration.State for id from cfg and
+// discards any deadline left over from a prior attempt — shared by
+// RegisterNetwork and Reconnect (a redial needs the same fresh-State
+// treatment a first-time registration does; the difference is only where
+// cfg comes from). Caller must hold d.mu.
+func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
+	d.states[id] = registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	delete(d.currentNick, id)
+	if t, ok := d.deadlines[id]; ok {
+		t.Stop()
+		delete(d.deadlines, id)
+	}
+	// A recovery loop from whatever connection this State is superseding
+	// is no longer valid — stopNickRecovery only touches nickRecMu, safe
+	// to call while d.mu (the caller's lock) is held.
+	d.stopNickRecovery(id)
+}
+
+// Dial asks the keeper to dial (or redial) network id with cfg, recording
+// cfg so a later Reconnect can redial with the same settings — this is
+// the only way Driver learns what DialConfig a network is using. A caller
+// that dials by calling AttachClient.SendDial directly instead of through
+// here bypasses this bookkeeping, and Reconnect will fail for that
+// network until Dial is called through Driver at least once.
+func (d *Driver) Dial(id keeper.NetworkID, cfg keeper.DialConfig, fromSeq uint64) error {
+	d.mu.Lock()
+	d.dialConfigs[id] = cfg
+	d.mu.Unlock()
+	return d.client.SendDial(id, cfg, fromSeq)
+}
+
+// Reconnect closes and redials network id using whatever DialConfig was
+// last passed to Dial for it, and resets its registration.State to fresh
+// (using the NetworkConfig from the last RegisterNetwork call) — the
+// equivalent of internal/uplink.Uplink.ForceReconnect, which closed the
+// current connection so Run's loop redialed and internal/uplink's
+// session() unconditionally re-registered from scratch on the new
+// connection. Channels (SetChannels) and nick-recovery configuration for
+// id are untouched — this is a redial of the same tracked network, not a
+// fresh RegisterNetwork call from the caller's side.
+//
+// Like a fresh Dial, this does not itself call StartRegistration — the
+// caller still waits for the resulting DialResult/NetworkEvent{Connected}
+// and calls StartRegistration, same as any other dial. Returns an error
+// if Dial was never called through this Driver for id (nothing recorded
+// to redial with) or if RegisterNetwork never was (nothing to reset the
+// State from).
+//
+// Bumps d.epochs[id] optimistically, before SendClose/SendDial even run —
+// this closes a real race found while testing this method: a disconnect
+// notification for the connection being replaced can still be in flight
+// (published by the keeper, not yet delivered here) at the moment
+// Reconnect runs. Without the bump, that stale, pre-reconnect disconnect
+// event can arrive after resetStateLocked has already installed the
+// fresh State for the new attempt, and — since it isn't yet in a terminal
+// Phase — get misread by handleNetworkEvent as a failure of the *new*
+// attempt instead of being recognized as leftover noise from the old one.
+// Safe even if the coming Dial fails outright: keeper only increments its
+// own epoch on a successful raw connect (see Keeper.Dial), and a
+// deliberate Close (which SendClose triggers) never publishes a
+// disconnect event for the connection it's closing — so there is no
+// legitimate future event this bump could wrongly suppress.
+//
+// Waits for the actual CloseResult before sending the Dial request — a
+// second real race found live (against a real ircd, not just the fake
+// servers this session's other tests use): SendClose and SendDial are
+// each dispatched to their own goroutine by the keeper's listener with no
+// ordering guarantee between them, so firing both back-to-back can have
+// the Dial's k.Dial() run before the Close's k.Close() has actually
+// finished, failing with ErrAlreadyConnected. Waiting for confirmation
+// first is the caller-side fix for an inherently async protocol — no
+// change to the keeper's request dispatch needed, since nothing about
+// that dispatch is wrong in general, only this specific "the next request
+// depends on the previous one having completed" case.
+func (d *Driver) Reconnect(id keeper.NetworkID) error {
+	d.mu.Lock()
+	dialCfg, ok := d.dialConfigs[id]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("brain: Reconnect: network %d has no recorded DialConfig (never Dial'd through Driver)", id)
+	}
+	netCfg, ok := d.configs[id]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("brain: Reconnect: network %d was never registered (RegisterNetwork was never called)", id)
+	}
+	d.resetStateLocked(id, netCfg)
+	d.epochs[id]++
+	waiter := make(chan keeper.CloseResultMsg, 1)
+	d.closeWaiters[id] = waiter
+	d.mu.Unlock()
+
+	if err := d.client.SendClose(id); err != nil {
+		d.mu.Lock()
+		delete(d.closeWaiters, id)
+		d.mu.Unlock()
+		return err
+	}
+
+	select {
+	case <-waiter:
+		// Close confirmed complete — whether it reported OK or an error,
+		// the keeper is done processing it, and a Dial is now safe to
+		// send. Keeper.Close is idempotent and safe even if there was
+		// nothing to close, so a "failure" here isn't a reason to abort.
+	case <-time.After(closeConfirmTimeout):
+		d.mu.Lock()
+		delete(d.closeWaiters, id)
+		d.mu.Unlock()
+		return fmt.Errorf("brain: Reconnect: network %d: no CloseResult within %s", id, closeConfirmTimeout)
+	}
+
+	return d.client.SendDial(id, dialCfg, 0)
+}
+
+// closeConfirmTimeout bounds Reconnect's wait for CloseResult. Close is a
+// fast, local operation on the keeper's side (cancel + socket close +
+// wait for the read loop to notice) — 5s is generous headroom, not an
+// expected wait.
+const closeConfirmTimeout = 5 * time.Second
+
+// notifyCloseWaiter delivers a CloseResult to a pending Reconnect call
+// waiting on it, if there is one — separate from and in addition to the
+// normal CloseResults() republish (trySendCloseResult), so an external
+// caller reading CloseResults() is unaffected by Reconnect's own internal
+// wait; the two are independent consumers of the same event.
+func (d *Driver) notifyCloseWaiter(res keeper.CloseResultMsg) {
+	d.mu.Lock()
+	waiter, ok := d.closeWaiters[res.Network]
+	if ok {
+		delete(d.closeWaiters, res.Network)
+	}
+	d.mu.Unlock()
+	if ok {
+		waiter <- res
+	}
+}
+
+// StartRegistration sends the opening CAP LS/NICK/USER lines for a tracked
+// network (see registration.Start) — call it once the caller has confirmed
+// the network's uplink is actually connected (a DialResult with OK, or a
+// NetworkEvent{Connected}), since there is nothing to write to before then.
+// Calling it for a network RegisterNetwork was never called for is an
+// error; calling it twice for the same connection sends the opening lines
+// twice, which is the caller's mistake to avoid, not Driver's to prevent —
+// Driver has no notion of "already started" separate from Phase, and a
+// fresh reconnect legitimately needs the opening lines resent.
+//
+// Driver has no replay/resume path yet (that's blob-store-driven work, not
+// built) — every call here is necessarily a fresh connection, so replay is
+// hardcoded false. When resume support is added, it MUST go through a
+// different entry point that never calls StartRegistration at all: Start
+// is a live-only operation (see its doc comment and docs/keeper-design.md)
+// precisely because resending CAP LS/NICK/USER down an already-registered
+// live socket is a real hazard, not a hypothetical one to guard against
+// only in the abstract.
+func (d *Driver) StartRegistration(id keeper.NetworkID) error {
+	d.mu.Lock()
+	cfg, ok := d.configs[id]
+	d.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("brain: StartRegistration: network %d not registered", id)
+	}
+	for _, a := range registration.Start(cfg.PrimaryNick, cfg.Pass, cfg.Username, cfg.Realname, false) {
+		if err := d.client.SendWrite(id, a.Line); err != nil {
+			return err
+		}
+	}
+	d.armDeadline(id)
+	return nil
+}
+
+// armDeadline starts (or restarts) id's registration-timeout clock. Total,
+// not idle: it isn't reset by lines arriving, only cleared by reaching a
+// terminal phase (see disarmDeadline) — see DefaultRegistrationTimeout's
+// doc comment for why total-since-Start is the right shape, not an idle
+// reset (that's the keeper's ReadIdleTimeout's job, one layer down).
+func (d *Driver) armDeadline(id keeper.NetworkID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t, ok := d.deadlines[id]; ok {
+		t.Stop()
+	}
+	d.deadlines[id] = time.AfterFunc(d.registrationTimeout, func() {
+		d.failRegistration(id, fmt.Errorf("registration deadline exceeded (%s)", d.registrationTimeout))
+	})
+}
+
+// disarmDeadline cancels id's pending deadline, if any. Called once a
+// network reaches a terminal phase by any path (normal completion, the
+// deadline itself, or a mid-registration disconnect) so a stale timer
+// can't fire a second, spurious Result over an already-terminal State.
+func (d *Driver) disarmDeadline(id keeper.NetworkID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t, ok := d.deadlines[id]; ok {
+		t.Stop()
+		delete(d.deadlines, id)
+	}
+}
+
+// failRegistration moves a still-registering network to PhaseFailed and
+// publishes the Result — the shared tail end of both the registration
+// deadline and a mid-registration disconnect. Guarded on Phase so it's
+// safe to call from either path (or both, racing) without double-firing a
+// Result over a State that's already terminal: whichever gets d.mu first
+// wins, and the other becomes a no-op.
+func (d *Driver) failRegistration(id keeper.NetworkID, err error) {
+	d.mu.Lock()
+	s, tracked := d.states[id]
+	if !tracked || s.Phase == registration.PhaseComplete || s.Phase == registration.PhaseFailed {
+		d.mu.Unlock()
+		return
+	}
+	s.Phase = registration.PhaseFailed
+	s.Err = err
+	d.states[id] = s
+	if t, ok := d.deadlines[id]; ok {
+		t.Stop()
+		delete(d.deadlines, id)
+	}
+	d.mu.Unlock()
+	trySendResult(d.results, Result{Network: id, State: s})
+}
+
+// State returns the current registration.State for id and whether it's
+// being tracked at all.
+func (d *Driver) State(id keeper.NetworkID) (registration.State, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s, ok := d.states[id]
+	return s, ok
+}
+
+// Run reads the client's event stream until ctx is done or the connection
+// ends, driving every tracked network's registration.State and
+// republishing every other event kind. Blocking — run it in its own
+// goroutine. The caller is responsible for calling client.SendLiveReady
+// before or concurrently with Run (the read loop will simply see nothing
+// until the keeper starts delivering).
+//
+// ctx alone cannot stop Run once it's blocked in client.Next(): that's a
+// plain network read with no ctx-tied deadline, and Run only re-checks
+// ctx.Err() between frames. Canceling ctx without also closing client
+// leaves Run blocked indefinitely waiting for the next frame. This is not
+// a gap in practice: a real brain process exiting (the scenario this
+// exists for — see QuitNetwork's doc comment) closes every file
+// descriptor, including the attach connection, as part of normal process
+// teardown, which unblocks client.Next() with an error on its own. A
+// caller that wants Run to stop without the process actually exiting must
+// close client itself, not rely on ctx in isolation.
+func (d *Driver) Run(ctx context.Context) error {
+	defer close(d.results)
+	defer close(d.lines)
+	defer close(d.dialResults)
+	defer close(d.closeResults)
+	defer close(d.writeResults)
+	defer close(d.quitCloseResults)
+	defer close(d.netEvents)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ev, err := d.client.Next()
+		if err != nil {
+			return err
+		}
+		switch {
+		case ev.Line != nil:
+			d.handleLine(*ev.Line)
+		case ev.DialResult != nil:
+			if ev.DialResult.OK {
+				d.recordEpoch(ev.DialResult.Network, ev.DialResult.Epoch)
+			}
+			trySendDialResult(d.dialResults, *ev.DialResult)
+		case ev.CloseResult != nil:
+			d.notifyCloseWaiter(*ev.CloseResult)
+			trySendCloseResult(d.closeResults, *ev.CloseResult)
+		case ev.WriteResult != nil:
+			trySendWriteResult(d.writeResults, *ev.WriteResult)
+		case ev.QuitCloseResult != nil:
+			trySendQuitCloseResult(d.quitCloseResults, *ev.QuitCloseResult)
+		case ev.NetworkEvent != nil:
+			if ev.NetworkEvent.Kind == keeper.EventConnected {
+				d.recordEpoch(ev.NetworkEvent.Network, ev.NetworkEvent.Epoch)
+			}
+			d.handleNetworkEvent(*ev.NetworkEvent)
+			trySendNetworkEvent(d.netEvents, *ev.NetworkEvent)
+		}
+	}
+}
+
+func (d *Driver) handleLine(line keeper.LineMsg) {
+	d.mu.Lock()
+	state, tracked := d.states[line.Network]
+	d.mu.Unlock()
+	if !tracked {
+		return
+	}
+
+	trySendLine(d.lines, line)
+
+	// LineMsg.Raw is []byte specifically because server-sent content isn't
+	// guaranteed valid UTF-8 (see keeper's protocol doc) — irc.Parse takes
+	// a string, but a Go string is just a byte container; this conversion
+	// doesn't validate or normalize anything, it's the same bytes.
+	msg, err := irc.Parse(string(line.Raw))
+	if err != nil {
+		return // unparseable line; nothing registration.Step can act on
+	}
+
+	// Nick recovery reacts to the same parsed traffic, independent of
+	// registration.Step — it only matters post-registration (Step
+	// itself is a no-op there), and doesn't need or want Step's own
+	// interpretation of these lines.
+	d.handleNickRecoveryTraffic(line.Network, msg)
+
+	newState, actions := registration.Step(state, registration.Input{Msg: msg})
+
+	d.mu.Lock()
+	d.states[line.Network] = newState
+	d.mu.Unlock()
+
+	for _, a := range actions {
+		switch a.Kind {
+		case registration.ActionSend:
+			_ = d.client.SendWrite(line.Network, a.Line) // best-effort; a write failure surfaces as a later WriteResult or a dead connection
+		case registration.ActionRegistered:
+			d.disarmDeadline(line.Network)
+			d.setCurrentNick(line.Network, newState.Nick)
+			trySendResult(d.results, Result{Network: line.Network, State: newState})
+			d.joinChannels(line.Network)
+			d.startNickRecoveryIfNeeded(line.Network)
+		case registration.ActionFailed:
+			d.disarmDeadline(line.Network)
+			trySendResult(d.results, Result{Network: line.Network, State: newState})
+		}
+	}
+}
+
+// handleNetworkEvent resolves a still-registering network's State to
+// PhaseFailed the moment its uplink disconnects mid-registration, instead
+// of leaving it stuck with no Result ever sent — see the pre-3b regression
+// net in docs/keeper-design.md, which is what this closes. Only
+// EventDisconnected is acted on; EventConnected needs no handling here
+// (registration only actually begins once the caller calls
+// StartRegistration in reaction to it). A network already at a terminal
+// phase (registered, or already failed by this same path or the deadline)
+// is a no-op via failRegistration's own Phase guard.
+func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
+	if ev.Kind != keeper.EventDisconnected {
+		return
+	}
+	d.mu.Lock()
+	current := d.epochs[ev.Network]
+	d.mu.Unlock()
+	if ev.Epoch < current {
+		// A disconnect notification for a connection Reconnect has
+		// already superseded — see Reconnect's doc comment for exactly
+		// why this can happen and why the fix is here, not there.
+		return
+	}
+	// A genuine disconnect on the current epoch — whether or not
+	// registration had already completed (failRegistration below is a
+	// no-op past a terminal Phase, but a nick-recovery loop can very much
+	// still be running at that point and needs tearing down here, not
+	// just on the next fresh registration attempt).
+	d.stopNickRecovery(ev.Network)
+	msg := "uplink disconnected during registration"
+	if ev.Error != "" {
+		msg += ": " + ev.Error
+	}
+	d.failRegistration(ev.Network, fmt.Errorf("%s", msg))
+}
+
+// recordEpoch remembers id's current epoch, taking the higher of what's
+// already known and epoch — a plain overwrite would let a legitimately
+// in-order update still lose to network/goroutine reordering; taking the
+// max is idempotent under any arrival order for values that only ever
+// increase (both real epochs from the keeper and Reconnect's own
+// optimistic bump do).
+func (d *Driver) recordEpoch(id keeper.NetworkID, epoch uint64) {
+	d.mu.Lock()
+	if epoch > d.epochs[id] {
+		d.epochs[id] = epoch
+	}
+	d.mu.Unlock()
+}
+
+// trySend* helpers: non-blocking, matching keeper's own publish pattern —
+// a slow consumer of these channels shouldn't be able to stall the read
+// loop that's also responsible for driving registration forward.
+
+func trySendResult(ch chan Result, v Result) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendLine(ch chan keeper.LineMsg, v keeper.LineMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendDialResult(ch chan keeper.DialResultMsg, v keeper.DialResultMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendCloseResult(ch chan keeper.CloseResultMsg, v keeper.CloseResultMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendWriteResult(ch chan keeper.WriteResultMsg, v keeper.WriteResultMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendNetworkEvent(ch chan keeper.NetworkEventMsg, v keeper.NetworkEventMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func trySendQuitCloseResult(ch chan keeper.QuitCloseResultMsg, v keeper.QuitCloseResultMsg) {
+	select {
+	case ch <- v:
+	default:
+	}
+}

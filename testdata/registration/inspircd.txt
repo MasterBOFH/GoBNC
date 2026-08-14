@@ -1,0 +1,19 @@
+# label=inspircd host=127.0.0.1 port=4448 tls=false nick=gc16972 captured=2026-08-13T21:53:40Z
+0ms :inspircd.example.irc.com CAP * LS :account-notify account-tag away-notify batch cap-notify chghost echo-message extended-join invite-notify message-tags multi-prefix server-time tls userhost-in-names
+0ms @time=2026-08-13T21:53:40.000Z :inspircd.example.irc.com CAP gc16972 ACK :cap-notify message-tags server-time batch account-tag account-notify extended-join echo-message away-notify chghost invite-notify
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 001 gc16972 :Welcome to the ExampleNet IRC Network gc16972!gc16972@172.27.0.1
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 002 gc16972 :Your host is inspircd.example.irc.com, running version InspIRCd-3
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 003 gc16972 :This server was created 21:47:21 Aug 13 2026
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 004 gc16972 inspircd.example.irc.com InspIRCd-3 BSWcghiosw ACDIJKSZabcehiklmnopqstuvwz :IJZabehkloqvw
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 005 gc16972 ACCEPT=30 AWAYLEN=200 CALLERID=g CASEMAPPING=ascii CHANLIMIT=#:20 CHANMODES=IZbew,k,Jl,ACDKScimnpstuz CHANNELLEN=64 CHANTYPES=# ELIST=CMNTU EXCEPTS=e EXTBAN=,ACSacmrz HOSTLEN=64 :are supported by this server
+1001ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 005 gc16972 INVEX=I KEYLEN=32 KICKLEN=255 LINELEN=512 MAXLIST=Ibew:100 MAXTARGETS=20 MODES=20 MONITOR=30 NAMESX NETWORK=ExampleNet NICKLEN=30 PREFIX=(qaohv)~&@%+ SAFELIST :are supported by this server
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 005 gc16972 STATUSMSG=~&@%+ TOPICLEN=307 UHNAMES USERLEN=10 VBANLIST WATCH=30 WHOX :are supported by this server
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 251 gc16972 :There are 0 users and 0 invisible on 1 servers
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 253 gc16972 1 :unknown connections
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 254 gc16972 0 :channels formed
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 255 gc16972 :I have 0 clients and 0 servers
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 265 gc16972 :Current local users: 0  Max: 0
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 266 gc16972 :Current global users: 0  Max: 0
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 375 gc16972 :inspircd.example.irc.com message of the day
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 372 gc16972 :- This is the MOTD
+1002ms @time=2026-08-13T21:53:41.000Z :inspircd.example.irc.com 376 gc16972 :End of message of the day.

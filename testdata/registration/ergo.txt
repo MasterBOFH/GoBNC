@@ -1,0 +1,56 @@
+# label=ergo host=127.0.0.1 port=6667 tls=false nick=gobnccap1 captured=2026-08-13T21:43:01Z
+0ms :ergo.test CAP * LS * :account-notify account-tag away-notify batch cap-notify chghost draft/account-registration=before-connect draft/channel-rename draft/chathistory draft/event-playback draft/extended-isupport draft/languages=17,en,~bs,~de,~el,~en-AU,~es,~fi,~fr-FR,~it,~nl,~no,~pl,~pt-BR,~ro,~sq-AL,~tr-TR,~zh-CN draft/metadata-2=before-connect,max-subs=100,max-keys=100 draft/metadata-3=before-connect,max-subs=100,max-keys=100 draft/multiline=max-bytes=4096,max-lines=100 draft/persistence draft/pre-away
+0ms :ergo.test CAP * LS :draft/read-marker draft/relaymsg=/ draft/whoami echo-message ergo.chat/nope extended-join extended-monitor invite-notify labeled-response message-tags multi-prefix no-implicit-names sasl=PLAIN,EXTERNAL,SCRAM-SHA-256 server-time setname standard-replies userhost-in-names znc.in/playback znc.in/self-message
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test CAP * ACK :cap-notify message-tags server-time batch labeled-response account-tag account-notify extended-join echo-message away-notify chghost invite-notify draft/chathistory
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 001 gobnccap1 :Welcome to the ErgoTest IRC Network gobnccap1
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 002 gobnccap1 :Your host is ergo.test, running version ergo-2.19.1-63c743a70644f0f1
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 003 gobnccap1 :This server was created Thu, 13 Aug 2026 21:22:00 UTC
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 004 gobnccap1 ergo.test ergo-2.19.1-63c743a70644f0f1 BERTZios CEIMRUabefhiklmnoqstuv Iabefhkloqv
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 005 gobnccap1 AWAYLEN=390 BOT=B CASEMAPPING=ascii CHANLIMIT=#:100 CHANMODES=Ibe,k,fl,CEMRUimnstu CHANNELLEN=64 CHANTYPES=# CHATHISTORY=1000 ELIST=U EXCEPTS EXTBAN=,m FORWARD=f INVEX :are supported by this server
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 005 gobnccap1 KICKLEN=390 MAXLIST=beI:100 MAXTARGETS=4 MODES MONITOR=100 MSGREFTYPES=msgid,timestamp NETWORK=ErgoTest NICKLEN=32 PREFIX=(qaohv)~&@%+ SAFELIST SAFERATE STATUSMSG=~&@%+ TARGMAX=NAMES:1,LIST:1,KICK:,WHOIS:1,USERHOST:10,PRIVMSG:4,TAGMSG:4,NOTICE:4,MONITOR:100 :are supported by this server
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 005 gobnccap1 TOPICLEN=390 UTF8ONLY WHOX draft/CHATHISTORY=1000 :are supported by this server
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 251 gobnccap1 :There are 0 users and 2 invisible on 1 server(s)
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 252 gobnccap1 0 :IRC Operators online
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 253 gobnccap1 0 :unregistered connections
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 254 gobnccap1 0 :channels formed
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 255 gobnccap1 :I have 2 clients and 0 servers
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 265 gobnccap1 2 2 :Current local users 2, max 2
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 266 gobnccap1 2 2 :Current global users 2, max 2
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 375 gobnccap1 :- ergo.test Message of the day - 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :-      __ __  ______ ___  ______ ___ 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :-   __/ // /_/ ____/ __ \/ ____/ __ \
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :-  /_  // __/ __/ / /_/ / / __/ / / /
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- /_  // __/ /___/ _, _/ /_/ / /_/ / 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :-  /_//_/ /_____/_/ |_|\____/\____/  
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- This is the default Ergo MOTD.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- If motd-formatting is enabled in the config file, you can use the dollarsign character to
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- create special formatting such as bold, italics and color codes.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- For example, here are a few formatted lines (enable motd-formatting to see these in action):
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- - this is bold text.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- - this is italics text.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- - this is 4red and 2blue text.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- - this is 4,12red text with a light blue background.
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- - this is a normal escaped dollarsign: $
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- And now a few fun colour charts!
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 1,0 00 0,1 01 0,2 02 0,3 03 1,4 04 0,5 05 0,6 06 1,7 07 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 1,8 08 1,9 09 0,10 10 1,11 11 0,12 12 1,13 13 1,14 14 1,15 15 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,16 16 0,17 17 0,18 18 0,19 19 0,20 20 0,21 21 0,22 22 0,23 23 0,24 24 0,25 25 0,26 26 0,27 27 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,28 28 0,29 29 0,30 30 0,31 31 0,32 32 0,33 33 0,34 34 0,35 35 0,36 36 0,37 37 0,38 38 0,39 39 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,40 40 0,41 41 0,42 42 0,43 43 0,44 44 0,45 45 0,46 46 0,47 47 0,48 48 0,49 49 0,50 50 0,51 51 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,52 52 0,53 53 1,54 54 1,55 55 1,56 56 1,57 57 1,58 58 0,59 59 0,60 60 0,61 61 0,62 62 0,63 63 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,64 64 1,65 65 1,66 66 1,67 67 1,68 68 1,69 69 1,70 70 1,71 71 0,72 72 0,73 73 0,74 74 0,75 75 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 1,76 76 1,77 77 1,78 78 1,79 79 1,80 80 1,81 81 1,82 82 1,83 83 1,84 84 1,85 85 1,86 86 1,87 87 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 0,88 88 0,89 89 0,90 90 0,91 91 0,92 92 0,93 93 0,94 94 0,95 95 1,96 96 1,97 97 1,98 98 99,99 99 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- 
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 372 gobnccap1 :- For more information on using these, see MOTDFORMATTING.md
+0ms @time=2026-08-13T21:43:01.371Z :ergo.test 376 gobnccap1 :End of MOTD command
+1ms @time=2026-08-13T21:43:01.371Z :ergo.test 221 gobnccap1 +i

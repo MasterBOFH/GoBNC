@@ -30,17 +30,17 @@ const DefaultChatHistoryMax = 100
 
 // Config is process bootstrap configuration.
 type Config struct {
-	ListenAddr    string `json:"listen_addr"`
-	TLSCert       string `json:"tls_cert"`
-	TLSKey        string `json:"tls_key"`
+	ListenAddr string `json:"listen_addr"`
+	TLSCert    string `json:"tls_cert"`
+	TLSKey     string `json:"tls_key"`
 	// TLSClientCert / TLSClientKey are the global uplink client identity (CERTFP / SASL EXTERNAL).
 	// Empty means no global client cert; per-network paths override or inherit these.
 	TLSClientCert string `json:"tls_client_cert,omitempty"`
 	TLSClientKey  string `json:"tls_client_key,omitempty"`
 	// BindHost is the default local address for uplink dials (IP or hostname).
 	// Empty = OS default. Per-network bind_host overrides; none or - disables.
-	BindHost string `json:"bind_host,omitempty"`
-	DBPath   string `json:"db_path"`
+	BindHost      string `json:"bind_host,omitempty"`
+	DBPath        string `json:"db_path"`
 	ControlSocket string `json:"control_socket"`
 	PidFile       string `json:"pid_file,omitempty"`
 	LogLevel      string `json:"log_level"`
@@ -229,7 +229,7 @@ func DialLocalAddr(bindHost string) (net.Addr, error) {
 func (c Config) ResolvedControlSocket() string {
 	switch c.ControlSocket {
 	case "", "gobnc.sock":
-		return filepath.Join(defaultStateDir(), "gobnc.sock")
+		return filepath.Join(DefaultStateDir(), "gobnc.sock")
 	default:
 		return c.ControlSocket
 	}
@@ -240,7 +240,7 @@ func (c Config) ResolvedControlSocket() string {
 func (c Config) ResolvedPidFile() string {
 	switch c.PidFile {
 	case "", "gobnc.pid":
-		return filepath.Join(defaultStateDir(), "gobnc.pid")
+		return filepath.Join(DefaultStateDir(), "gobnc.pid")
 	default:
 		return c.PidFile
 	}
@@ -253,12 +253,17 @@ func (c Config) ResolvedLogFile(useDefault bool) string {
 		return c.LogFile
 	}
 	if useDefault {
-		return filepath.Join(defaultStateDir(), "gobnc.log")
+		return filepath.Join(DefaultStateDir(), "gobnc.log")
 	}
 	return ""
 }
 
-func defaultStateDir() string {
+// DefaultStateDir is gobnc's private per-user state directory:
+// $XDG_RUNTIME_DIR/gobnc when set, otherwise ~/.gobnc. Exported so other
+// packages that need a gobnc-adjacent file location (e.g. internal/keeperboot's
+// keeper socket/pidfile/lock) follow the exact same convention as
+// pid_file/control_socket/log_file rather than inventing a parallel one.
+func DefaultStateDir() string {
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
 		return filepath.Join(runtimeDir, "gobnc")
 	}

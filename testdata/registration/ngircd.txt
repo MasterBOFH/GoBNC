@@ -1,0 +1,18 @@
+# label=ngircd host=127.0.0.1 port=4445 tls=false nick=gc17340 captured=2026-08-13T21:54:18Z
+0ms :ngircd.example.irc.com CAP * LS :multi-prefix
+0ms :ngircd.example.irc.com 001 gc17340 :Welcome to the Internet Relay Network gc17340!~gc17340@172.27.0.1
+0ms :ngircd.example.irc.com 002 gc17340 :Your host is ngircd.example.irc.com, running version ngircd-25 (x86_64/pc/linux-musl)
+0ms :ngircd.example.irc.com 003 gc17340 :This server has been started Thu Aug 13 2026 at 21:47:21 (UTC)
+0ms :ngircd.example.irc.com 004 gc17340 ngircd.example.irc.com ngircd-25 abBcCFiIoqrRswx abehiIklmMnoOPqQrRstvVz
+0ms :ngircd.example.irc.com 005 gc17340 NETWORK=ExampleNet :is my network name
+0ms :ngircd.example.irc.com 005 gc17340 RFC2812 IRCD=ngIRCd CHARSET=UTF-8 CASEMAPPING=ascii PREFIX=(qaohv)~&@%+ CHANTYPES=#&+ CHANMODES=beI,k,l,imMnOPQRstVz CHANLIMIT=#&+:50 :are supported on this server
+0ms :ngircd.example.irc.com 005 gc17340 CHANNELLEN=50 NICKLEN=9 TOPICLEN=490 AWAYLEN=127 KICKLEN=400 MODES=5 MAXLIST=beI:50 EXCEPTS=e INVEX=I PENALTY :are supported on this server
+0ms :ngircd.example.irc.com 251 gc17340 :There are 1 users and 0 services on 1 servers
+0ms :ngircd.example.irc.com 254 gc17340 1 :channels formed
+0ms :ngircd.example.irc.com 255 gc17340 :I have 1 users, 0 services and 0 servers
+0ms :ngircd.example.irc.com 265 gc17340 1 1 :Current local users: 1, Max: 1
+0ms :ngircd.example.irc.com 266 gc17340 1 1 :Current global users: 1, Max: 1
+0ms :ngircd.example.irc.com 250 gc17340 :Highest connection count: 1 (1 connections received)
+0ms :ngircd.example.irc.com 375 gc17340 :- ngircd.example.irc.com message of the day
+0ms :ngircd.example.irc.com 372 gc17340 :- This is the MOTD
+0ms :ngircd.example.irc.com 376 gc17340 :End of MOTD command
