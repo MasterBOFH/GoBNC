@@ -433,17 +433,25 @@ func TestGapOnlyResumeSkipsAckedLines(t *testing.T) {
 	}
 }
 
-// TestListenerKillsConnectionOnSlowClientOverflow is the revised overflow
-// policy at the protocol layer: a live client that can't keep up gets its
-// connection killed with an explicit error, not a silently holed stream.
-// The keeper's own ring/read loop must stay unaffected — proven by reading
-// LastSeq keeps advancing normally throughout, from a second, well-behaved
-// vantage point (Since, not the stalled connection).
-func TestListenerKillsConnectionOnSlowClientOverflow(t *testing.T) {
-	mgr, k, srv, conn := dialedTestManager(t, 100000) // large ring: the client buffer overflows first
+// TestListenerLiveBurstDoesNotKillAttach is the policy that replaced
+// killing the live attach on SubscribeLines overflow: a WHO/NAMES-sized
+// burst (thousands of lines arriving faster than the unix-socket JSON
+// framing can drain) must not tear down the keeper↔brain link. The live
+// subscriber buffer is deliberately tiny here so Overflow actually fires;
+// the ring is the real buffer, and fanInNetwork must catch up from it
+// rather than s.kill. Confirmed: reverting that catch-up to the old
+// kill-on-overflow path fails this test with NextLine erroring after a
+// partial drain (the broken-pipe the burst used to cause).
+func TestListenerLiveBurstDoesNotKillAttach(t *testing.T) {
+	old := lineSubBuffer
+	lineSubBuffer = 64
+	t.Cleanup(func() { lineSubBuffer = old })
+
+	const n = 3000
+	mgr, k, srv, conn := dialedTestManager(t, 8192)
 	sockPath := startTestListener(t, mgr)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	client, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
 	if err != nil {
@@ -453,33 +461,31 @@ func TestListenerKillsConnectionOnSlowClientOverflow(t *testing.T) {
 	if err := client.SendLiveReady(); err != nil {
 		t.Fatalf("SendLiveReady: %v", err)
 	}
-	// Deliberately never call client.NextLine() in a loop — this client
-	// stalls, simulating a brain that's wedged or too slow.
 
-	for i := 0; i < 2000; i++ {
+	// Don't read during the flood — the live buffer (64) overflows long
+	// before the ring (8192) does. Old policy killed the attach here.
+	for i := 0; i < n; i++ {
 		srv.send(t, conn, fmt.Sprintf("NOTICE * :flood%d", i))
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && k.LastSeq() < 2000 {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && k.LastSeq() < uint64(n) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if k.LastSeq() != 2000 {
-		t.Fatalf("keeper's own read loop stalled: LastSeq=%d, want 2000 (a slow subscriber must never block reading)", k.LastSeq())
+	if k.LastSeq() != uint64(n) {
+		t.Fatalf("keeper's own read loop stalled: LastSeq=%d, want %d (a slow subscriber must never block reading)", k.LastSeq(), n)
 	}
 
-	// The stalled connection must eventually be killed with an error frame,
-	// not just silently stop delivering.
-	sawErr := false
-	killDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(killDeadline) {
-		if _, err := client.NextLine(); err != nil {
-			sawErr = true
-			break
+	got := 0
+	for got < n {
+		line, err := client.NextLine()
+		if err != nil {
+			t.Fatalf("attach killed after %d/%d lines: %v", got, n, err)
 		}
-	}
-	if !sawErr {
-		t.Fatalf("stalled connection was never killed")
+		if line.Seq != uint64(got+1) {
+			t.Fatalf("line %d: seq=%d, want %d (gap in live stream)", got, line.Seq, got+1)
+		}
+		got++
 	}
 }
 

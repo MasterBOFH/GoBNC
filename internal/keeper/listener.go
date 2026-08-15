@@ -292,12 +292,13 @@ func (s *liveSession) beginWork() bool {
 // its own), and the keeper pushes Line frames and unsolicited
 // NetworkEvent frames (connect/disconnect) as they happen.
 //
-// A per-network subscriber that overflows (the client fell behind) kills
-// the whole connection rather than silently dropping — dropping here would
-// hand the client a holed stream with no indication, exactly the gap
-// problem Since's ok=false exists to prevent one layer down. The client is
-// expected to reattach and use Since to find out honestly whether its
-// checkpoint survived.
+// A per-network subscriber that overflows (the client fell behind the
+// live buffer) catches up from the ring rather than killing the attach.
+// A WHO/NAMES burst is faster than unix-socket JSON framing; tearing the
+// keeper↔brain link down over that is what produced the broken-pipe on
+// a subsequent WriteRequest. The ring is the real buffer; Overflow just
+// means the small live channel lagged. Kill only if Since reports the
+// catch-up window has already been evicted — a genuine unrecoverable gap.
 func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[NetworkID]*Keeper, fromSeq map[NetworkID]uint64) {
 	t, body, err := readFrame(conn)
 	if err != nil {
@@ -346,6 +347,15 @@ func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[Ne
 		// own deferred cleanup, has already returned. A second Close()
 		// call from handleConn afterward is a harmless no-op/error.
 		_ = conn.Close()
+		// The unix connection is dead: free the live-attach slot before
+		// waiting for fan-in goroutines. A brain reload closes the attach
+		// and immediately reattaches; holding liveAttached through
+		// wg.Wait() (up to 2s) rejects that reattach with "a live attach
+		// is already active". handleConn's own defer also clears this;
+		// clearing twice is a no-op.
+		l.mu.Lock()
+		l.liveAttached = false
+		l.mu.Unlock()
 		// Bounded best-effort wait for every fan-in/request-handler
 		// goroutine this session spawned to actually exit, now that
 		// they've all been told to via connCancel. Not required for
@@ -669,6 +679,27 @@ func (s *liveSession) trySend(m outMsg) {
 	}
 }
 
+// catchUpFromRing queues every ring entry after lastSent onto s.out.
+// Returns false if the attach should stop: the ring has evicted the
+// requested seq (a genuine gap — this is the one case that still kills)
+// or the session context is already done. lastSent is advanced to the
+// last queued seq.
+func (s *liveSession) catchUpFromRing(id NetworkID, k *Keeper, lastSent *uint64) bool {
+	backlog, ok := k.Since(*lastSent)
+	if !ok {
+		s.kill(fmt.Errorf("network %d: requested seq %d has already been evicted", id, *lastSent))
+		return false
+	}
+	for _, e := range backlog {
+		s.trySend(outMsg{msgLine, entryToLineMsg(id, e)})
+		*lastSent = e.Seq
+		if s.ctx.Err() != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // fanInNetwork drains one network's backlog, then its live line feed and
 // connect/disconnect events, into the session's shared out channel — a
 // network's own goroutine, isolated from every other network's. It reports
@@ -679,9 +710,17 @@ func (s *liveSession) trySend(m outMsg) {
 // Keeper's Close/Dial cycle by design (see Keeper.Retire's doc comment), so
 // this goroutine just keeps waiting and picks up the new epoch's lines
 // automatically once the brain redials. It only exits early on: the
-// connection's context ending, an overflow (kill), or its subscriptions
-// being closed out from under it — which only happens via Retire, i.e. the
-// network being permanently removed, not merely disconnected.
+// connection's context ending, a ring eviction it cannot catch up from
+// (kill), or its subscriptions being closed out from under it — which only
+// happens via Retire, i.e. the network being permanently removed, not
+// merely disconnected.
+//
+// Live-buffer overflow is not fatal. SubscribeLines is a small notification
+// channel; the ring still holds the lines. On Overflow we resubscribe and
+// Since(lastSent), the same subscribe-then-Since race window the initial
+// attach already uses (duplicates by seq are skipped). Killing the attach
+// here used to turn a normal WHO burst into a broken pipe on the keeper
+// unix socket — TestListenerLiveBurstDoesNotKillAttach.
 func (s *liveSession) fanInNetwork(id NetworkID, k *Keeper, from uint64) {
 	defer s.wg.Done()
 	defer func() {
@@ -690,23 +729,15 @@ func (s *liveSession) fanInNetwork(id NetworkID, k *Keeper, from uint64) {
 		s.mu.Unlock()
 	}()
 
-	lineSub, unsubLines := k.SubscribeLines()
-	defer unsubLines()
 	events, unsubEvents := k.Subscribe()
 	defer unsubEvents()
 
-	backlog, ok := k.Since(from)
-	if !ok {
-		s.kill(fmt.Errorf("network %d: requested seq %d has already been evicted", id, from))
-		return
-	}
+	lineSub, unsubLines := k.SubscribeLines()
+	defer func() { unsubLines() }()
+
 	lastSent := from
-	for _, e := range backlog {
-		s.trySend(outMsg{msgLine, entryToLineMsg(id, e)})
-		lastSent = e.Seq
-		if s.ctx.Err() != nil {
-			return
-		}
+	if !s.catchUpFromRing(id, k, &lastSent) {
+		return
 	}
 
 	for {
@@ -714,8 +745,20 @@ func (s *liveSession) fanInNetwork(id NetworkID, k *Keeper, from uint64) {
 		case <-s.ctx.Done():
 			return
 		case <-lineSub.Overflow:
-			s.kill(fmt.Errorf("network %d: client too slow, buffer overflow", id))
-			return
+			// Subscribe the replacement before dropping the overflowed
+			// feed so hasLineSubscribers never goes false in the window —
+			// a ring push in that gap would take the no-subscriber
+			// self-close path (ring overflow case 2) and drop the uplink.
+			// Then Since(lastSent): a line arriving between Since and the
+			// new subscription is either in the backlog or on the new
+			// feed (deduped by seq).
+			s.l.log.Debug("keeper listener: live subscriber overflow, catching up from ring", "network", id, "after_seq", lastSent)
+			next, unsubNext := k.SubscribeLines()
+			unsubLines()
+			lineSub, unsubLines = next, unsubNext
+			if !s.catchUpFromRing(id, k, &lastSent) {
+				return
+			}
 		case e, ok := <-lineSub.Lines:
 			if !ok {
 				return // Retire: this network is gone for good

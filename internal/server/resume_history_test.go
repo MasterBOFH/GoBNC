@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,10 +101,23 @@ func startResumeTestKeeper(t *testing.T) *resumeTestKeeper {
 func (rk *resumeTestKeeper) attach(t *testing.T, s *Server, nets []store.Network) *keeper.AttachClient {
 	t.Helper()
 	attachCtx, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
-	client, err := keeper.Attach(attachCtx, rk.sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
-	cancelAttach()
-	if err != nil {
-		t.Fatalf("keeper.Attach: %v", err)
+	defer cancelAttach()
+	var client *keeper.AttachClient
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		client, err = keeper.Attach(attachCtx, rk.sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+		if err == nil {
+			break
+		}
+		// The previous brain's Close may not have been processed yet —
+		// handleConn still holds liveAttached until it sees EOF. Under
+		// go test ./... load the resume tests' Close-then-Attach loses
+		// that race; wait it out rather than fail a legitimate reload.
+		if time.Now().After(deadline) || !strings.Contains(err.Error(), "already active") {
+			t.Fatalf("keeper.Attach: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 

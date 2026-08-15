@@ -344,6 +344,14 @@ func (k *Keeper) publish(ev Event) {
 	}
 }
 
+// lineSubBuffer is the per-subscriber live-feed depth for SubscribeLines.
+// Sized to absorb a large channel's WHO/NAMES reply burst without tripping
+// Overflow on a healthy brain; Overflow is still the fallback when a
+// subscriber lags past this, and Listener recovers from the ring rather
+// than tearing down the attach (see fanInNetwork). Overridable in tests so
+// overflow can be forced without flooding tens of thousands of lines.
+var lineSubBuffer = 8192
+
 // LineSubscription is one subscriber's feed from SubscribeLines.
 type LineSubscription struct {
 	// Lines delivers newly read entries in order.
@@ -351,12 +359,12 @@ type LineSubscription struct {
 	// Overflow is closed exactly once, the moment this subscriber falls too
 	// far behind to keep buffering (Lines is full and a new entry has
 	// nowhere to go). It is not a data channel — the correct reaction to it
-	// firing is to stop trusting this subscription and tear it down, not to
-	// keep reading Lines expecting it to recover. See the package's callers
-	// for the policy this exists to support: silently dropping entries here
-	// would just move the "gap in the stream with no indication" problem up
-	// one layer, from the ring (which does at least report gaps via Since)
-	// to a live feed that would otherwise report nothing at all.
+	// firing is to stop trusting this subscription and catch up from the
+	// ring (Since), not to keep reading Lines expecting a contiguous feed.
+	// Silently dropping entries here would just move the "gap in the
+	// stream with no indication" problem up one layer, from the ring
+	// (which does at least report gaps via Since) to a live feed that
+	// would otherwise report nothing at all. See fanInNetwork.
 	Overflow <-chan struct{}
 }
 
@@ -373,7 +381,7 @@ type LineSubscription struct {
 // blocks the read loop itself. See TestSlowSubscriberDoesNotBlockOthers and
 // TestReadLoopNeverBlocksOnSubscriber.
 func (k *Keeper) SubscribeLines() (LineSubscription, func()) {
-	ch := make(chan Entry, 256)
+	ch := make(chan Entry, lineSubBuffer)
 	state := &lineSubState{overflow: make(chan struct{})}
 	k.lineSubMu.Lock()
 	k.lineSubs[ch] = state
