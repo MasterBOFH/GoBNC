@@ -844,6 +844,26 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 
 	newState, actions := registration.Step(state, registration.Input{Msg: msg})
 
+	// Learning our own ident/host normally waits on a self-JOIN echo
+	// (Session.applyState's touchUserFromPrefixLocked, fired for every
+	// line with a source) — but that depends entirely on there being at
+	// least one auto-join channel, and on that JOIN round-tripping before
+	// anything needs the answer. Asking outright, on 001 specifically
+	// (registration.Step's own "001" case sets GotWelcome/Nick and
+	// nothing else — no ActionKind exists for it, so this checks the raw
+	// input directly), fires exactly once per registration, strictly
+	// before Session.completeRegistration ever runs (that needs 376/422,
+	// always later) — so this always lands on the wire before
+	// flushHeldAfterRegister could flush a real client-issued USERHOST of
+	// its own, and RequestTracker never sees two in flight at once. The
+	// reply is parsed by Session.state302Locked like any other line; a
+	// resumed network never replays a live 001 through Step at all
+	// (RegisterResumedNetwork installs registration.PhaseComplete
+	// directly), so this fires only for a genuinely fresh registration.
+	if msg.Command == "001" && !state.GotWelcome && newState.Nick != "" {
+		_ = d.sendLine(line.Network, "USERHOST "+newState.Nick)
+	}
+
 	d.mu.Lock()
 	d.states[line.Network] = newState
 	d.mu.Unlock()

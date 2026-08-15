@@ -107,6 +107,55 @@ func TestAutoJoinRepopulatesChannelBlob(t *testing.T) {
 	}
 }
 
+// TestSelfSourcedLineGenericallyPushesCloakBlob proves the general rule
+// replacing a per-numeric allowlist: any uplink line sourced
+// ":ournick!user@host" is treated as authoritative for our own identity,
+// regardless of which command carries it — no CHGHOST, no 396, no
+// USERHOST reply anywhere in this test, just the plain self-JOIN echo
+// runAutoJoinRegServer already sends (":me!u@h JOIN #auto"), and that
+// alone must be enough to land "h" in the "cloak" blob key. This is what
+// actually closes the original bug's root cause (an invalid JOIN prefix
+// after resume) at the source, rather than only patching around it with
+// User.Prefix()'s fallback and a proactive USERHOST query for the cases
+// this generic rule happens to miss (a resumed session, which gets no
+// live self-JOIN echo at all — see RefreshSelfUserHost).
+func TestSelfSourcedLineGenericallyPushesCloakBlob(t *testing.T) {
+	db := testutil.TempStore(t)
+	ctx := context.Background()
+	if _, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	netCfg, err := db.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(netCfg, db, nil, nil, nil)
+
+	ln, host, port := newFakeIRCListener(t)
+	scriptDone := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runAutoJoinRegServer(conn, time.Now().Add(8*time.Second))
+	}()
+
+	tu := newTestUplink(t, s, netCfg, host, port)
+
+	waitUntil(t, 5*time.Second, func() bool {
+		return s.SelfPrefix() == "me!u@h"
+	})
+
+	waitUntil(t, 2*time.Second, func() bool {
+		v, ok := tu.blobValue("cloak")
+		return ok && v == "h"
+	})
+}
+
 // runAutoJoinRegServer completes registration like reg_relay_test.go's
 // runEarlyRegServer, then sends an unsolicited self-JOIN for #auto — the
 // uplink's own auto-join echo, not a reply to any client-issued JOIN.

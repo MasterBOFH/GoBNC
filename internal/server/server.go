@@ -598,6 +598,19 @@ func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error
 		s.driver.UpdateDialConfig(netID, s.dialConfigForLocked(n))
 		delete(s.resumedAtBoot, netID)
 		s.log.Info("network resumed", "name", n.Name)
+		// The blob never carried a channel roster, only name+key (see
+		// Session.RefreshResumedChannelNames' doc comment) — this is the
+		// earliest point after SendLiveReady (Run calls registerNetworkLocked
+		// for every network, then SendLiveReady, then dialNetworkLocked; see
+		// Run's own comment on that ordering) where writing to the uplink is
+		// actually safe, which is why the write couldn't happen back in
+		// registerNetworkLocked/SeedFromBlob itself. Same reasoning for
+		// RefreshSelfUserHost — the blob's "cloak" key is often absent too
+		// (see its own doc comment), and self.Host staying unknown forever
+		// is what produces an RFC-invalid nick!user prefix on every JOIN
+		// this session ever replays to a client.
+		sess.RefreshResumedChannelNames()
+		sess.RefreshSelfUserHost()
 		return nil
 	}
 	if err := s.driver.Dial(netID, s.dialConfigForLocked(n), 0); err != nil {

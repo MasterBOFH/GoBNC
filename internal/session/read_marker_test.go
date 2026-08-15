@@ -84,7 +84,7 @@ func TestMARKREADFailCodes(t *testing.T) {
 func TestAttachMARKREADBefore366(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true
-	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"me": {}}}
+	s.channels["#c"] = &ChannelState{Name: "#c", Members: map[string]struct{}{"me": {}}, RosterKnown: true}
 	if _, _, err := s.setReadMarkerIfNewer("#c", "2019-01-04T14:33:26.123Z"); err != nil {
 		t.Fatal(err)
 	}

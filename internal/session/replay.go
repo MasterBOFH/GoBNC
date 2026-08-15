@@ -105,8 +105,10 @@ func (s *Session) Attach(d Downlink) error {
 		chans = append(chans, ch)
 	}
 	namesFor := make(map[string][]string, len(chans))
+	rosterKnownFor := make(map[string]bool, len(chans))
 	for _, ch := range chans {
 		namesFor[ch.Name] = s.namesListLocked(ch)
+		rosterKnownFor[ch.Name] = ch.RosterKnown
 	}
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
@@ -157,10 +159,19 @@ func (s *Session) Attach(d Downlink) error {
 		if ch.Topic != "" {
 			send(irc.Message{Source: src, Command: "332", Params: []string{nick, ch.Name, ch.Topic}})
 		}
-		if names := namesFor[ch.Name]; len(names) > 0 {
-			send(irc.Message{Source: src, Command: "353", Params: []string{nick, "=", ch.Name, strings.Join(names, " ")}})
+		// Withhold NAMES entirely until the roster is actually confirmed
+		// (RosterKnown — see its own doc comment) rather than handing this
+		// client a self-only 353/366 that looks real but isn't, e.g. right
+		// after a resume, before RefreshResumedChannelNames' live NAMES
+		// query has answered. The real 353/366 reaches this client the
+		// ordinary way once it arrives — it's already attached and
+		// downlinks by then, so no special catch-up delivery is needed.
+		if rosterKnownFor[ch.Name] {
+			if names := namesFor[ch.Name]; len(names) > 0 {
+				send(irc.Message{Source: src, Command: "353", Params: []string{nick, "=", ch.Name, strings.Join(names, " ")}})
+			}
+			send(irc.Message{Source: src, Command: "366", Params: []string{nick, ch.Name, "End of /NAMES list."}})
 		}
-		send(irc.Message{Source: src, Command: "366", Params: []string{nick, ch.Name, "End of /NAMES list."}})
 		if !hasChathistory(d) {
 			s.playLegacyHistory(d, ch.Name)
 		}

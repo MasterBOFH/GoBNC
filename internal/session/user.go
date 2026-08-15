@@ -22,19 +22,31 @@ type User struct {
 	AwayMessage string
 }
 
-// Prefix returns nick!user@host from cached fields (best-effort if partial).
+// Prefix returns nick!user@host from cached fields, always one of the three
+// forms IRC prefix syntax actually allows: "nick", "nick@host", or
+// "nick!user@host" — never "nick!user" with no host. A bare nick!user
+// prefix is invalid per the grammar (RFC 2812 prefix := servername /
+// nickname [ "!" user ] "@" host) and at least one real client has been
+// observed rejecting a JOIN outright over exactly this shape ("Cannot read
+// prefix: nick!user"). Host is only ever unknown here for self before
+// anything has revealed it (a live self-JOIN echo normally does, for free;
+// a resumed session has no such echo — see Session.RefreshSelfUserHost) —
+// ServerName is the same placeholder host already used for this situation
+// elsewhere (e.g. Attach's pending-registration self-NICK notice).
 func (u *User) Prefix() string {
 	if u == nil {
 		return ""
 	}
-	switch {
-	case u.User != "" && u.Host != "":
-		return u.Nick + "!" + u.User + "@" + u.Host
-	case u.User != "":
-		return u.Nick + "!" + u.User
-	default:
-		return u.Nick
+	if u.Host != "" {
+		if u.User != "" {
+			return u.Nick + "!" + u.User + "@" + u.Host
+		}
+		return u.Nick + "@" + u.Host
 	}
+	if u.User != "" {
+		return u.Nick + "!" + u.User + "@" + ServerName
+	}
+	return u.Nick
 }
 
 // ApplyUModes updates UModes from a modestring like "+iw-x".

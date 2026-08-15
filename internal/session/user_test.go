@@ -11,6 +11,10 @@ func TestUserPrefixAndFlags(t *testing.T) {
 	if u.Prefix() != "n!~u@h" {
 		t.Fatal(u.Prefix())
 	}
+	u.Host = ""
+	if got, want := u.Prefix(), "n!~u@"+ServerName; got != want {
+		t.Fatalf("user known, host unknown: got %q want %q", got, want)
+	}
 	u.ApplyWHOFlags("G*@Bs")
 	if !u.Away || !u.Oper || !u.Bot || !u.Secure {
 		t.Fatalf("%+v", u)
