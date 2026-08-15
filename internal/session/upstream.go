@@ -6,9 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"encoding/json"
+
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/google/uuid"
 )
@@ -305,6 +308,9 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 			s.upCaps[name] = true
 		}
 		s.mu.Unlock()
+		if len(added) > 0 {
+			s.pushBlob("caps", keeper.BlobModeReplace, s.blobCapsValue())
+		}
 		if !registered {
 			return
 		}
@@ -385,6 +391,9 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 			}
 		}
 		s.mu.Unlock()
+		if len(removed) > 0 {
+			s.pushBlob("caps", keeper.BlobModeReplace, s.blobCapsValue())
+		}
 		// sasl's own DEL notice, if any, falls out of this diff naturally:
 		// refreshSASLOffer recomputes saslOffer from the fields just
 		// cleared above, so a lost sasl offer is already reflected in
@@ -726,6 +735,19 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 	s.maybeSendMarkReadOnSelfJOIN(msg)
 	s.maybeJoinOnInvite(msg)
+}
+
+// blobCapsValue JSON-encodes the currently enabled cap set for the "caps"
+// blob entry (BlobModeReplace — the resolved set, not the ACK/DEL
+// transitions that produced it; see docs/keeper-design.md's CAP section
+// for why storing the resolved value rather than the sequence of
+// transitions is the deliberate exception to keeping raw wire bytes).
+func (s *Session) blobCapsValue() []byte {
+	s.mu.RLock()
+	names := caps.Offered(s.upCaps)
+	s.mu.RUnlock()
+	b, _ := json.Marshal(names) // []string; json.Marshal never errors on one
+	return b
 }
 
 // logSASLOutcome replaces internal/uplink.Uplink.handleSASLOutcome's

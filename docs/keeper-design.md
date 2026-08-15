@@ -191,10 +191,13 @@ server, only that the keeper accepted and wrote it locally.
   failures degrade one network" principle below doesn't apply, because a
   partial cutover isn't a real thing when the brain is one process.
 - **Live**: the keeper streams every network from the client's requested
-  `FromSeq` (default: from oldest retained) once the client signals
-  `LiveReady`. Full-duplex after that — the brain may send `DialRequest`/
-  `CloseRequest` at any point, and the keeper pushes `Line` and unsolicited
-  `NetworkEvent` (connect/disconnect) frames as they happen.
+  `FromSeq` (default, absent from the map: that network's own tracked
+  resume watermark — `Keeper.DeliveredSeq`, advanced only by an explicit
+  `SeqAck` — not from oldest retained; see "Blob store and gap-only
+  resume" below) once the client signals `LiveReady`. Full-duplex after
+  that — the brain may send `DialRequest`/`CloseRequest` at any point, and
+  the keeper pushes `Line` and unsolicited `NetworkEvent` (connect/
+  disconnect) frames as they happen.
 
 **Single-live-attach is enforced at the `Listener`, process-wide, not
 per-network** — there is one brain, and two brains consuming any network
@@ -224,8 +227,8 @@ attracts others:
 
 - unix socket path — restart-required, no live-reload path.
 - ring buffer capacity — restart-required, same reasoning.
-- the logger — the one that's meant to be reloadable eventually (see
-  Deferred work).
+- the logger — reloadable via the same `internal/log` `Sink`/`Reload`
+  pattern `internal/server` already uses (see Deferred work).
 
 It also dissolved a network add/remove notification problem that looked
 real for one round: since `Dial` is how a network comes to exist at all
@@ -263,9 +266,11 @@ channel for exactly one field.
 Re-reviewed specifically for multi-network; four of five original bullets
 were confirmed unaffected, one was revised:
 
-- **No blob on attach → drop and re-register the uplink.** Falls out
-  per-network for free once the blob store is per-network (one blob per
-  `Keeper` instance), no redesign needed.
+- **No blob on attach → drop and re-register the uplink.** Built: the blob
+  is per-network (one `blobStore` per `Keeper` instance), and
+  `internal/server.registerNetworkLocked` seeds `Session` from whatever
+  the delivered snapshot holds — including empty, for a network the
+  keeper reports `Connected` but that never derived any blob state yet.
 - **Validate-mode failure → abort the reload, old brain untouched.** Stays
   whole-process — see the attach-modes section above.
 - **Cold start failure (no brain has ever attached) → keeper exits.** Stays
@@ -274,56 +279,104 @@ were confirmed unaffected, one was revised:
 - **Sudden brain crash after a successful attach → one respawn, then
   exit if it recurs.** Stays whole-process: one brain serves all networks,
   a brain crash is inherently brain-level.
-- **Buffer overflow → kill the process.** *Revised.* The original policy
-  assumed one network per process. With several, killing the whole process
-  for one network's overflow takes down every other network's uplink — the
-  exact failure this project exists to prevent, just triggered differently.
-  **Revised policy: a ring overflow on network N closes N's uplink and
-  clears N's blob store** (once the blob store exists) — loud, logged, one
+- **Buffer overflow → kill the process.** *Revised, and built.* The
+  original policy assumed one network per process. With several, killing
+  the whole process for one network's overflow takes down every other
+  network's uplink — the exact failure this project exists to prevent,
+  just triggered differently. **Revised policy: a ring overflow on
+  network N, while N has zero live line-subscribers, closes N's uplink
+  and clears N's blob store and resume watermark** — loud, logged, one
   reconnect on one network.
 
-Two different "overflow" scenarios exist, only one of which is built:
+Two different "overflow" scenarios exist, both now built:
 
 1. **A live-attached client falls behind delivery for one network and its
-   per-connection buffer fills.** Built: `Keeper.SubscribeLines`'s
-   `Overflow` signal fires once, and the `Listener` kills that one
-   connection with an explicit error rather than silently dropping —
-   dropping would hand the client a holed stream with no indication, the
-   same gap problem `Since`'s `ok=false` exists to prevent one layer down.
-   Only that one connection dies; every other network on it and every other
-   attached brain's networks are unaffected, since each network has its own
+   per-connection buffer fills.** `Keeper.SubscribeLines`'s `Overflow`
+   signal fires once, and the `Listener` kills that one connection with
+   an explicit error rather than silently dropping — dropping would hand
+   the client a holed stream with no indication, the same gap problem
+   `Since`'s `ok=false` exists to prevent one layer down. Only that one
+   connection dies; every other network on it and every other attached
+   brain's networks are unaffected, since each network has its own
    `Keeper`, ring, and subscriber set.
 2. **The ring itself evicts independent of whether anyone is consuming**
    (a netsplit burst outpacing ring capacity with nobody attached to
-   notice). *Not yet wired.* `since()` already reports `ok=false` the
-   moment a requested watermark has been evicted — that detection doesn't
-   need to be rebuilt when this is implemented, only acted on.
+   notice). Wired in `Keeper.readLoop`: a push that evicts, observed while
+   `hasLineSubscribers()` is false, closes the connection itself (loudly
+   logged) rather than waiting for a future attach to discover the gap via
+   `since()`'s `ok=false` and have its whole live session killed over one
+   network's history. The self-close resets that network's resume
+   watermark to 0 in addition to the blob (both STEP-3-wiring-point
+   consequences, but the watermark reset is scoped to this path only — an
+   *ordinary* disconnect leaves the watermark alone, since seq is
+   monotonic across epochs and a stale-but-still-in-range watermark from a
+   clean disconnect remains valid for the next attach; only an eviction
+   that outran the watermark specifically needs it force-reset to avoid a
+   future attach requesting a seq the ring can no longer serve).
 
-## Blob store (not yet built)
+## Blob store and gap-only resume
 
-The brain pushes entries as it learns things, not at shutdown. Parse a
-`005`, emit it immediately. Join a channel, emit it. Nothing durable should
-exist only in brain memory.
+**Status: built.** The brain pushes entries as it learns things, not at
+shutdown, and a resumed attach receives *no* replay of pre-detach
+traffic — only the gap since its own last acked line, with everything
+else (self-nick, ISUPPORT, enabled caps, account, channel keys)
+reconstructed from the delivered blob snapshot instead of from watching
+old lines go by again. This module's own git history is worth reading
+plainly: an early attempt at gap-only delivery (skipping replay without a
+blob store to carry the state replay was standing in for) was tried,
+found to break resumed-session state reconstruction, and reverted before
+ever shipping — building the blob store is what made the same approach
+safe to actually land.
+
+**The resume watermark.** Each `Keeper` instance tracks `deliveredSeq`,
+advanced only by an explicit `SeqAckMsg` from the brain — sent once
+`Session.HandleLine` has fully finished processing a line, including any
+blob push that processing triggered (`Driver.PushBlob` blocks for its own
+`BlobPushResultMsg` before returning, which is what lets the ack, sent
+right after `HandleLine` returns in `internal/server`'s single demux
+goroutine, be correct by construction: one goroutine, push-then-return,
+ack-after-return, every time, no locking between the two needed). A brain
+that crashes between receiving a line and finishing its blob push simply
+never sends that line's ack — the watermark never passes it, and the next
+attach receives that line, and everything after it, again. `HelloMsg
+.FromSeq` absent for a network means "start from `DeliveredSeq`"; an
+explicit entry (including an explicit `0`) overrides it, an escape hatch
+for tooling, not something a normal attach needs to set.
+
+The brain pushes entries as it learns things, not at shutdown: parse a
+`005`, emit it immediately (`internal/session/state_numerics.go`'s
+`stateWelcomeNumericLocked`); join a channel, emit it
+(`internal/session/downstream.go`'s `persistChannel`, the same call site
+that already persists it to SQL). Nothing durable exists only in brain
+memory.
 
 Each entry carries a brain-chosen key and a mode:
 
-| mode | semantics |
-|---|---|
-| `append` | accumulate in order under this key (e.g. `isupport`) |
-| `replace` | latest-wins (e.g. `cloak`, `self-nick`, `channel:#foo`) |
-| `delete` | remove the key (e.g. on `PART`) |
+| mode | semantics | built keys |
+|---|---|---|
+| `append` | accumulate in order under this key | `isupport` |
+| `replace` | latest-wins | `cloak`, `self-nick`, `account`, `channel:#foo`, `caps` |
+| `delete` | remove the key | `channel:#foo` (on `PART`/self-`KICK`) |
 
-The keeper matches on the key string and applies the mode. It never
-inspects the value — that's what keeps the store bounded on a long-running
-session without the keeper understanding IRC. Each entry value carries a
-version tag so a differently-built brain can recognize a format it doesn't
-understand and fall back, rather than misreading it.
+The keeper matches on the key string and applies the mode
+(`internal/keeper/blob.go`). It never inspects the value — that's what
+keeps the store bounded on a long-running session without the keeper
+understanding IRC. (The version-tag idea raised below for a differently-
+built brain to recognize a format it doesn't understand is not built —
+values today are a fixed, package-internal encoding, JSON for the
+structured keys and plain bytes for the scalar ones; revisit if this
+protocol's cross-version compatibility promise ever needs to extend to
+blob value shapes, not just frame shapes.)
 
 **Ordering requirement**: push the derived entry *before* advancing the
-consumed seq. If the brain acts on a line first and dies in the gap, the
-entry is lost and replay skips the line (it's below the checkpoint).
-Duplicate entries on replay are harmless if keyed idempotently; a gap is
-not.
+consumed seq. Built via the resume-watermark design above:
+`Driver.PushBlob` blocks for confirmation, and the `SeqAck` for a line is
+only sent after that line's full processing (including any blob push)
+returns — so a brain that acts on a line and dies before its blob push
+lands never advances the watermark past it, and the next attach receives
+that line again, not a gap. Duplicate entries on replay are harmless if
+keyed idempotently (every built key is); a gap is not — this is why the
+ack, not the push, is what's allowed to lag.
 
 ### The transcript is not a snapshot of the registration window
 
@@ -332,16 +385,18 @@ current for the life of the connection, not captured once during the
 registration handshake and left to go stale. Two instances of this, not
 two separate rules:
 
-- **ISUPPORT** — `append` mode on the `isupport` key, already built. `005`
+- **ISUPPORT** — `append` mode on the `isupport` key, built. `005`
   is conventionally a registration-time numeric, but the mode doesn't
   assume that; if a server ever sent it again mid-session, the blob would
   correctly keep accumulating rather than treating registration's `005`
   lines as the final word.
-- **CAP** — not yet built (below). `ACK`/`DEL` are not registration-only
+- **CAP** — built (below). `ACK`/`DEL` are not registration-only
   either — a script or the user can `REQ` a capability well after
   connection, and the server can `DEL` one unsolicited at any point in the
-  session. The blob entry must track this for as long as the connection
-  lives, not just through `CAP END`.
+  session. The blob entry tracks this for as long as the connection
+  lives, not just through `CAP END` — `internal/session/upstream.go`'s
+  `handleCAPLine` pushes the resolved set on every `ACK`/`DEL` that
+  actually changes it, pre- and post-registration alike.
 
 ### CAP state: what goes in the blob, and why it can't wait for `CAP LIST`
 
@@ -397,13 +452,8 @@ session while forcing every resumed brain to replay the whole sequence
 just to arrive at the same answer a single resolved value already gives
 it directly. `replace` mode, one key.
 
-No code for any of this yet — it lands with the blob store implementation,
-after 3b, per the existing sequencing (blob store's actual read/write
-wiring was already deferred until after 3b; this is design settled ahead
-of that work, not a change to when it happens).
-
-**Clearing is keeper-side and unconditional.** The wiring point is already
-marked in `internal/keeper/keeper.go`'s `readLoop`, at the exact line where
+**Clearing is keeper-side and unconditional.** Wired in
+`internal/keeper/keeper.go`'s `readLoop`, at the exact line where
 a network's state transitions to `NotConnected` — deliberate or not. Any
 state derived from an epoch (ISUPPORT, CAP, identity, channel list) is
 stale the instant that epoch's connection is gone, whether it ended because
@@ -416,12 +466,21 @@ keeper's internal mutex, not inside that critical section — the mutex also
 guards `Dial`/`Close`/`State` and shouldn't be held across a blob-store
 call.)
 
-**Channel keys already have a close analogue** in the existing bouncer
-code (`internal/session`'s `persistChannel`/`persistRemoveChannel`, called
-from `state.go` at the exact points a key is learned or a channel is
-parted) — wiring the blob store in is mostly a matter of adding a
-`blob.Push` call at those same points, not inventing new state-capture
-logic.
+**Channel keys had a close analogue already in the bouncer, and the blob
+wiring reused it exactly as expected**: `internal/session`'s
+`persistChannel`/`persistRemoveChannel` (called from `state.go` at the
+exact points a key is learned or a channel is parted) each got one
+`s.pushBlob` call added, not new state-capture logic.
+
+**On resume, the blob snapshot is the only source for this state, not a
+fallback confirmed by replay.** `internal/server.registerNetworkLocked`
+seeds a resumed network's `Session` (`Session.SeedFromBlob`) from the
+delivered snapshot before any gap-only line reaches it, then calls
+`completeRegistration` directly — there is no replayed registration burst
+left for `Session` to self-detect completion from. Known gap, not fixed:
+nick-recovery state and the source-prefix from the uplink's own `001`
+(cosmetic, used for synthetic message sources) have no blob key and are
+not restored on resume.
 
 ## Registration state machine (`internal/registration`)
 
@@ -1272,52 +1331,121 @@ completes, every post-registration line visibly relayed, and a real
 registration on the same tracked network — all without touching
 `internal/uplink`, `internal/session`, or `internal/server`.
 
-## Deferred work (as of this writing — check current status before relying on this list)
+## Deferred work (updated 2026-08-15 — check current status before relying on this list)
 
-- Blob store implementation (design above is settled; code isn't written).
-- Ring-overflow-closes-the-network policy (detection exists via `since()`;
-  the close-and-clear action doesn't, pending the blob store).
-- Log destination reload — the one keeper-side config value meant to be
-  reloadable; no live-reload path exists yet. The eventual answer is
-  `internal/server`'s existing `logSink.Reload()`/`SIGHUP` pattern, reused
-  rather than reinvented.
-- BSD/macOS peer-credential code compiles cleanly cross-compiled for
-  darwin/freebsd but has still never run on a real BSD/macOS host or in
-  CI — "compiles, never run," not "never compiled," but still unverified.
-- **Part 3b-ii proper: the read-loop cutover itself.** Not started. Stages
-  1 (process orchestration) and 2a (the missing post-registration pieces —
-  `Driver.Lines()`, auto-join, nick recovery, `Reconnect`) are done and
-  proven live, but `cmd/gobnc serve`'s real startup still isn't wired to
-  any of it, and `internal/session`/`internal/server` are untouched. The
-  design decision stage 2a settled: `session.Session` gets restructured to
-  consume `Driver`'s channels directly, not a facade preserving `Uplink`'s
-  `Handler` shape (see stage 2a's own section above for why). Remaining
-  work: `internal/server.startNetworkLocked` and the ~56 call sites across
-  `internal/session` that read `*uplink.Uplink` methods get rewritten
-  against `Driver`/`AttachClient` instead; `Run()`/`session()` lose their
-  read loop; `register()`/the SASL exchange are replaced by the state
-  machine already proven in `internal/registration`. This is the
-  irreversible step, which waits for review and real-world use of what's
-  been built so far. The hazard flagged in advance and now built
-  (`Keeper.QuitClose`, `Driver.QuitNetwork`, `Manager.QuitCloseAll`,
-  `TestBrainExitSendsNoQuit`) is proven correct in isolation but still not
-  load-bearing anywhere, since nothing in the real bouncer calls any of it
-  yet: brain exit and uplink teardown must stay two separate lifecycles
-  when 3b-ii wires real callers to these primitives, or every brain reload
-  drops every uplink — the exact failure this project exists to prevent.
-- Still open from the pre-3b regression net: user-mode tracking and
-  post-registration CAP handling (`CAP NEW`/dynamic `ACK`/`DEL`) have no
-  home in the new path yet. Unlike nick recovery (now built) these were
-  never uniquely `Driver`'s to own — `internal/session`'s existing
-  `applyState` already derives most of this independently by watching raw
-  traffic (confirmed while mapping `session`'s `Uplink` dependency for
-  stage 2a), so they may simply fall out of stage 2b's `Driver.Lines()`
-  wiring rather than needing dedicated `Driver`-side ports the way nick
-  recovery did. Worth confirming explicitly during 2b, not assuming.
-- The paced writer for flood control (see "flood.go's liveness check"
-  above) — the backpressure signal it needs exists and is tested; the
-  writer itself, and the `WriteResults()` channel-ownership question it
-  surfaces, is unbuilt.
-- Blob store's steps 3-4 (the actual read/write wiring) come after 3b-ii,
-  not before — no point building storage for a live path that doesn't
-  exist yet.
+**This section went stale for six commits' worth of real work** (everything
+from `8a3671b` through `9e7b83d`) despite this file's own opening promise to
+be kept current against the code. Recorded here as a fact about how this
+document was actually maintained, not just a correction of its contents:
+**Part 3b-ii — the read-loop cutover — is done.** `internal/uplink` is
+deleted (`8a3671b`). `cmd/gobnc serve`'s real startup goes through
+`internal/keeperboot` (`internal/server/server.go`). `internal/session` and
+`internal/server` were rewritten against `Driver`/`AttachClient` as
+planned. Brain-restart-while-keeper-holds-the-uplink resume is live and has
+had two real bugs found and fixed against it since cutover: duplicate chat
+history on replay (`d8dc83d`, fixed with an idempotent
+`(network_id, target, keeper_seq)` storage key) and re-driven registration
+re-sending CAP/NICK/USER into an already-registered connection (`9e7b83d`,
+fixed with `Driver.RegisterResumedNetwork`). The
+`Keeper.QuitClose`/`Driver.QuitNetwork`/`Manager.QuitCloseAll` shutdown-vs.-
+disconnect distinction this section previously flagged as "not load-bearing
+anywhere" is now load-bearing: `cmd/keeper`'s SIGTERM handler calls
+`QuitCloseAll` for real.
+
+Also done, contrary to what this list previously said:
+- **User-mode tracking** and **post-registration CAP handling**
+  (`CAP NEW`/dynamic `ACK`/`DEL`) — as this section speculated, both fell
+  out of `Driver.Lines()` wiring into `internal/session`'s own traffic
+  watching (`tracker.go`'s `221` handling, `upstream.go`'s
+  `handleCAPLine`/`broadcastCapNotify`), no dedicated `Driver`-side port
+  needed.
+- **The paced flood-control writer** — built (`internal/brain/flood.go`,
+  `floodDrainLoop`), not just the backpressure signal it depends on.
+
+Also done, as of today (2026-08-15), completing the correction above:
+- **Blob store, gap-only resume, and ring-overflow case 2** — all built
+  together, since they turned out to be one connected piece of work, not
+  three separate ones (see "Blob store and gap-only resume" above for the
+  full account, including the checkpoint design and why full replay was
+  never actually the intended end state, only what the code did before
+  the blob store existed to replace it).
+- **Log destination reload** (`cmd/keeper`) — built. `cmd/keeper/main.go`
+  now uses `internal/log`'s `Sink`/`Reload` pattern (the same one
+  `cmd/gobnc` already used), with a `-debug`/`-d` flag and a `SIGHUP`
+  handler that reopens `-log-file` at the same path (the logrotate case —
+  every other flag here is only ever read once at startup, so there's
+  nothing else for a reload to pick up). No changes needed to `Keeper`'s
+  own logger field — `Reload` re-points the same `*slog.Logger`'s
+  underlying handler in place. Verified live: start, `SIGHUP`, confirm the
+  same file keeps receiving new lines; `mv` the file out from under it,
+  `SIGHUP` again, confirm a fresh file appears at the same path with new
+  output landing there instead of the moved one.
+- **Debug logging of the keeper<->brain control frames** — built. Every
+  `Hello`/`HelloAck`/`Dial`/`Close`/`Write`/`QuitClose`/`BlobPush`/`SeqAck`
+  request and result, plus unsolicited `NetworkEvent`, gets a
+  `slog.Debug` line on both `Listener` (`cmd/keeper -debug`) and
+  `AttachClient` (`keeper.WithAttachLogger`, threaded through
+  `internal/keeperboot.Options.Logger` from `internal/server`'s own
+  logger) — network ID, message kind, small scalars only, never
+  `WriteRequestMsg.Line`/`BlobPushMsg.Value`/`LineMsg.Raw`, preserving the
+  IPC security section's "no line contents at normal levels" invariant.
+  Verified live against a real spawned keeper process: `Hello`/`HelloAck`
+  now appear on both sides at `-debug`, which is the specific gap that
+  prompted this (previously only raw uplink traffic, wired in `634f4f4`,
+  showed up in `-debug` output — the control frames underneath it never
+  did).
+
+Still genuinely open:
+
+- **BSD/macOS peer-credential code** — still cross-compiles cleanly for
+  darwin/freebsd, still never run on a real BSD/macOS host or in CI.
+  Unchanged status: "compiles, never run." Needs a real BSD/macOS host —
+  nothing more to build without one.
+
+**One new gap, not previously flagged, found while auditing current status
+against this list:** `internal/brain/nickrecovery.go`'s doc comment still
+says `internal/uplink.handleRecoveryNickError` (which hid a 432/433 caused
+by the ISON-driven auto-reclaim's own `NICK` attempt from downlink fan-out)
+was "deliberately not ported" because "`Driver` has no fan-out concept yet
+(stage 2b)". Stage 2b fan-out now exists, and this was never revisited:
+`internal/session/tracker.go`'s `RouteMessage` has no case for
+`432`/`433`/`437`, so a nick error produced by the recovery loop's own
+autonomous reclaim attempt (as opposed to a client-issued `/nick`) falls
+through `HandleMessage`'s default path and broadcasts to every attached
+client — a phantom "Nickname is already in use" notice with no user action
+behind it, on every network configured for nick recovery where reclaim
+races the server. Worth its own decision (suppress recovery-originated nick
+errors from fan-out, the way `internal/uplink` did, or something else) when
+next touching this area — not fixed here.
+
+## Reconnect test coverage (2026-08-15)
+
+Before today, every resume-shaped test exercised either the raw keeper
+protocol with a fake client, or the in-process `resumeTestKeeper` harness
+(a real `Manager`+`Listener`, but never a real separate OS process) — the
+real `internal/keeperboot` spawn path (`exec.Command`, `Setsid`) was only
+ever exercised by the manual `cmd/brain-register-demo`, never by a test.
+Closed: `internal/server/keeper_process_live_test.go`'s
+`TestKeeperProcessSurvivesServerRestart` (`ircd`-tagged) builds a real
+`gobnc-keeper` binary, spawns it for real via `keeperboot.EnsureRunning`,
+registers against a real ircd (`docker/ircd`'s ergo), tears down and
+rebuilds a fresh `Server` attaching to the same still-running keeper
+subprocess, and asserts the epoch is unchanged (the real uplink survived,
+not a redial) and the resumed nick is correct from the blob alone.
+Revert-and-confirmed against the fix it exercises (`Session.SeedFromBlob`).
+
+Also added: `TestGapOnlyResumeSkipsAckedLines` and
+`TestRingOverflowNoSubscriberSelfCloses` (`internal/keeper`, wire-protocol
+level) and `TestGapOnlyResumeSeedsStateFromBlobNotReplay`
+(`internal/server`, in-process keeper) — all revert-and-confirmed.
+
+**Not covered, and worth doing next, not claimed as done here:** redial
+after a genuine socket death occurring mid-gap (as opposed to a deliberate
+detach); a brain restart while one network is still mid-registration and
+another on the same keeper is already complete; concurrent admin
+`Dial`/`Close`/`Reconnect` racing a fresh attach at the `Session`/`Server`
+level (`internal/keeper/client_concurrent_test.go` only stresses the raw
+protocol, not the real stack above it); ring-overflow occurring during a
+brain-down window immediately before a resume attach, combined with the
+blob-carried-state-survives-eviction scenario the blob store's late-attach
+case exists for in the first place.

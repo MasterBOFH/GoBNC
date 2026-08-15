@@ -110,6 +110,14 @@ type NetworkStatus struct {
 	State   State     `json:"state"`
 	Epoch   uint64    `json:"epoch"`
 	LastSeq uint64    `json:"last_seq"`
+	// Blob is this network's current resolved blob-store state, delivered
+	// for free at attach time — no extra round trip, same pattern as
+	// State/Epoch/LastSeq above. A resuming brain seeds Session's
+	// self-nick/ISUPPORT/caps/account/channel state from this directly;
+	// it is empty for a network that was never connected, or whose
+	// connection has died since (the blob is cleared unconditionally on
+	// every NotConnected transition — see Keeper.readLoop).
+	Blob []BlobEntry `json:"blob,omitempty"`
 }
 
 // Snapshot returns the status of every network currently held, in no
@@ -168,7 +176,7 @@ func statusOf(all map[NetworkID]*Keeper) []NetworkStatus {
 	out := make([]NetworkStatus, 0, len(all))
 	for id, k := range all {
 		st, epoch := k.State()
-		out = append(out, NetworkStatus{ID: id, State: st, Epoch: epoch, LastSeq: k.LastSeq()})
+		out = append(out, NetworkStatus{ID: id, State: st, Epoch: epoch, LastSeq: k.LastSeq(), Blob: k.BlobSnapshot()})
 	}
 	return out
 }

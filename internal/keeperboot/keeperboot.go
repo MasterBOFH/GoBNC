@@ -13,6 +13,7 @@ package keeperboot
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,6 +49,13 @@ type Options struct {
 	// Hello is sent on attach. Zero value (Mode "") is invalid; callers
 	// should set at least Mode.
 	Hello keeper.HelloMsg
+
+	// Logger, if set, gets a slog.Debug line for every keeper<->brain
+	// control frame this attach sends or receives (see
+	// keeper.AttachClient's own doc comment) — threaded straight through
+	// to keeper.Attach via keeper.WithAttachLogger. nil is a valid,
+	// silent default.
+	Logger *slog.Logger
 
 	// AttachTimeout bounds a single attach attempt. Default 5s.
 	AttachTimeout time.Duration
@@ -184,7 +192,7 @@ func spawnArgs(opts Options) []string {
 func attachOnce(ctx context.Context, opts Options) (*keeper.AttachClient, error) {
 	actx, cancel := context.WithTimeout(ctx, opts.AttachTimeout)
 	defer cancel()
-	return keeper.Attach(actx, opts.SocketPath, opts.Hello)
+	return keeper.Attach(actx, opts.SocketPath, opts.Hello, keeper.WithAttachLogger(opts.Logger))
 }
 
 // attachWithRetry polls attachOnce until it succeeds or

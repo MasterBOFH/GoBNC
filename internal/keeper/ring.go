@@ -29,20 +29,19 @@ type Entry struct {
 //     connection dies — every other network's delivery on it, and every
 //     other attached brain's networks entirely, are unaffected since each
 //     network has its own Keeper, ring, and subscriber set.
-//  2. STEP-3/8 OBLIGATION, still not wired: the ring itself evicting (this
-//     type's push, below) independent of whether anyone is consuming —
-//     e.g. a netsplit burst that outpaces ring capacity with nobody
-//     attached to notice. The original single-network design's policy was
-//     "kill the process." With multiple networks per keeper process that's
-//     wrong: it would take down every other network's uplink for a failure
-//     on one. Revised policy: a ring overflow on network N closes N's
-//     uplink (Keeper.Close on that network's Keeper only) and clears N's
-//     blob store once one exists — loud, logged, one reconnect on one
-//     network. This isn't implemented yet because it has no blob store to
-//     clear and wiring only the Close half now would be half a policy.
-//     since() below already reports ok=false the moment a requested
-//     watermark has been evicted — that detection doesn't need to be
-//     rebuilt, only acted on.
+//  2. The ring itself evicting (this type's push, below) independent of
+//     whether anyone is consuming — e.g. a netsplit burst that outpaces
+//     ring capacity with nobody attached to notice. The original
+//     single-network design's policy was "kill the process." With multiple
+//     networks per keeper process that's wrong: it would take down every
+//     other network's uplink for a failure on one. Revised policy, now
+//     wired in Keeper.readLoop: a ring overflow on network N, while N has
+//     zero live line-subscribers, closes N's uplink and clears N's blob
+//     store and resume watermark — loud, logged, one reconnect on one
+//     network. since() below already reports ok=false the moment a
+//     requested watermark has been evicted; readLoop's self-close makes
+//     that failure happen immediately and loudly instead of waiting for a
+//     future attach to discover the gap on its own.
 type ring struct {
 	mu      sync.Mutex
 	buf     []Entry
@@ -59,7 +58,10 @@ func newRing(capacity int) *ring {
 	return &ring{buf: make([]Entry, capacity), cap: capacity}
 }
 
-func (r *ring) push(e Entry) {
+// push appends e, evicting the oldest entry if the ring is full. Returns
+// whether this call evicted an entry — the signal Keeper.readLoop acts on
+// for the ring-overflow-case-2 policy above.
+func (r *ring) push(e Entry) (evicted bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.len == r.cap {
@@ -67,10 +69,12 @@ func (r *ring) push(e Entry) {
 		r.start = (r.start + 1) % r.cap
 		r.len--
 		r.dropped++
+		evicted = true
 	}
 	idx := (r.start + r.len) % r.cap
 	r.buf[idx] = e
 	r.len++
+	return evicted
 }
 
 // since returns entries with Seq > afterSeq, oldest first. If the requested

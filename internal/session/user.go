@@ -8,13 +8,13 @@ import (
 
 // User is cached identity for a nick on this network.
 type User struct {
-	Nick   string
-	User   string // ident
-	Host   string
-	Away   bool
-	Oper   bool
-	Bot    bool
-	Secure bool   // connected via TLS / secure link when known
+	Nick    string
+	User    string // ident
+	Host    string
+	Away    bool
+	Oper    bool
+	Bot     bool
+	Secure  bool   // connected via TLS / secure link when known
 	Account string // services account; empty if logged out / unknown
 
 	// Self-only (meaningful when this is Session.self).

@@ -1,11 +1,26 @@
 package session
 
-import "github.com/MasterBOFH/GoBNC/internal/irc"
+import (
+	"encoding/json"
+
+	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
+)
 
 // applyState updates cached session state from an upstream (IRC server) message.
+//
+// blobIsupport/blobCloak/blobSelfNick collect what the locked dispatch
+// below learned that's worth pushing to the keeper's blob store (see
+// docs/keeper-design.md) — always collected as plain values here and
+// pushed only after s.mu.Unlock(), never while holding it: PushBlob is a
+// blocking wire round trip, and holding a lock this broad across one would
+// stall every other access to this Session for the duration, the same
+// reason persist/remove (channel persistence, below) were already handled
+// this way before blob pushes existed at all.
 func (s *Session) applyState(msg irc.Message) {
 	var persist [][2]string // name, key
 	var remove []string
+	var blobIsupport, blobCloak, blobSelfNick []byte
 
 	s.mu.Lock()
 	if msg.Source != "" {
@@ -24,18 +39,18 @@ func (s *Session) applyState(msg irc.Message) {
 	case "TOPIC":
 		s.stateTOPICLocked(msg)
 	case "NICK":
-		s.stateNICKLocked(msg)
+		blobSelfNick = s.stateNICKLocked(msg)
 	case "AWAY":
 		s.stateAWAYLocked(msg)
 	case "CHGHOST":
-		s.stateCHGHOSTLocked(msg)
+		blobCloak = s.stateCHGHOSTLocked(msg)
 	case "ACCOUNT":
 		s.stateACCOUNTLocked(msg)
 	case "MODE":
 		persist = append(persist, s.stateMODELocked(msg)...)
 	// Numerics
 	case "002", "003", "004", "005":
-		s.stateWelcomeNumericLocked(msg)
+		blobIsupport = s.stateWelcomeNumericLocked(msg)
 	case "221":
 		s.state221Locked(msg)
 	case "301":
@@ -53,7 +68,7 @@ func (s *Session) applyState(msg irc.Message) {
 	case "381":
 		s.state381Locked(msg)
 	case "396":
-		s.state396Locked(msg)
+		blobCloak = s.state396Locked(msg)
 	}
 	s.mu.Unlock()
 
@@ -63,4 +78,22 @@ func (s *Session) applyState(msg irc.Message) {
 	for _, name := range remove {
 		s.persistRemoveChannel(name)
 	}
+	if blobIsupport != nil {
+		s.pushBlob("isupport", keeper.BlobModeAppend, blobIsupport)
+	}
+	if blobCloak != nil {
+		s.pushBlob("cloak", keeper.BlobModeReplace, blobCloak)
+	}
+	if blobSelfNick != nil {
+		s.pushBlob("self-nick", keeper.BlobModeReplace, blobSelfNick)
+	}
+}
+
+// blobParams JSON-encodes msg.Params for storage as one isupport blob
+// entry — see stateWelcomeNumericLocked's 005 case. Encoding failure is
+// not possible for a []string (json.Marshal on a slice of plain strings
+// never errors), so this deliberately has no error return to check.
+func blobParams(params []string) []byte {
+	b, _ := json.Marshal(params)
+	return b
 }

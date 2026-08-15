@@ -278,6 +278,22 @@ func (s *Session) Registered() bool {
 	return s.registered
 }
 
+// pushBlob pushes one derived state entry to the keeper's blob store for
+// this network, via the shared Driver — best-effort, logged on failure,
+// never fatal to the caller's own processing (matching WriteMessage's own
+// nil-driver tolerance). Must be called without s.mu held: Driver.PushBlob
+// is a blocking wire round trip, and holding a lock this broad across one
+// would stall every other access to this Session for its duration — see
+// applyState's own doc comment for the established pattern this follows.
+func (s *Session) pushBlob(key string, mode keeper.BlobMode, value []byte) {
+	if s.driver == nil {
+		return
+	}
+	if err := s.driver.PushBlob(s.netID, key, mode, value); err != nil {
+		s.log.Warn("PushBlob", "key", key, "err", err)
+	}
+}
+
 // currentLineSeq returns the keeper.LineMsg.Seq HandleLine is currently
 // dispatching — see currentLineSeq's field doc comment.
 func (s *Session) currentLineSeq() uint64 {

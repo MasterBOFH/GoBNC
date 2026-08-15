@@ -315,6 +315,22 @@ func TestListenerVersionMismatchRejected(t *testing.T) {
 
 func TestListenerEvictedSeqReportsError(t *testing.T) {
 	mgr, k, srv, conn := dialedTestManager(t, 3) // tiny ring
+
+	// Hold a line subscription open across the write burst below so the
+	// ring-overflow-case-2 self-close (Keeper.readLoop: eviction with zero
+	// subscribers) doesn't fire and close the uplink out from under this
+	// test — this test targets a different scenario: a client attaching
+	// *after* eviction and requesting an already-evicted seq, which should
+	// fail via fanInNetwork's own since()-ok=false check, not via the
+	// uplink having been closed already.
+	sub, unsub := k.SubscribeLines()
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for range sub.Lines {
+		}
+	}()
+
 	sockPath := startTestListener(t, mgr)
 
 	for i := 0; i < 10; i++ {
@@ -324,6 +340,8 @@ func TestListenerEvictedSeqReportsError(t *testing.T) {
 	for time.Now().Before(deadline) && k.LastSeq() < 10 {
 		time.Sleep(5 * time.Millisecond)
 	}
+	unsub()
+	<-drainDone
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -337,6 +355,81 @@ func TestListenerEvictedSeqReportsError(t *testing.T) {
 	}
 	if _, err := client.NextLine(); err == nil {
 		t.Fatalf("NextLine succeeded for an evicted seq, want an error")
+	}
+}
+
+// TestGapOnlyResumeSkipsAckedLines pins the core new resume property: a
+// fresh attach with no explicit FromSeq entry for a network starts from
+// that network's own tracked resume watermark (advanced only by explicit
+// SeqAck, never by bare delivery), not from oldest-retained — so a second
+// attach after the first one acked everything sees only what arrived
+// since, never the lines the first attach already consumed.
+func TestGapOnlyResumeSkipsAckedLines(t *testing.T) {
+	mgr, k, srv, conn := dialedTestManager(t, 1000)
+	sockPath := startTestListener(t, mgr)
+
+	for i := 1; i <= 3; i++ {
+		srv.send(t, conn, fmt.Sprintf("NOTICE * :old%d", i))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && k.LastSeq() < 3 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client1, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("Attach client1: %v", err)
+	}
+	if err := client1.SendLiveReady(); err != nil {
+		t.Fatalf("SendLiveReady: %v", err)
+	}
+	var lastSeq uint64
+	for i := 0; i < 3; i++ {
+		line, err := client1.NextLine()
+		if err != nil {
+			t.Fatalf("NextLine %d: %v", i, err)
+		}
+		lastSeq = line.Seq
+		if err := client1.SendSeqAck(testNetID, line.Seq); err != nil {
+			t.Fatalf("SendSeqAck: %v", err)
+		}
+	}
+	// Give the keeper a moment to actually process the acks (fire-and-
+	// forget, no result to synchronize on) before detaching.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && k.DeliveredSeq() < lastSeq {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := k.DeliveredSeq(); got != lastSeq {
+		t.Fatalf("DeliveredSeq=%d, want %d", got, lastSeq)
+	}
+	if err := client1.Close(); err != nil {
+		t.Fatalf("client1.Close: %v", err)
+	}
+
+	// Traffic arrives while nobody is attached — the brain-down gap.
+	srv.send(t, conn, "NOTICE * :new1")
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && k.LastSeq() < 4 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	client2, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("Attach client2: %v", err)
+	}
+	defer client2.Close()
+	if err := client2.SendLiveReady(); err != nil {
+		t.Fatalf("SendLiveReady: %v", err)
+	}
+	line, err := client2.NextLine()
+	if err != nil {
+		t.Fatalf("NextLine: %v", err)
+	}
+	if line.Seq != 4 || string(line.Raw) != "NOTICE * :new1" {
+		t.Fatalf("first line to client2 = %+v, want seq 4 \"NOTICE * :new1\" (no replay of already-acked lines)", line)
 	}
 }
 

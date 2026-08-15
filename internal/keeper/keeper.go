@@ -150,6 +150,20 @@ type Keeper struct {
 
 	seqCounter uint64 // atomic; monotonic for the keeper's lifetime, never reset
 	ring       *ring
+	blob       *blobStore
+
+	// deliveredSeq is the resume watermark: the highest seq a brain has
+	// explicitly acked as fully processed (see AckSeq). A fresh attach
+	// with no explicit FromSeq for this network starts here, not from
+	// oldest-retained — this is what makes resume "gap only" rather than
+	// a full backlog replay. It only ever moves forward on an explicit
+	// ack, never on a bare wire-write (see AckSeq's doc comment for why
+	// that distinction is load-bearing), and it survives an ordinary
+	// disconnect/redial on this same Keeper instance (seq is monotonic
+	// across epochs and never resets — see docs/keeper-design.md). It is
+	// reset only by the ring-overflow-case-2 self-close path in readLoop,
+	// where the ring has evicted entries this watermark still points at.
+	deliveredSeq uint64
 
 	subMu sync.Mutex
 	subs  map[chan Event]struct{}
@@ -190,6 +204,7 @@ func New(maxLine, ringCapacity int, log *slog.Logger, opts ...Option) *Keeper {
 		readIdle: defaultReadIdleTimeout,
 		log:      log,
 		ring:     newRing(ringCapacity),
+		blob:     newBlobStore(),
 		subs:     make(map[chan Event]struct{}),
 		lineSubs: make(map[chan Entry]*lineSubState),
 	}
@@ -240,6 +255,45 @@ func (k *Keeper) Since(afterSeq uint64) ([]Entry, bool) {
 // DroppedCount reports entries evicted from the ring before being read.
 func (k *Keeper) DroppedCount() uint64 {
 	return k.ring.droppedCount()
+}
+
+// PushBlob applies one brain-derived entry to this network's blob store.
+// The keeper matches on key/mode and never inspects value — see blob.go.
+func (k *Keeper) PushBlob(key string, mode BlobMode, value []byte) {
+	k.blob.Push(key, mode, value)
+}
+
+// BlobSnapshot returns this network's current resolved blob state, as
+// delivered to an attaching client in HelloAckMsg.
+func (k *Keeper) BlobSnapshot() []BlobEntry {
+	return k.blob.Snapshot()
+}
+
+// AckSeq advances this network's resume watermark to seq, if seq is newer
+// than what's already acked. Called only once a brain has fully finished
+// processing the line at that seq — including any blob push that line's
+// processing triggered (see SeqAckMsg's doc comment) — never on the mere
+// fact that the keeper wrote the line to the wire. That distinction is
+// what keeps the push-derived-entry-before-advancing-the-checkpoint
+// ordering rule in docs/keeper-design.md's blob store section true by
+// construction: a brain that crashes between receiving a line and pushing
+// its derived blob entry never sends the ack for that line, so the
+// watermark never advances past it, and the next attach receives that
+// line again along with every one after it.
+func (k *Keeper) AckSeq(seq uint64) {
+	k.mu.Lock()
+	if seq > k.deliveredSeq {
+		k.deliveredSeq = seq
+	}
+	k.mu.Unlock()
+}
+
+// DeliveredSeq returns the current resume watermark — see the field's own
+// doc comment on Keeper.
+func (k *Keeper) DeliveredSeq() uint64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.deliveredSeq
 }
 
 // Stats is a monitoring snapshot of the ring buffer — cheap to call
@@ -345,6 +399,18 @@ func (k *Keeper) publishLine(e Entry) {
 			state.overflowOnce.Do(func() { close(state.overflow) })
 		}
 	}
+}
+
+// hasLineSubscribers reports whether any live-attached client is currently
+// streaming this network's lines — the ring-overflow-case-2 policy in
+// readLoop only self-closes when this is false; a subscriber that falls
+// behind is already handled by its own Overflow signal (case 1), and
+// self-closing on top of that would be redundant and would race the
+// subscriber's own kill.
+func (k *Keeper) hasLineSubscribers() bool {
+	k.lineSubMu.Lock()
+	defer k.lineSubMu.Unlock()
+	return len(k.lineSubs) > 0
 }
 
 var (
@@ -531,6 +597,7 @@ var errNotConnected = errors.New("keeper: not connected")
 func (k *Keeper) readLoop(ctx context.Context, c *connio.Conn, epoch uint64, readIdle time.Duration, done chan struct{}) {
 	defer close(done)
 	var exitErr error
+	var ringOverflowClose bool
 	for {
 		line, err := c.ReadLine(time.Now().Add(readIdle))
 		if err != nil {
@@ -539,8 +606,26 @@ func (k *Keeper) readLoop(ctx context.Context, c *connio.Conn, epoch uint64, rea
 		}
 		seq := k.nextSeq()
 		entry := Entry{Seq: seq, Epoch: epoch, Line: line, Time: time.Now()}
-		k.ring.push(entry)
+		evicted := k.ring.push(entry)
 		k.publishLine(entry)
+
+		if evicted && !k.hasLineSubscribers() {
+			// Ring-overflow case 2 (see ring.go's doc comment): the ring
+			// evicted an entry with nobody attached to consume it, so a
+			// future attach's resume watermark now points at a gap this
+			// ring can no longer fill. Rather than let that future attach
+			// discover the gap on its own (Since's ok=false) and have its
+			// whole live session killed over one network's history, close
+			// this network's uplink now, loudly, and reset its resume
+			// watermark and blob — the same "drop and re-register" outcome
+			// a missing blob already produces on attach, just triggered
+			// proactively instead of waiting to be discovered.
+			k.log.Warn("keeper: ring overflow with no subscriber, closing uplink", "epoch", epoch)
+			exitErr = fmt.Errorf("ring overflow: no subscriber consumed line before eviction")
+			ringOverflowClose = true
+			_ = c.Close()
+			break
+		}
 
 		if msg, perr := irc.Parse(line); perr == nil && isServerPing(msg) {
 			if werr := c.WriteLine(pongFor(msg)); werr != nil {
@@ -561,21 +646,25 @@ func (k *Keeper) readLoop(ctx context.Context, c *connio.Conn, epoch uint64, rea
 		if !deliberate {
 			k.lastErr = exitErr
 		}
-		// STEP-3 WIRING POINT: this is where a future blob store must be
-		// cleared — unconditionally, deliberate or not. Any state derived
-		// from epoch `epoch` (ISUPPORT, CAP, identity, channel list) is
-		// stale the instant the connection that produced it is gone,
-		// whether it ended because the brain asked for Close or because the
-		// socket died on its own; the next Dial starts a new epoch and a
-		// blank transcript. Do not gate this on `deliberate` — a deliberate
-		// close followed by a redial to the same network still needs fresh
-		// registration, so the old blob is just as invalid.
-		// e.g.: if k.blobStore != nil { k.blobStore.Clear() } — but do the
-		// actual clear after releasing k.mu below, not inside this critical
-		// section; k.mu also guards Dial/Close/State and shouldn't be held
-		// across a blob store call.
+		if ringOverflowClose {
+			k.deliveredSeq = 0
+		}
 	}
 	k.mu.Unlock()
+
+	if stillCurrent {
+		// Any state derived from epoch `epoch` (ISUPPORT, CAP, identity,
+		// channel list) is stale the instant the connection that produced
+		// it is gone, whether it ended because the brain asked for Close
+		// or because the socket died on its own; the next Dial starts a
+		// new epoch and a blank transcript. Deliberately not gated on
+		// `deliberate` — a deliberate close followed by a redial to the
+		// same network still needs fresh registration, so the old blob is
+		// just as invalid either way. Done after releasing k.mu above:
+		// k.mu also guards Dial/Close/State and must not be held across a
+		// blob store call.
+		k.blob.Clear()
+	}
 
 	if !deliberate && stillCurrent {
 		k.log.Warn("keeper: uplink socket died", "epoch", epoch, "err", exitErr)

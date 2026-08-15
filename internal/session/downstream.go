@@ -9,6 +9,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 )
 
 // Detach removes a downlink.
@@ -763,6 +764,11 @@ func ParseJoin(channels, keys string) []JoinTarget {
 }
 
 func (s *Session) persistChannel(name, key string) {
+	// The blob store's "channel:#foo" key has the same close analogue this
+	// function already is for the SQL store (docs/keeper-design.md) — push
+	// it regardless of whether a SQL store is configured, since blob state
+	// lives in the keeper process and is independent of it.
+	s.pushBlob("channel:"+name, keeper.BlobModeReplace, []byte(key))
 	if s.store == nil || s.Network.ID == 0 {
 		return
 	}
@@ -773,6 +779,7 @@ func (s *Session) persistChannel(name, key string) {
 }
 
 func (s *Session) persistRemoveChannel(name string) {
+	s.pushBlob("channel:"+name, keeper.BlobModeDelete, nil)
 	if s.store == nil || s.Network.ID == 0 {
 		return
 	}

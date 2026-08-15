@@ -68,6 +68,9 @@ const (
 	msgWriteResult      msgType = 13 // keeper -> client, in response to msgWriteRequest
 	msgQuitCloseRequest msgType = 14 // client -> keeper, live mode only: write a final line with a bounded deadline, then close
 	msgQuitCloseResult  msgType = 15 // keeper -> client, in response to msgQuitCloseRequest
+	msgBlobPush         msgType = 16 // client -> keeper, live mode only: apply one derived entry to a network's blob store
+	msgBlobPushResult   msgType = 17 // keeper -> client, in response to msgBlobPush
+	msgSeqAck           msgType = 18 // client -> keeper, live mode only: fire-and-forget resume-watermark advance
 )
 
 // Mode is the attach mode a client requests in Hello.
@@ -91,20 +94,28 @@ type HelloMsg struct {
 	ClientVersion int  `json:"client_version"` // highest protocol version the client supports
 	Mode          Mode `json:"mode"`
 	// FromSeq is live mode only: per-network resume points, keyed by
-	// NetworkID. A network the keeper holds but that's absent from this map
-	// is streamed from seq 0 (from oldest retained) — this is the normal
-	// case for a network the client has no prior checkpoint for yet.
+	// NetworkID. A network absent from this map streams from that
+	// Keeper's own tracked resume watermark (Keeper.DeliveredSeq) — the
+	// highest seq a brain has explicitly acked as fully processed via
+	// SeqAckMsg — not from oldest-retained. This is gap-only delivery:
+	// from the exact point a previous live attach last acked, not a full
+	// backlog replay. An explicit entry in this map (including an
+	// explicit 0) overrides the watermark for that one network; this is
+	// an escape hatch for tooling/debugging, not something a normal
+	// attach needs to set — the normal case is an empty map.
 	//
-	// Deliberately always replayed in full, never reduced to "only what's
-	// new since some checkpoint": Session's entire state reconstruction on
-	// a resumed attach (registration completion, self nick, ISUPPORT,
-	// channel membership — not just chat history) depends on watching the
-	// complete transcript, since there is no separate state snapshot (the
-	// blob store docs/keeper-design.md defers). A brain-side checkpoint
-	// that skipped replay was tried and reverted — see internal/history's
-	// keeper_seq-based idempotent storage for how replay-safe duplication
-	// is actually avoided instead: by making replaying an already-stored
-	// line a safe no-op, not by not replaying it.
+	// A first attempt at gap-only delivery (skipping replay without a
+	// blob store to carry the state replay was standing in for) was tried
+	// and reverted — Session's state reconstruction (self nick, ISUPPORT,
+	// caps, channel membership, account) depended on watching the replayed
+	// transcript at the time. That dependency is gone now that Session
+	// pushes each of those as a blob entry as it learns them (see
+	// docs/keeper-design.md's blob store section) and seeds itself from
+	// the delivered blob snapshot on resume instead of from replay.
+	// internal/history's keeper_seq-based idempotent storage remains as
+	// defense in depth against a duplicate, not the primary mechanism
+	// preventing one — gap-only delivery means there is normally nothing
+	// to duplicate.
 	FromSeq map[NetworkID]uint64 `json:"from_seq,omitempty"`
 }
 
@@ -143,10 +154,12 @@ type ValidateReadyMsg struct{}
 // one attempt and caches none of it; the "read TLS material from disk at
 // dial time, never cache it" invariant this package already follows extends
 // naturally to "the keeper doesn't remember dial config between dials" at
-// the process level too. FromSeq only matters if this network already has
-// retained backlog from a prior epoch the brain wants to resume from
-// (e.g. reattaching to a network the keeper kept holding); 0 for a network
-// being dialed for the first time.
+// the process level too. FromSeq == 0 means "start from this network's own
+// tracked resume watermark" (Keeper.DeliveredSeq) — the normal case for a
+// still-attached brain redialing a network it's already partly consumed;
+// a network being dialed for the first time already has a zero watermark,
+// so this is a no-op then. A nonzero value overrides the watermark
+// explicitly (tooling/debugging escape hatch, mirroring HelloMsg.FromSeq).
 type DialRequestMsg struct {
 	Network NetworkID  `json:"network"`
 	Config  DialConfig `json:"config"`
@@ -247,6 +260,48 @@ type QuitCloseResultMsg struct {
 	Network NetworkID `json:"network"`
 	OK      bool      `json:"ok"`
 	Error   string    `json:"error,omitempty"`
+}
+
+// BlobPushMsg asks the keeper to apply one derived entry to a network's
+// blob store — the wire form of Keeper.PushBlob. Live mode only. Value is
+// opaque to the keeper (it matches on Key/Mode only, never inspects
+// Value), so — like WriteRequestMsg.Line — it is whatever the brain
+// constructed itself from known-safe content (a resolved cap set, an
+// ISUPPORT token, a channel key), not raw server bytes, so there's no
+// non-UTF-8 concern requiring a []byte-specific encoding the way
+// LineMsg.Raw needs one.
+type BlobPushMsg struct {
+	Network NetworkID `json:"network"`
+	Key     string    `json:"key"`
+	Mode    BlobMode  `json:"mode"`
+	Value   []byte    `json:"value"`
+}
+
+// BlobPushResultMsg reports the outcome of a BlobPushMsg. Driver blocks on
+// this before sending the SeqAckMsg for the line that triggered the push —
+// see SeqAckMsg's doc comment for why that ordering is load-bearing, not
+// just tidy.
+type BlobPushResultMsg struct {
+	Network NetworkID `json:"network"`
+	OK      bool      `json:"ok"`
+	Error   string    `json:"error,omitempty"`
+}
+
+// SeqAckMsg tells the keeper a brain has fully finished processing the
+// line at Seq for Network — including pushing any blob entry that line's
+// processing derived, which must have already completed (its
+// BlobPushResultMsg received) before this is sent. Live mode only,
+// fire-and-forget: no result message, since Keeper.AckSeq is a pure
+// monotonic-max advance and there is nothing meaningful to fail. The
+// keeper advances that network's resume watermark (Keeper.DeliveredSeq)
+// to Seq on receipt and never earlier — never merely because it wrote the
+// line to the wire. This is what makes a brain crash between receiving a
+// line and pushing its derived blob entry safe: the ack for that line
+// simply never arrives, so the watermark never passes it, and the next
+// attach receives that line (and everything after it) again.
+type SeqAckMsg struct {
+	Network NetworkID `json:"network"`
+	Seq     uint64    `json:"seq"`
 }
 
 // LiveReadyMsg: "load me and start delivering." Triggers the keeper to

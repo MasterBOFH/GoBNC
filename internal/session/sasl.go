@@ -3,6 +3,7 @@ package session
 import (
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 )
 
 // CapEnabler is implemented by downlinks that can enable a negotiated capability.
@@ -200,6 +201,7 @@ func (s *Session) applyAccountFromSASL(msg irc.Message) {
 			}
 		}
 		s.mu.Unlock()
+		s.pushBlob("account", keeper.BlobModeReplace, []byte(acct))
 	case "901":
 		s.mu.Lock()
 		s.loggedIn = false
@@ -207,6 +209,7 @@ func (s *Session) applyAccountFromSASL(msg irc.Message) {
 			s.self.Account = ""
 		}
 		s.mu.Unlock()
+		s.pushBlob("account", keeper.BlobModeReplace, nil)
 	}
 }
 

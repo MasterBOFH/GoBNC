@@ -101,7 +101,8 @@ func (s *Server) bootstrapKeeper(ctx context.Context) error {
 	bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	res, err := keeperboot.EnsureRunning(bootCtx, keeperboot.Options{
-		Hello: keeper.HelloMsg{Mode: keeper.ModeLive},
+		Hello:  keeper.HelloMsg{Mode: keeper.ModeLive},
+		Logger: s.log,
 	})
 	if err != nil {
 		return fmt.Errorf("keeperboot: %w", err)
@@ -542,12 +543,32 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	// still accurate at this point for whichever it is.
 	if s.resumedAtBoot[netID] {
 		s.driver.RegisterResumedNetwork(netID, s.networkConfigForLocked(n))
+		// Gap-only delivery (see docs/keeper-design.md) means this
+		// network's original registration burst will never be replayed —
+		// nothing will otherwise ever make sess.Registered() true. Seed
+		// directly from the blob snapshot HelloAck already delivered at
+		// attach time instead of waiting for traffic that isn't coming.
+		sess.SeedFromBlob(s.blobForLocked(netID))
 	} else {
 		s.driver.RegisterNetwork(netID, s.networkConfigForLocked(n))
 	}
 	s.driver.SetChannels(netID, channelJoinsFor(chs))
 	s.driver.SetFloodParams(netID, n.FloodBurst, n.FloodRate)
 	return sess, nil
+}
+
+// blobForLocked returns netID's blob snapshot from this brain's own
+// attach-time HelloAck (s.keeperClient.Networks — see
+// keeper.NetworkStatus.Blob's doc comment), or nil if netID isn't there
+// (a network the keeper has never held, or one whose blob is empty).
+// Caller must hold s.mu.
+func (s *Server) blobForLocked(netID keeper.NetworkID) []keeper.BlobEntry {
+	for _, st := range s.keeperClient.Networks {
+		if st.ID == netID {
+			return st.Blob
+		}
+	}
+	return nil
 }
 
 // dialNetworkLocked dials n's uplink, unless the keeper already held it
@@ -567,13 +588,13 @@ func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error
 		// actually down (see brain.Driver.StartRegistration's doc
 		// comment on why a resumed network must never reach it either).
 		// Nothing else to do here: the keeper's own serveLive already
-		// resumes streaming this network's lines to our attach from Hello
-		// time, and Session self-detects registration completion purely
-		// from that replayed transcript (see upstream.go's HandleLine) —
-		// as long as registerNetworkLocked ran before SendLiveReady, so
-		// nothing in that replay was dropped for lack of somewhere to go.
-		// UpdateDialConfig still records cfg so a later real Reconnect
-		// has something to redial with.
+		// resumes streaming this network's lines to our attach from its
+		// resume watermark (gap-only, not a full replay — see
+		// docs/keeper-design.md), and registerNetworkLocked already seeded
+		// Session directly from the delivered blob snapshot
+		// (Session.SeedFromBlob) rather than waiting for registration
+		// traffic that won't be replayed. UpdateDialConfig still records
+		// cfg so a later real Reconnect has something to redial with.
 		s.driver.UpdateDialConfig(netID, s.dialConfigForLocked(n))
 		delete(s.resumedAtBoot, netID)
 		s.log.Info("network resumed", "name", n.Name)

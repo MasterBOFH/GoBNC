@@ -86,13 +86,21 @@ func (s *Session) stateTOPICLocked(msg irc.Message) {
 	}
 }
 
-func (s *Session) stateNICKLocked(msg irc.Message) {
+// stateNICKLocked returns the new nick as the self-nick blob entry to push
+// (once s.mu is released — see applyState) when the renamed user is self,
+// nil otherwise.
+func (s *Session) stateNICKLocked(msg irc.Message) []byte {
 	old := msg.Nick()
 	newNick := msg.Trailing()
 	if newNick == "" {
 		newNick = msg.Param(0)
 	}
+	wasSelf := s.self != nil && s.isupport.CaseMapping.Equal(old, s.self.Nick)
 	s.renameUserLocked(old, newNick)
+	if wasSelf {
+		return []byte(newNick)
+	}
+	return nil
 }
 
 func (s *Session) stateAWAYLocked(msg irc.Message) {
@@ -109,18 +117,27 @@ func (s *Session) stateAWAYLocked(msg irc.Message) {
 	}
 }
 
-// stateCHGHOSTLocked updates user/host from :nick!u@h CHGHOST newuser newhost.
-func (s *Session) stateCHGHOSTLocked(msg irc.Message) {
+// stateCHGHOSTLocked updates user/host from :nick!u@h CHGHOST newuser
+// newhost, and returns the new host as the cloak blob entry to push (once
+// s.mu is released — see applyState) when the affected user is self, nil
+// otherwise.
+func (s *Session) stateCHGHOSTLocked(msg irc.Message) []byte {
 	u := s.touchUserFromPrefixLocked(msg.Source)
 	if u == nil {
-		return
+		return nil
 	}
 	if nu := msg.Param(0); nu != "" {
 		u.User = nu
 	}
-	if nh := msg.Param(1); nh != "" {
-		u.Host = nh
+	nh := msg.Param(1)
+	if nh == "" {
+		return nil
 	}
+	u.Host = nh
+	if u == s.self {
+		return []byte(nh)
+	}
+	return nil
 }
 
 // stateACCOUNTLocked updates services account from :nick ACCOUNT name|* .
