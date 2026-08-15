@@ -500,6 +500,51 @@ func TestCloseIsIdempotentAndDeliberate(t *testing.T) {
 	}
 }
 
+// TestDeliberateCloseClearsBlob catches a gap TestRingOverflowNoSubscriberSelfCloses
+// doesn't: that test proves the blob clears on the keeper's own self-close
+// (readLoop closing its own connection from inside the read loop, e.g. on a
+// ring overflow with no subscribers) — but an external Close() call (the
+// deliberate-QUIT/detach path; QuitClose and Retire both funnel through it)
+// takes a different code path entirely. Close() reassigns k.conn to nil
+// itself before readLoop's own cleanup ever gets to run, which makes that
+// cleanup's stillCurrent check false and skips its blob.Clear() call — so
+// without Close() clearing the blob itself, a deliberate close would leave
+// the previous connection's blob (self-nick, cloak, channels, ...) sitting
+// there, live, for whatever the next Dial reconnects to. Found by writing
+// this probe directly (Dial, PushBlob, Close, assert BlobSnapshot is
+// empty) rather than trusting docs/keeper-design.md's "clearing is
+// keeper-side and unconditional" claim at face value — the probe failed
+// before Close() got its own k.blob.Clear() call.
+func TestDeliberateCloseClearsBlob(t *testing.T) {
+	srv := newFakeServer(t)
+	defer srv.close()
+
+	k := newTestKeeper(t)
+	host, port := hostPort(srv.addr())
+
+	acceptedCh := make(chan net.Conn, 1)
+	go func() { acceptedCh <- srv.accept(t) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := k.Dial(ctx, DialConfig{Host: host, Port: port}); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	<-acceptedCh
+
+	k.PushBlob("self-nick", BlobModeReplace, []byte("alice"))
+	if snap := k.BlobSnapshot(); len(snap) == 0 {
+		t.Fatal("PushBlob didn't take — nothing to prove by closing")
+	}
+
+	if err := k.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if snap := k.BlobSnapshot(); len(snap) != 0 {
+		t.Fatalf("BlobSnapshot=%+v after deliberate Close, want empty", snap)
+	}
+}
+
 func TestReadIdleTimeoutFires(t *testing.T) {
 	srv := newFakeServer(t)
 	defer srv.close()
