@@ -241,7 +241,7 @@ func (s *Session) rplLoggedInLocked() (irc.Message, bool) {
 	}
 	acct := s.self.Account
 	return irc.Message{
-		Source:  ServerName,
+		Source:  s.serverPrefixLocked(),
 		Command: "900",
 		Params:  []string{nick, prefix, acct, "You are now logged in as " + acct},
 	}, true
