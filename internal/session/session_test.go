@@ -1433,6 +1433,37 @@ func TestState302USERHOSTLearnsSelfHost(t *testing.T) {
 	}
 }
 
+// TestState352WHOReplyDoesNotClobberSelfHost is the regression test for the
+// bug where a client-issued WHO whose reply happens to include our own row
+// overwrote the real cloak (learned from SASL RPL_LOGGEDIN) with whatever
+// host that WHO reply carried — observed in practice as a raw connecting
+// address replacing the real cloak, then replayed to the next attach. Self's
+// ident/host is only ever trusted from RPL_LOGGEDIN (900), CHGHOST, or an
+// observed nick!user@host prefix (touchUserFromPrefixLocked) — never a WHO
+// reply's user/host fields, which the ircd is free to answer differently.
+func TestState352WHOReplyDoesNotClobberSelfHost(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	s.applyAccountFromSASL(irc.Message{Command: "900", Params: []string{"me", "me!~iron@user/MrIron", "MrIron", "You are now logged in as MrIron"}})
+	if got := s.SelfPrefix(); got != "me!~iron@user/MrIron" {
+		t.Fatalf("seeded via SASL 900=%q", got)
+	}
+
+	// RPL_WHOREPLY: <client> <channel> <user> <host> <server> <nick> <flags> :<hopcount> <realname>
+	s.applyState(irc.Message{Source: "irc.example", Command: "352", Params: []string{"me", "#chan", "iron", "2a03:94e0:17c8::1", "irc.example", "me", "H", "0 Real Name"}})
+	if got := s.SelfPrefix(); got != "me!~iron@user/MrIron" {
+		t.Fatalf("WHO reply clobbered self cloak: %q", got)
+	}
+
+	// A WHO reply for a different nick must still populate normally.
+	s.applyState(irc.Message{Source: "irc.example", Command: "352", Params: []string{"me", "#chan", "other", "other.example", "irc.example", "friend", "H", "0 Real Name"}})
+	s.mu.RLock()
+	friend := s.users[s.isupport.CaseMapping.Canonical("friend")]
+	s.mu.RUnlock()
+	if friend == nil || friend.Host != "other.example" {
+		t.Fatalf("WHO reply for non-self nick did not populate: %+v", friend)
+	}
+}
+
 func TestAttachWelcomeBurst(t *testing.T) {
 	s := New(store.Network{Name: "ircu2", Nick: "me"}, nil, nil, nil, nil)
 	s.registered = true

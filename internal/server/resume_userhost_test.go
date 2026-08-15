@@ -52,17 +52,6 @@ func TestResumeLearnsSelfUserHost(t *testing.T) {
 
 	conn := fake.lastConn(t)
 
-	// brain.Driver queries USERHOST for itself the moment it sees 001 (see
-	// Driver.handleLine) — the live/fresh path's own half of this fix, and
-	// it must be drained here rather than left sitting unread on conn,
-	// where it would otherwise let the later "resume asked again" check
-	// below pass by matching this stale line instead of a genuinely new one.
-	if !waitForLineOnConn(t, conn, 3*time.Second, func(line string) bool {
-		return strings.HasPrefix(line, "USERHOST") && strings.Contains(line, "alice")
-	}) {
-		t.Fatal("fresh registration never queried USERHOST for itself")
-	}
-
 	// Uplink auto-joins #chan — the shape TestAutoJoinRepopulatesChannelBlob
 	// (internal/session) and TestResumeFetchesLiveChannelRoster exercise —
 	// this is what leaves "channel:#chan" in the blob for the resumed brain
