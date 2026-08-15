@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/MasterBOFH/GoBNC/internal/caps"
@@ -21,17 +20,12 @@ func TestRequestTrackerISON(t *testing.T) {
 	cm := irc.CaseRFC1459
 	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "ISON"})
 	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "ISON"})
-	if w1 != nil || w2 == nil {
-		t.Fatal("second ISON should wait", w1, w2)
+	if !w1 || !w2 {
+		t.Fatal("ISON replies are a single 303; both writes go immediately", w1, w2)
 	}
 	c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "303", Params: []string{"me", "a b"}}, cm)
 	if !only || c != "c1" {
 		t.Fatalf("first 303 -> c1, got %s only=%v", c, only)
-	}
-	select {
-	case <-w2:
-	case <-time.After(time.Second):
-		t.Fatal("second ISON not released")
 	}
 	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "303", Params: []string{"me", ""}}, cm)
 	if !only || c != "c2" {
@@ -46,17 +40,12 @@ func TestRequestTrackerRouteRepliesParity(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "ISON"})
 		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "ISON"})
-		if w2 == nil {
-			t.Fatal("second should wait")
+		if !w2 {
+			t.Fatal("second ISON should send immediately")
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "461", Params: []string{"me", "ISON", "Need more params"}}, cm)
 		if !only || c != "c1" {
 			t.Fatal(c, only)
-		}
-		select {
-		case <-w2:
-		case <-time.After(time.Second):
-			t.Fatal("461 should release next ISON")
 		}
 	})
 
@@ -75,7 +64,10 @@ func TestRequestTrackerRouteRepliesParity(t *testing.T) {
 	t.Run("WHOWAS", func(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, _ = rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOWAS"})
-		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOWAS"})
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOWAS", Outbound: irc.Message{Command: "WHOWAS"}})
+		if w2 {
+			t.Fatal("second WHOWAS should queue")
+		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "406", Params: []string{"me", "gone", "no such"}}, cm)
 		if !only || c != "c1" {
 			t.Fatal(c, only)
@@ -84,10 +76,8 @@ func TestRequestTrackerRouteRepliesParity(t *testing.T) {
 		if !only || c != "c1" {
 			t.Fatal(c, only)
 		}
-		select {
-		case <-w2:
-		case <-time.After(time.Second):
-			t.Fatal("369 should release next WHOWAS")
+		if got := rt.TakeReady(); len(got) != 1 {
+			t.Fatalf("369 should release next WHOWAS write, got %d", len(got))
 		}
 	})
 
@@ -222,8 +212,8 @@ func TestRequestTrackerHELPAndADMINAndMAP(t *testing.T) {
 	t.Run("HELP", func(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "HELP"})
-		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "HELP"})
-		if w1 != nil || w2 == nil {
+		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "HELP", Outbound: irc.Message{Command: "HELP"}})
+		if !w1 || w2 {
 			t.Fatal(w1, w2)
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "704", Params: []string{"me", "INDEX", "start"}}, cm)
@@ -238,10 +228,8 @@ func TestRequestTrackerHELPAndADMINAndMAP(t *testing.T) {
 		if !only || c != "c1" {
 			t.Fatal(c, only)
 		}
-		select {
-		case <-w2:
-		default:
-			t.Fatal("c2 HELP should release after 706")
+		if got := rt.TakeReady(); len(got) != 1 {
+			t.Fatalf("c2 HELP should release after 706, got %d", len(got))
 		}
 	})
 
@@ -322,7 +310,7 @@ func TestRequestTrackerLabeled(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	label, _, wait := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOIS", ClientLabel: "client-lbl", PreferLabel: true})
-	if wait != nil || label == "" {
+	if !wait || label == "" {
 		t.Fatal(label, wait)
 	}
 	msg := irc.Message{Tags: map[string]string{"label": label}, Command: "311", Params: []string{"me", "other"}}
@@ -341,13 +329,13 @@ func TestRequestTrackerSerialize(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	// Letter-less STATS falls through to the hold queue.
-	_, _, wait1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST"})
-	_, _, wait2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST"})
-	if wait1 != nil {
-		t.Fatal("first should not wait")
+	_, _, wait1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST", Outbound: irc.Message{Command: "LIST", Params: []string{"1"}}})
+	_, _, wait2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST", Outbound: irc.Message{Command: "LIST", Params: []string{"2"}}})
+	if !wait1 {
+		t.Fatal("first should send")
 	}
-	if wait2 == nil {
-		t.Fatal("second should wait")
+	if wait2 {
+		t.Fatal("second LIST should queue until 323")
 	}
 	msg := irc.Message{Command: "322", Params: []string{"me", "#c", "1", "topic"}}
 	c, only, _, _, _ := rt.RouteMessage(msg, cm)
@@ -363,11 +351,8 @@ func TestRequestTrackerSerialize(t *testing.T) {
 	if !ok || active != "c2" {
 		t.Fatalf("active=%s ok=%v", active, ok)
 	}
-	// Gate for c2 must be open so it can send.
-	select {
-	case <-wait2:
-	default:
-		t.Fatal("second gate should be released after first end")
+	if got := rt.TakeReady(); len(got) != 1 {
+		t.Fatalf("second LIST should be released after first end, got %d", len(got))
 	}
 }
 
@@ -377,8 +362,8 @@ func TestRequestTrackerMODEEnquiry(t *testing.T) {
 	t.Run("channel modes 324+329", func(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
-		if w1 != nil {
-			t.Fatal("first should not wait")
+		if !w1 {
+			t.Fatal("first should send")
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}}, cm)
 		if !only || c != "c1" {
@@ -394,7 +379,7 @@ func TestRequestTrackerMODEEnquiry(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#a"})
 		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "MODE", EnquiryTarget: "#b"})
-		if w1 != nil || w2 != nil {
+		if !w1 || !w2 {
 			t.Fatal("different targets must not hold", w1, w2)
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#b", "+n"}}, cm)
@@ -415,23 +400,17 @@ func TestRequestTrackerMODEEnquiry(t *testing.T) {
 		}
 	})
 
-	t.Run("same channel holds", func(t *testing.T) {
+	t.Run("same channel coalesces", func(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
 		_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "MODE", EnquiryTarget: "#c"})
-		if w1 != nil || w2 == nil {
-			t.Fatal(w1, w2)
+		if !w1 || w2 {
+			t.Fatal("duplicate MODE #c must skip the second write", w1, w2)
 		}
-		rt.RouteMessage(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}}, cm)
-		select {
-		case <-w2:
-		default:
-			t.Fatal("c2 should release after c1's 324")
-		}
-		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "367", Params: []string{"me", "#c", "*!*@x"}}, cm)
-		if !only || c != "c2" {
-			t.Fatalf("c2 banlist mid -> %s only=%v", c, only)
-		}
+		got := rt.RouteAll(irc.Message{Command: "324", Params: []string{"me", "#c", "+nt"}}, cm)
+		requireDests(t, got, "c1", "c2")
+		got = rt.RouteAll(irc.Message{Command: "329", Params: []string{"me", "#c", "123"}}, cm)
+		requireDests(t, got, "c1", "c2")
 	})
 
 	t.Run("banlist", func(t *testing.T) {
@@ -479,7 +458,7 @@ func TestRequestTrackerTOPICEnquiry(t *testing.T) {
 		rt := NewRequestTracker()
 		_, _, wm := rt.Begin(BeginOpts{Client: "c1", Cmd: "MODE", EnquiryTarget: "#c"})
 		_, _, wt := rt.Begin(BeginOpts{Client: "c2", Cmd: "TOPIC", EnquiryTarget: "#c"})
-		if wm != nil || wt != nil {
+		if !wm || !wt {
 			t.Fatal("MODE vs TOPIC must not hold each other", wm, wt)
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "332", Params: []string{"me", "#c", "t"}}, cm)
@@ -693,7 +672,7 @@ func TestRequestTrackerSTATSbyLetter(t *testing.T) {
 	cm := irc.CaseRFC1459
 	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "STATS", StatsLetter: "y"})
 	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "STATS", StatsLetter: "c"})
-	if w1 != nil || w2 != nil {
+	if !w1 || !w2 {
 		t.Fatal("different letters should not hold", w1, w2)
 	}
 	// Mid-numeric with two letters pending: not routed (ambiguous).
@@ -716,29 +695,22 @@ func TestRequestTrackerSTATSbyLetter(t *testing.T) {
 	}
 }
 
-func TestRequestTrackerSTATSSameLetterHold(t *testing.T) {
+func TestRequestTrackerSTATSSameLetterCoalesce(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "STATS", StatsLetter: "y"})
 	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "STATS", StatsLetter: "y"})
-	if w1 != nil {
+	if !w1 {
 		t.Fatal("first y should send")
 	}
-	if w2 == nil {
-		t.Fatal("second y should hold")
+	if w2 {
+		t.Fatal("duplicate STATS y must skip the second write")
 	}
-	c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "219", Params: []string{"me", "y", "End"}}, cm)
-	if !only || c != "c1" {
-		t.Fatal(c, only)
-	}
-	select {
-	case <-w2:
-	default:
-		t.Fatal("second y gate should open after first 219")
-	}
-	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "219", Params: []string{"me", "y", "End"}}, cm)
-	if !only || c != "c2" {
-		t.Fatal(c, only)
+	got := rt.RouteAll(irc.Message{Command: "219", Params: []string{"me", "y", "End"}}, cm)
+	requireDests(t, got, "c1", "c2")
+	got = rt.RouteAll(irc.Message{Command: "219", Params: []string{"me", "y", "End"}}, cm)
+	if len(got) != 0 {
+		t.Fatalf("second 219 after coalesce: %v", destIDs(got))
 	}
 }
 
@@ -746,12 +718,12 @@ func TestRequestTrackerWHOISByNick(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	_, _, wait := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOIS", WhoisTargets: []string{cm.Canonical("bob")}})
-	if wait != nil {
-		t.Fatal("whois should not serialize-wait")
+	if !wait {
+		t.Fatal("whois should send immediately")
 	}
 	_, _, wait = rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOIS", WhoisTargets: []string{cm.Canonical("alice")}})
-	if wait != nil {
-		t.Fatal("whois should not serialize-wait")
+	if !wait {
+		t.Fatal("whois should send immediately")
 	}
 
 	// Interleaved remote WHOIS replies.
@@ -822,22 +794,21 @@ func TestRequestTrackerWHOISNosuchNick(t *testing.T) {
 	}
 }
 
-func TestRequestTrackerWHOISSameNickOldest(t *testing.T) {
+func TestRequestTrackerWHOISSameNickCoalesce(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
-	rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOIS", WhoisTargets: []string{"bob"}})
-	rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOIS", WhoisTargets: []string{"bob"}})
-	c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "311", Params: []string{"me", "bob"}}, cm)
-	if !only || c != "c1" {
-		t.Fatal(c, only)
+	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHOIS", WhoisTargets: []string{"bob"}})
+	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHOIS", WhoisTargets: []string{"bob"}})
+	if !w1 || w2 {
+		t.Fatal("duplicate WHOIS bob must skip the second write", w1, w2)
 	}
-	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "318", Params: []string{"me", "bob"}}, cm)
-	if !only || c != "c1" {
-		t.Fatal(c, only)
-	}
-	c, only, _, _, _ = rt.RouteMessage(irc.Message{Command: "311", Params: []string{"me", "bob"}}, cm)
-	if !only || c != "c2" {
-		t.Fatal(c, only)
+	got := rt.RouteAll(irc.Message{Command: "311", Params: []string{"me", "bob"}}, cm)
+	requireDests(t, got, "c1", "c2")
+	got = rt.RouteAll(irc.Message{Command: "318", Params: []string{"me", "bob"}}, cm)
+	requireDests(t, got, "c1", "c2")
+	got = rt.RouteAll(irc.Message{Command: "311", Params: []string{"me", "bob"}}, cm)
+	if len(got) != 0 {
+		t.Fatalf("exchange finished: %v", destIDs(got))
 	}
 }
 
@@ -856,11 +827,36 @@ func TestParseWHOISTargets(t *testing.T) {
 	}
 }
 
+func TestParseWHOISRemote(t *testing.T) {
+	cm := irc.CaseRFC1459
+	if got := ParseWHOISRemote([]string{"MrIron"}, cm); got != "" {
+		t.Fatalf("local: %q", got)
+	}
+	if got := ParseWHOISRemote([]string{"MrIron", "MrIron"}, cm); got != whoisRemoteNick {
+		t.Fatalf("nick nick: %q", got)
+	}
+	if got := ParseWHOISRemote([]string{"mriron", "MrIron"}, cm); got != whoisRemoteNick {
+		t.Fatalf("folded nick nick: %q", got)
+	}
+	if got := ParseWHOISRemote([]string{"eu.undernet.org", "MrIron"}, cm); got != "eu.undernet.org" {
+		t.Fatalf("server: %q", got)
+	}
+	if got := EnquiryRemote("STATS", []string{"c"}, cm); got != "" {
+		t.Fatalf("local STATS: %q", got)
+	}
+	if got := EnquiryRemote("STATS", []string{"c", "eu.undernet.org"}, cm); got != "eu.undernet.org" {
+		t.Fatalf("remote STATS: %q", got)
+	}
+	if got := EnquiryRemote("NAMES", []string{"#c", "EU.UnderNet.ORG"}, cm); got != "eu.undernet.org" {
+		t.Fatalf("NAMES server fold: %q", got)
+	}
+}
+
 func TestRequestTrackerWHOX(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	_, tok, wait := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO", ClientLabel: "L1", PreferWHOX: true, WHOMask: cm.Canonical("#c")})
-	if wait != nil || tok == "" {
+	if !wait || tok == "" {
 		t.Fatal(tok, wait)
 	}
 	for _, r := range tok {

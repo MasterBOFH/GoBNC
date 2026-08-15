@@ -677,9 +677,10 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	s.mu.RLock()
 	cm := s.isupport.CaseMapping
 	s.mu.RUnlock()
-	client, only, echoLabel, stripWHOX, restoreWHOX := s.tracker.RouteMessage(msg, cm)
-	if only {
-		// Snapshot the one downlink, then release s.mu before rewriteFor:
+	dests := s.tracker.RouteAll(msg, cm)
+	s.flushTrackerWrites()
+	if len(dests) > 0 {
+		// Snapshot each downlink, then release s.mu before rewriteFor:
 		// rewriteFor (via clientAccepts/isSelfNick) takes its own RLock,
 		// and holding s.mu across that nested call is a real deadlock
 		// hazard under concurrent writers (see sync.RWMutex's own docs on
@@ -687,32 +688,39 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		// test; not something this cutover introduced (the old
 		// internal/uplink.Handler-driven OnMessage had the identical
 		// shape), but worth closing now that it's been isolated.
-		s.mu.RLock()
-		d, ok := s.downlinks[client]
-		s.mu.RUnlock()
-		if ok {
+		legacyHit := false
+		for _, dest := range dests {
+			s.mu.RLock()
+			d, ok := s.downlinks[dest.Client]
+			s.mu.RUnlock()
+			if !ok {
+				continue
+			}
 			out := s.rewriteFor(d, msg)
 			if out.Command == "354" && len(out.Params) > 1 {
-				if stripWHOX {
+				// Copy params: coalesced dests share msg's backing array.
+				out.Params = append([]string(nil), out.Params...)
+				if dest.StripWHOX {
 					// Remove injected querytype token (params[1]).
 					out.Params = append([]string{out.Params[0]}, out.Params[2:]...)
 					out.Raw = ""
-				} else if restoreWHOX != "" {
-					out.Params[1] = restoreWHOX
+				} else if dest.RestoreWHOX != "" {
+					out.Params[1] = dest.RestoreWHOX
 					out.Raw = ""
 				}
 			}
-			if echoLabel != "" && d.HasCap("labeled-response") {
+			if dest.EchoLabel != "" && d.HasCap("labeled-response") {
 				if out.Tags == nil {
 					out.Tags = map[string]string{}
 				}
-				out.Tags["label"] = echoLabel
+				out.Tags["label"] = dest.EchoLabel
 			}
 			_ = d.Send(out)
 			if out.Command != "" && legacyPlaybackCommands(msg) && !hasChathistory(d) {
-				s.advanceLegacyPlaybackIfDelivered(msg, true)
+				legacyHit = true
 			}
 		}
+		s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 		return
 	}
 	s.mu.RLock()
