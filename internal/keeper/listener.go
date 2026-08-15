@@ -150,6 +150,8 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	l.log.Debug("keeper listener: received Hello", "mode", hello.Mode, "client_version", hello.ClientVersion)
+
 	negotiated, err := negotiateVersion(hello.ClientVersion)
 	if err != nil {
 		_ = writeFrame(conn, msgError, ErrorMsg{Reason: err.Error()})
@@ -182,6 +184,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		Mode:              hello.Mode,
 		Networks:          statusOf(networks),
 	}
+	l.log.Debug("keeper listener: sending HelloAck", "negotiated_version", negotiated, "mode", hello.Mode, "networks", len(ack.Networks))
 	if err := writeFrame(conn, msgHelloAck, ack); err != nil {
 		l.log.Warn("keeper listener: write HelloAck failed", "err", err)
 		return
@@ -304,6 +307,7 @@ func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[Ne
 		_ = writeFrame(conn, msgError, ErrorMsg{Reason: err.Error()})
 		return
 	}
+	l.log.Debug("keeper listener: received LiveReady", "networks", len(networks))
 
 	// A per-connection context, distinct from the listener-wide ctx: when
 	// this connection is torn down for any reason (kill, peer gone, or the
@@ -380,7 +384,15 @@ func (l *Listener) serveLive(ctx context.Context, conn net.Conn, networks map[Ne
 	}
 
 	for id, k := range networks {
-		s.startFanIn(id, k, fromSeq[id])
+		// Absent from fromSeq (the normal case — see HelloMsg.FromSeq's doc
+		// comment) means "gap only": start from this network's own tracked
+		// resume watermark, not from oldest-retained. An explicit entry,
+		// including an explicit 0, overrides it.
+		from, ok := fromSeq[id]
+		if !ok {
+			from = k.DeliveredSeq()
+		}
+		s.startFanIn(id, k, from)
 	}
 	// s.out is deliberately never closed here. It used to be, gated on
 	// wg.Wait(), but the producer set isn't fixed at connection start —
@@ -447,6 +459,7 @@ func (s *liveSession) readLoop() {
 			if err != nil {
 				return
 			}
+			s.l.log.Debug("keeper listener: received DialRequest", "network", req.Network, "host", req.Config.Host, "port", req.Config.Port, "tls", req.Config.TLS, "from_seq", req.FromSeq)
 			if !s.beginWork() {
 				return
 			}
@@ -456,6 +469,7 @@ func (s *liveSession) readLoop() {
 			if err != nil {
 				return
 			}
+			s.l.log.Debug("keeper listener: received CloseRequest", "network", req.Network)
 			if !s.beginWork() {
 				return
 			}
@@ -465,6 +479,7 @@ func (s *liveSession) readLoop() {
 			if err != nil {
 				return
 			}
+			s.l.log.Debug("keeper listener: received WriteRequest", "network", req.Network, "bytes", len(req.Line))
 			// Deliberately synchronous, unlike Dial/Close/QuitClose above:
 			// a caller that fires a rapid burst of writes to the same
 			// network (e.g. registration.Start's CAP LS/PASS/NICK/USER)
@@ -487,10 +502,35 @@ func (s *liveSession) readLoop() {
 			if err != nil {
 				return
 			}
+			s.l.log.Debug("keeper listener: received QuitCloseRequest", "network", req.Network, "bytes", len(req.Line))
 			if !s.beginWork() {
 				return
 			}
 			go s.handleQuitClose(req)
+		case msgBlobPush:
+			req, err := decodeFrame[BlobPushMsg](t, msgBlobPush, body)
+			if err != nil {
+				return
+			}
+			s.l.log.Debug("keeper listener: received BlobPush", "network", req.Network, "key", req.Key, "mode", req.Mode, "bytes", len(req.Value))
+			// Synchronous, like handleWrite: Driver blocks on this result
+			// before sending the SeqAck for the line that triggered it (see
+			// SeqAckMsg's doc comment), so a burst of pushes for the same
+			// network must land in the order they were sent, the same
+			// ordering reason handleWrite is synchronous.
+			s.handleBlobPush(req)
+		case msgSeqAck:
+			req, err := decodeFrame[SeqAckMsg](t, msgSeqAck, body)
+			if err != nil {
+				return
+			}
+			s.l.log.Debug("keeper listener: received SeqAck", "network", req.Network, "seq", req.Seq)
+			// Fire-and-forget, no s.wg tracking: Keeper.AckSeq is a fast,
+			// non-blocking monotonic-max advance with nothing to report
+			// back (see SeqAckMsg's doc comment).
+			if k := s.l.mgr.Network(req.Network); k != nil {
+				k.AckSeq(req.Seq)
+			}
 		default:
 			s.trySend(outMsg{msgError, ErrorMsg{Reason: fmt.Sprintf("unexpected message type %d on a live connection", t)}})
 			return
@@ -507,9 +547,19 @@ func (s *liveSession) handleDial(req DialRequestMsg) {
 	if err != nil {
 		result.Error = err.Error()
 	}
+	s.l.log.Debug("keeper listener: sending DialResult", "network", result.Network, "ok", result.OK, "epoch", result.Epoch, "err", result.Error)
 	s.trySend(outMsg{msgDialResult, result})
 	if err == nil {
-		s.startFanIn(req.Network, k, req.FromSeq)
+		// req.FromSeq == 0 means "use this network's own tracked resume
+		// watermark" (see DialRequestMsg's doc comment) — the normal case
+		// for a still-attached brain redialing a network it already has a
+		// watermark for. A freshly created network's watermark is already
+		// 0, so this is a no-op for a genuinely first-ever dial.
+		from := req.FromSeq
+		if from == 0 {
+			from = k.DeliveredSeq()
+		}
+		s.startFanIn(req.Network, k, from)
 	}
 }
 
@@ -525,6 +575,7 @@ func (s *liveSession) handleClose(req CloseRequestMsg) {
 	if err != nil {
 		result.Error = err.Error()
 	}
+	s.l.log.Debug("keeper listener: sending CloseResult", "network", result.Network, "ok", result.OK, "err", result.Error)
 	s.trySend(outMsg{msgCloseResult, result})
 }
 
@@ -550,7 +601,22 @@ func (s *liveSession) handleWrite(req WriteRequestMsg) {
 		result.Error = err.Error()
 		result.Refused = errors.Is(err, errNotConnected)
 	}
+	s.l.log.Debug("keeper listener: sending WriteResult", "network", result.Network, "ok", result.OK, "refused", result.Refused, "err", result.Error)
 	s.trySend(outMsg{msgWriteResult, result})
+}
+
+// handleBlobPush is the wire side of Keeper.PushBlob — see msgBlobPush's
+// dispatch comment in readLoop for why this runs synchronously rather
+// than on its own goroutine like handleDial/handleClose/handleQuitClose.
+func (s *liveSession) handleBlobPush(req BlobPushMsg) {
+	k := s.l.mgr.Network(req.Network)
+	if k == nil {
+		s.trySend(outMsg{msgBlobPushResult, BlobPushResultMsg{Network: req.Network, OK: false, Error: "unknown network"}})
+		return
+	}
+	k.PushBlob(req.Key, req.Mode, req.Value)
+	s.l.log.Debug("keeper listener: sending BlobPushResult", "network", req.Network, "ok", true)
+	s.trySend(outMsg{msgBlobPushResult, BlobPushResultMsg{Network: req.Network, OK: true}})
 }
 
 // handleQuitClose is the wire side of Keeper.QuitClose — the brain's only
@@ -569,6 +635,7 @@ func (s *liveSession) handleQuitClose(req QuitCloseRequestMsg) {
 	if err != nil {
 		result.Error = err.Error()
 	}
+	s.l.log.Debug("keeper listener: sending QuitCloseResult", "network", result.Network, "ok", result.OK, "err", result.Error)
 	s.trySend(outMsg{msgQuitCloseResult, result})
 }
 
@@ -696,6 +763,7 @@ func (s *liveSession) fanInNetwork(id NetworkID, k *Keeper, from uint64) {
 			if ev.Err != nil {
 				msg.Error = ev.Err.Error()
 			}
+			s.l.log.Debug("keeper listener: sending NetworkEvent", "network", msg.Network, "kind", msg.Kind, "epoch", msg.Epoch, "err", msg.Error)
 			s.trySend(outMsg{msgNetworkEvent, msg})
 		}
 	}

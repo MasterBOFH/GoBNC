@@ -31,6 +31,41 @@ func TestFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBlobPushAndSeqAckRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	push := BlobPushMsg{Network: 7, Key: "self-nick", Mode: BlobModeReplace, Value: []byte("alice")}
+	if err := writeFrame(&buf, msgBlobPush, push); err != nil {
+		t.Fatalf("writeFrame BlobPushMsg: %v", err)
+	}
+	gotType, body, err := readFrame(&buf)
+	if err != nil {
+		t.Fatalf("readFrame: %v", err)
+	}
+	gotPush, err := decodeFrame[BlobPushMsg](gotType, msgBlobPush, body)
+	if err != nil {
+		t.Fatalf("decodeFrame BlobPushMsg: %v", err)
+	}
+	if !reflect.DeepEqual(gotPush, push) {
+		t.Fatalf("got %+v, want %+v", gotPush, push)
+	}
+
+	ack := SeqAckMsg{Network: 7, Seq: 42}
+	if err := writeFrame(&buf, msgSeqAck, ack); err != nil {
+		t.Fatalf("writeFrame SeqAckMsg: %v", err)
+	}
+	gotType, body, err = readFrame(&buf)
+	if err != nil {
+		t.Fatalf("readFrame: %v", err)
+	}
+	gotAck, err := decodeFrame[SeqAckMsg](gotType, msgSeqAck, body)
+	if err != nil {
+		t.Fatalf("decodeFrame SeqAckMsg: %v", err)
+	}
+	if gotAck != ack {
+		t.Fatalf("got %+v, want %+v", gotAck, ack)
+	}
+}
+
 func TestFrameEmptyRejected(t *testing.T) {
 	var buf bytes.Buffer
 	var hdr [4]byte // length = 0

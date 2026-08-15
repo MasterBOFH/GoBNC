@@ -127,15 +127,16 @@ type Driver struct {
 	maxBackoff           time.Duration
 	maxFloodQueue        int
 
-	mu           sync.Mutex
-	states       map[keeper.NetworkID]registration.State // presence = tracked
-	configs      map[keeper.NetworkID]NetworkConfig
-	channels     map[keeper.NetworkID][]ChannelJoin
-	dialConfigs  map[keeper.NetworkID]keeper.DialConfig          // last config passed to Dial; see Reconnect
-	epochs       map[keeper.NetworkID]uint64                     // current known epoch per network; see handleNetworkEvent
-	deadlines    map[keeper.NetworkID]*time.Timer                // armed while registering; see armDeadline
-	currentNick  map[keeper.NetworkID]string                     // see nickrecovery.go
-	closeWaiters map[keeper.NetworkID]chan keeper.CloseResultMsg // see Reconnect
+	mu              sync.Mutex
+	states          map[keeper.NetworkID]registration.State // presence = tracked
+	configs         map[keeper.NetworkID]NetworkConfig
+	channels        map[keeper.NetworkID][]ChannelJoin
+	dialConfigs     map[keeper.NetworkID]keeper.DialConfig             // last config passed to Dial; see Reconnect
+	epochs          map[keeper.NetworkID]uint64                        // current known epoch per network; see handleNetworkEvent
+	deadlines       map[keeper.NetworkID]*time.Timer                   // armed while registering; see armDeadline
+	currentNick     map[keeper.NetworkID]string                        // see nickrecovery.go
+	closeWaiters    map[keeper.NetworkID]chan keeper.CloseResultMsg    // see Reconnect
+	blobPushWaiters map[keeper.NetworkID]chan keeper.BlobPushResultMsg // see PushBlob
 
 	// nickRecMu guards the three maps below, separately from mu — matches
 	// internal/uplink's own separate nickRecMu, since nick-recovery state
@@ -187,6 +188,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		deadlines:            make(map[keeper.NetworkID]*time.Timer),
 		currentNick:          make(map[keeper.NetworkID]string),
 		closeWaiters:         make(map[keeper.NetworkID]chan keeper.CloseResultMsg),
+		blobPushWaiters:      make(map[keeper.NetworkID]chan keeper.BlobPushResultMsg),
 		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
 		isonPending:          make(map[keeper.NetworkID]bool),
 		backoff:              make(map[keeper.NetworkID]time.Duration),
@@ -566,6 +568,74 @@ func (d *Driver) notifyCloseWaiter(res keeper.CloseResultMsg) {
 	}
 }
 
+// blobPushConfirmTimeout bounds PushBlob's wait for BlobPushResultMsg —
+// same reasoning and value as closeConfirmTimeout: a fast, local operation
+// on the keeper's side, generous headroom, not an expected wait.
+const blobPushConfirmTimeout = 5 * time.Second
+
+// PushBlob applies one derived entry to network's blob store on the
+// keeper, and blocks until the keeper confirms it landed (or the wait
+// times out). This blocking is load-bearing, not just synchronous style:
+// it is what lets a caller (Session, mid-line-processing) know a push has
+// genuinely completed before it lets its own processing of that line
+// return — which is in turn what lets demux's AckSeq call after
+// Session.HandleLine returns be correct by construction, satisfying
+// docs/keeper-design.md's blob store ordering requirement (push the
+// derived entry before advancing the consumed seq) without any locking
+// between the two: one goroutine, push-then-return, ack-after-return, in
+// that order, every time.
+func (d *Driver) PushBlob(id keeper.NetworkID, key string, mode keeper.BlobMode, value []byte) error {
+	waiter := make(chan keeper.BlobPushResultMsg, 1)
+	d.mu.Lock()
+	d.blobPushWaiters[id] = waiter
+	d.mu.Unlock()
+
+	if err := d.client.SendBlobPush(id, key, mode, value); err != nil {
+		d.mu.Lock()
+		delete(d.blobPushWaiters, id)
+		d.mu.Unlock()
+		return err
+	}
+
+	select {
+	case res := <-waiter:
+		if !res.OK {
+			return fmt.Errorf("brain: PushBlob: network %d: %s", id, res.Error)
+		}
+		return nil
+	case <-time.After(blobPushConfirmTimeout):
+		d.mu.Lock()
+		delete(d.blobPushWaiters, id)
+		d.mu.Unlock()
+		return fmt.Errorf("brain: PushBlob: network %d: no BlobPushResult within %s", id, blobPushConfirmTimeout)
+	}
+}
+
+// notifyBlobPushWaiter delivers a BlobPushResult to a pending PushBlob call
+// waiting on it, if there is one — mirrors notifyCloseWaiter exactly.
+func (d *Driver) notifyBlobPushWaiter(res keeper.BlobPushResultMsg) {
+	d.mu.Lock()
+	waiter, ok := d.blobPushWaiters[res.Network]
+	if ok {
+		delete(d.blobPushWaiters, res.Network)
+	}
+	d.mu.Unlock()
+	if ok {
+		waiter <- res
+	}
+}
+
+// AckSeq tells the keeper this brain has fully finished processing the
+// line at seq for network — see SeqAckMsg's doc comment. Fire-and-forget,
+// matching the wire message itself: there is nothing to wait for. Callers
+// must only call this after every blob push that line's processing
+// triggered has already completed (PushBlob already blocks for exactly
+// that reason) — calling it any earlier reopens the gap the ordering
+// requirement exists to close.
+func (d *Driver) AckSeq(id keeper.NetworkID, seq uint64) error {
+	return d.client.SendSeqAck(id, seq)
+}
+
 // StartRegistration sends the opening CAP LS/NICK/USER lines for a tracked
 // network (see registration.Start) — call it once the caller has confirmed
 // the network's uplink is actually connected (a DialResult with OK, or a
@@ -734,6 +804,8 @@ func (d *Driver) Run(ctx context.Context) error {
 			trySendWriteResult(d.writeResults, *ev.WriteResult)
 		case ev.QuitCloseResult != nil:
 			trySendQuitCloseResult(d.quitCloseResults, *ev.QuitCloseResult)
+		case ev.BlobPushResult != nil:
+			d.notifyBlobPushWaiter(*ev.BlobPushResult)
 		case ev.NetworkEvent != nil:
 			if ev.NetworkEvent.Kind == keeper.EventConnected {
 				d.recordEpoch(ev.NetworkEvent.Network, ev.NetworkEvent.Epoch)

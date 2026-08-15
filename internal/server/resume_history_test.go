@@ -173,18 +173,19 @@ func newResumeTestServer(t *testing.T, dbPath string) *Server {
 }
 
 // TestResumeDoesNotDuplicateHistory reproduces the exact bug found via
-// live testing: a brain that restarts against a keeper still holding a
-// network's connection live replays that network's entire retained
-// backlog from seq 0 unconditionally (see keeper.HelloMsg.FromSeq's doc
-// comment for why replay itself is never reduced — Session's state
-// reconstruction depends on seeing it all), so without
-// store.Message.KeeperSeq's idempotent-insert index, every already-stored
-// PRIVMSG got re-inserted as a brand-new row on every resume (confirmed
-// live: 500 messages -> 581 rows after one idle restart, on a network
-// with no ring eviction pressure at all). This test proves the fix: full
-// replay still happens (sess2 reaches Registered() the same way it always
-// has, by watching the replayed transcript), but the history count never
-// moves.
+// live testing, back when every resume replayed a network's entire
+// retained backlog unconditionally: without store.Message.KeeperSeq's
+// idempotent-insert index, every already-stored PRIVMSG got re-inserted
+// as a brand-new row on every resume (confirmed live: 500 messages -> 581
+// rows after one idle restart, on a network with no ring eviction
+// pressure at all). Resume is gap-only now (see
+// keeper.HelloMsg.FromSeq's doc comment) — a resumed attach normally
+// receives none of this backlog at all, so this specific duplication
+// can't happen by construction, not merely because a duplicate insert is
+// a safe no-op. The idempotent index stays as defense in depth regardless
+// (see TestGapOnlyResumeDeliversNoPreDetachTraffic for the property that
+// makes it normally moot), and this test still passes: the history count
+// never moves across a resume.
 func TestResumeDoesNotDuplicateHistory(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "t.db")
@@ -242,6 +243,89 @@ func TestResumeDoesNotDuplicateHistory(t *testing.T) {
 	got := historyCount(t, s2.Store(), n.ID, "#chan")
 	if got != nMsgs {
 		t.Fatalf("history rows for #chan after resume = %d, want %d (resume replay duplicated already-stored messages)", got, nMsgs)
+	}
+
+	close(closeAfter)
+}
+
+// TestGapOnlyResumeSeedsStateFromBlobNotReplay proves the actual new
+// property directly, rather than only its absence-of-duplication
+// symptom: a resumed Session's state (here, self-nick — chosen because,
+// unlike isupport, session.New's own default would otherwise silently
+// make an unseeded Session look correct by accident) comes from the
+// delivered blob snapshot, not from watching pre-detach traffic again —
+// there is no pre-detach traffic to watch, gap-only delivery means none
+// of it is replayed at all.
+func TestGapOnlyResumeSeedsStateFromBlobNotReplay(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "t.db")
+	rk := startResumeTestKeeper(t)
+
+	s1 := newResumeTestServer(t, dbPath)
+	fake := newDemuxFakeIRC(t)
+	h, p := fake.addr(t)
+	closeAfter := make(chan struct{})
+	go fake.serveOne(t, "fake.example", closeAfter)
+
+	if _, err := s1.Store().UpsertNetwork(s1.runCtx, store.Network{
+		Name: "net1", Host: h, Port: p, Nick: "alice", Enabled: true, NickRecovery: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s1.Store().NetworkByName(s1.runCtx, "net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rk.attach(t, s1, []store.Network{n})
+
+	sess1, err := s1.Session("net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRegistered(t, "net1", sess1.Registered)
+	if got := sess1.Nick(); got != "alice" {
+		t.Fatalf("sess1 nick=%q, want alice", got)
+	}
+
+	// A live nick change (self-nick blob key only ever pushed on an actual
+	// NICK line — see stateNICKLocked) and one PRIVMSG, both processed and
+	// acked before "detaching" below — this is the pre-detach state a
+	// resumed attach must never see again on the wire, only via the blob.
+	conn := fake.lastConn(t)
+	fakeSend(t, conn, "fake.example", ":alice NICK newalice")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sess1.Nick() != "newalice" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := sess1.Nick(); got != "newalice" {
+		t.Fatalf("sess1 nick after NICK=%q, want newalice", got)
+	}
+	fakeSend(t, conn, "fake.example", ":newalice PRIVMSG #chan :old-message")
+	waitForHistoryCount(t, s1.Store(), n.ID, "#chan", 1)
+
+	_ = s1.keeperClient.Close()
+
+	s2 := newResumeTestServer(t, dbPath)
+	rk.attach(t, s2, []store.Network{n})
+
+	sess2, err := s2.Session("net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRegistered(t, "net1 (resumed)", sess2.Registered)
+
+	// The property under test: session.New defaulted sess2's nick to the
+	// *configured* "alice" — if this ever silently regresses to reading
+	// that default instead of the blob, or to waiting on replay that will
+	// never arrive, this stays "alice" or times out respectively, never
+	// becoming "newalice" the way it must.
+	if got := sess2.Nick(); got != "newalice" {
+		t.Fatalf("sess2 nick after resume=%q, want newalice (blob-seeded, not the configured default)", got)
+	}
+	// And the pre-detach PRIVMSG must not have been redelivered/reprocessed:
+	// still exactly the one row from before resume, not two.
+	if got := historyCount(t, s2.Store(), n.ID, "#chan"); got != 1 {
+		t.Fatalf("history rows for #chan after resume = %d, want 1 (pre-detach traffic must not be replayed)", got)
 	}
 
 	close(closeAfter)

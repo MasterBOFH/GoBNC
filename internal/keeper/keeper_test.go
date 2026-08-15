@@ -200,7 +200,19 @@ func TestOverflowDetectableViaKeeperSince(t *testing.T) {
 		t.Fatalf("checkpoint seq=%d, want 1", checkpoint)
 	}
 
-	// ...then more lines arrive than the ring can hold, evicting it.
+	// ...then more lines arrive than the ring can hold, evicting it. Held
+	// open across the burst so the ring-overflow-case-2 self-close
+	// (eviction with zero subscribers) doesn't close the uplink out from
+	// under this test — this test targets Since's own gap detection on a
+	// checkpoint that predates the eviction, a different scenario from
+	// case-2's "nobody was watching at all."
+	sub, unsub := k.SubscribeLines()
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for range sub.Lines {
+		}
+	}()
 	for i := 2; i <= ringCap+3; i++ {
 		srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
 	}
@@ -208,6 +220,8 @@ func TestOverflowDetectableViaKeeperSince(t *testing.T) {
 	for time.Now().Before(deadline) && k.LastSeq() < uint64(ringCap+3) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	unsub()
+	<-drainDone
 
 	entries, ok := k.Since(checkpoint)
 	if ok {
@@ -215,6 +229,69 @@ func TestOverflowDetectableViaKeeperSince(t *testing.T) {
 	}
 	if k.DroppedCount() == 0 {
 		t.Fatalf("DroppedCount=0 after overflow, want > 0")
+	}
+}
+
+// TestRingOverflowNoSubscriberSelfCloses pins the ring-overflow-case-2
+// policy from docs/keeper-design.md: a ring eviction with zero live
+// subscribers closes the uplink itself, loudly, rather than silently
+// carrying a checkpoint pointing at a gap forward until some future
+// attach discovers it the hard way. Also confirms the blob store and
+// resume watermark are both reset as part of that self-close — a stale
+// watermark surviving the reset would let a future attach think it can
+// resume gap-only from a point the ring can no longer serve.
+func TestRingOverflowNoSubscriberSelfCloses(t *testing.T) {
+	srv := newFakeServer(t)
+	defer srv.close()
+
+	const ringCap = 4
+	k := New(8192, ringCap, nil, WithReadIdleTimeout(5*time.Second))
+	host, port := hostPort(srv.addr())
+
+	events, cancel := k.Subscribe()
+	defer cancel()
+
+	acceptedCh := make(chan net.Conn, 1)
+	go func() { acceptedCh <- srv.accept(t) }()
+
+	ctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dcancel()
+	if err := k.Dial(ctx, DialConfig{Host: host, Port: port}); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	conn := <-acceptedCh
+
+	k.PushBlob("self-nick", BlobModeReplace, []byte("alice"))
+	k.AckSeq(1)
+
+	// No SubscribeLines call anywhere above: nobody is watching. More
+	// lines than the ring can hold, so it evicts with zero subscribers.
+	for i := 1; i <= ringCap+3; i++ {
+		srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
+	}
+
+	waitState(t, k, NotConnected, 2*time.Second)
+
+	if got := k.DroppedCount(); got == 0 {
+		t.Fatalf("DroppedCount=0, want >0 (eviction should have happened)")
+	}
+	if snap := k.BlobSnapshot(); len(snap) != 0 {
+		t.Fatalf("BlobSnapshot=%+v after self-close, want empty (blob must be cleared)", snap)
+	}
+	if got := k.DeliveredSeq(); got != 0 {
+		t.Fatalf("DeliveredSeq=%d after self-close, want 0 (watermark must be reset)", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventDisconnected {
+				return // found it
+			}
+		case <-time.After(time.Until(deadline)):
+			t.Fatalf("no EventDisconnected published after ring-overflow self-close")
+		}
 	}
 }
 

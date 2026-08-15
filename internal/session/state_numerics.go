@@ -6,7 +6,10 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
 
-func (s *Session) stateWelcomeNumericLocked(msg irc.Message) {
+// stateWelcomeNumericLocked returns a JSON-encoded copy of msg.Params for
+// the 005 case (the isupport blob entry to push, once s.mu is released —
+// see applyState), nil otherwise.
+func (s *Session) stateWelcomeNumericLocked(msg irc.Message) []byte {
 	switch msg.Command {
 	case "002":
 		if len(msg.Params) > 1 {
@@ -30,7 +33,9 @@ func (s *Session) stateWelcomeNumericLocked(msg irc.Message) {
 		}
 	case "005":
 		s.isupport.Parse005(msg.Params)
+		return blobParams(msg.Params)
 	}
+	return nil
 }
 
 // detectIRCdLocked sets s.ircd from 002 trailing (preferred) then 004 version.
@@ -155,8 +160,13 @@ func (s *Session) state381Locked(msg irc.Message) {
 	s.self.Oper = true
 }
 
-func (s *Session) state396Locked(msg irc.Message) {
+// state396Locked returns the new host as the cloak blob entry to push
+// (once s.mu is released — see applyState) when it changes self's host,
+// nil otherwise.
+func (s *Session) state396Locked(msg irc.Message) []byte {
 	if len(msg.Params) >= 2 && s.isupport.CaseMapping.Equal(msg.Param(0), s.self.Nick) {
 		s.self.Host = msg.Param(1)
+		return []byte(msg.Param(1))
 	}
+	return nil
 }
