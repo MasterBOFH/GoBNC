@@ -89,8 +89,8 @@ type Session struct {
 	// RefreshSelfUserHost — true when SeedFromBlob left self.Host unknown.
 	pendingUserHostRefresh bool
 	downlinks              map[ClientID]Downlink
-	isupport        *irc.ISUPPORT
-	upCaps          map[string]bool
+	isupport               *irc.ISUPPORT
+	upCaps                 map[string]bool
 	// upSASLAvailable / upSASLMechs track whether the uplink currently
 	// offers sasl at all (CAP LS/NEW/DEL, post-registration too) — the
 	// Session-owned equivalent of internal/uplink.Uplink's own
@@ -375,6 +375,12 @@ func (s *Session) WriteMessage(msg irc.Message) error {
 		return fmt.Errorf("uplink not ready")
 	}
 	return s.driver.WriteRaw(s.netID, msg.Wire())
+}
+
+func (s *Session) flushTrackerWrites() {
+	for _, m := range s.tracker.TakeReady() {
+		_ = s.WriteMessage(m)
+	}
 }
 
 // OfferedCaps returns capabilities currently available to downlinks.

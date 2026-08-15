@@ -27,17 +27,40 @@ type pendingRequest struct {
 	EndCodes        map[string]bool
 	ReplyCodes      map[string]bool // numerics that belong to this exchange (serialized path)
 	Created         time.Time
-	// gate is closed when this request may be written upstream (hold-until-end).
-	// nil means already clear to send.
-	gate chan struct{}
+	// Outbound is the uplink line to send. For hold-write kinds (LIST, plain
+	// WHO) the second+ request stores it here until the prior end-numeric;
+	// Begin never blocks the caller — see holdWrite.
+	Outbound irc.Message
+	// HoldWrite is true when this request is queued behind an in-flight
+	// same-kind stream and must not be written until popSerial.
+	HoldWrite bool
+	// extra are other downlinks sharing this in-flight exchange. Identical
+	// NAMES/MODE/STATS/WHOIS/WHOX requests coalesce onto the first write;
+	// replies fan out to Client plus extra. See coalesce.
+	extra []*pendingRequest
+	// ModeLetters is the normalized list-mode set for a MODE enquiry ("" =
+	// MODE #chan / MODE nick; "b" = banlist; "beI" = combined).
+	ModeLetters string
+	WHOXFlags   string
+	WHOXFields  string
+	// Remote is the optional server/target argument. Empty is a local enquiry.
+	// WHOIS <nick> <nick> uses whoisRemoteNick rather than a hostname.
+	Remote string
+}
+
+// RouteDest is one downlink that should receive a routed solicitous reply.
+type RouteDest struct {
+	Client      ClientID
+	EchoLabel   string
+	StripWHOX   bool
+	RestoreWHOX string
 }
 
 // stickyRoute delivers one follow-up numeric (e.g. 329 after MODE 324) to the
-// same client after the target enquiry has already ended.
+// same dests after the target enquiry has already ended.
 type stickyRoute struct {
-	Client ClientID
-	Echo   string
-	Code   string
+	dests []RouteDest
+	Code  string
 }
 
 // RequestTracker routes solicitous replies to the originating downlink.
@@ -47,15 +70,20 @@ type RequestTracker struct {
 	whox    map[string]*pendingRequest   // token -> req
 	whois   map[string][]*pendingRequest // folded nick -> waiters (oldest first)
 	stats   map[string][]*pendingRequest // stats letter -> waiters (oldest first)
-	mode    map[string][]*pendingRequest // folded MODE target (chan/nick) -> waiters
+	mode    map[string][]*pendingRequest // modeMapKey(target, letters) -> waiters
 	topic   map[string][]*pendingRequest // folded TOPIC channel -> waiters
-	queue   []*pendingRequest            // serialized (no demux key)
-	active  *pendingRequest              // head of serialized exchange
+	names   map[string][]*pendingRequest // folded NAMES channel -> waiters
+	serial  map[string][]*pendingRequest // command -> in-flight/queued (LIST, WHO, …)
+	ready   []irc.Message                // outbound lines released by popSerial/DropClient
 	sticky  map[string]*stickyRoute      // folded target -> one-shot follow-up (MODE 329)
 	ircd    string                       // detected IRCd family (irc.IRCd*)
 	nextLbl uint64
 	nextTok uint64
 }
+
+// whoisRemoteNick is ParseWHOISRemote's sentinel for WHOIS <nick> <nick>
+// (query the nick's own server). It is not a hostname.
+const whoisRemoteNick = "\x00"
 
 // NewRequestTracker creates an empty tracker.
 func NewRequestTracker() *RequestTracker {
@@ -66,6 +94,8 @@ func NewRequestTracker() *RequestTracker {
 		stats:   make(map[string][]*pendingRequest),
 		mode:    make(map[string][]*pendingRequest),
 		topic:   make(map[string][]*pendingRequest),
+		names:   make(map[string][]*pendingRequest),
+		serial:  make(map[string][]*pendingRequest),
 		sticky:  make(map[string]*stickyRoute),
 	}
 }
@@ -242,53 +272,85 @@ func IsSolicitous(cmd string) bool {
 
 // BeginOpts configures registration of an outbound solicitous command.
 type BeginOpts struct {
-	Client        ClientID
-	Cmd           string
-	ClientLabel   string
-	PreferLabel   bool
-	PreferWHOX    bool
-	WhoisTargets  []string // folded nicks
-	WHOMask       string   // WHO mask (for 315 matching)
-	StatsLetter   string   // folded STATS query letter ("" if none)
-	EnquiryTarget string   // folded MODE/TOPIC target (channel or nick)
+	Client          ClientID
+	Cmd             string
+	ClientLabel     string
+	PreferLabel     bool
+	PreferWHOX      bool
+	WhoisTargets    []string    // folded nicks
+	WHOMask         string      // WHO mask (for 315 matching)
+	StatsLetter     string      // folded STATS query letter ("" if none)
+	EnquiryTarget   string      // folded MODE/TOPIC/NAMES target (channel or nick)
+	ModeLetters     string      // MODE list letters as the client sent them (normalized in Begin)
+	WHOXFlags       string      // WHOX flags before '%'; must match to coalesce
+	WHOXFields      string      // WHOX field letters (client form); 't' ignored for coalesce
+	WHOXClientToken string      // client's original querytype; restored on 354, not a coalesce key
+	WhoisWire       *[]string   // output: nicks that still need an uplink WHOIS
+	Remote          string      // optional server/target; empty = local; whoisRemoteNick = WHOIS nick nick
+	Outbound        irc.Message // uplink line; queued when writeNow is false
 }
 
 // Begin registers an outbound solicitous command.
-// wait is non-nil when the caller must block until it is closed before writing upstream.
+// writeNow is true when the caller should send Outbound immediately.
+// writeNow is false when:
+//   - a hold-write kind (LIST, plain WHO, …) already has the same command in
+//     flight — the line sits on the request until TakeReady after the end-numeric;
+//   - an identical keyed enquiry is already in flight (NAMES same channel
+//     and server, MODE same channel+letters, STATS same token and server,
+//     WHOIS same nick and local/remote form, WHOX same flags+fields+mask —
+//     the querytype token is not part of the match)
+//     — the caller is attached as a coalesced recipient of that one uplink
+//     exchange. Local and remote forms (STATS c vs STATS c server, WHOIS nick
+//     vs WHOIS nick nick) are never coalesced.
+//
+// Begin never blocks.
 // For WHOX, the returned token is numeric 1–999 (ircu/IRCv3 requirement).
-func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, wait <-chan struct{}) {
+func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeNow bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	cmd := opts.Cmd
 	req := &pendingRequest{
-		Client:      opts.Client,
-		ClientLabel: opts.ClientLabel,
-		Command:     cmd,
-		Target:      opts.EnquiryTarget,
-		EndCodes:    endCodesFor(cmd, rt.ircd),
-		ReplyCodes:  replyCodesFor(cmd, rt.ircd),
-		Created:     time.Now(),
+		Client:          opts.Client,
+		ClientLabel:     opts.ClientLabel,
+		Command:         cmd,
+		Target:          opts.EnquiryTarget,
+		WHOXFlags:       opts.WHOXFlags,
+		WHOXFields:      opts.WHOXFields,
+		WHOXClientToken: opts.WHOXClientToken,
+		Remote:          opts.Remote,
+		EndCodes:        endCodesFor(cmd, rt.ircd),
+		ReplyCodes:      replyCodesFor(cmd, rt.ircd),
+		Created:         time.Now(),
+		Outbound:        opts.Outbound,
 	}
 	if opts.PreferLabel {
 		rt.nextLbl++
 		label = formatID("L", rt.nextLbl)
 		req.Label = label
 		rt.labeled[label] = req
-		return label, "", nil
+		return label, "", true
 	}
 	if opts.PreferWHOX && (cmd == "WHO" || cmd == "WHOX") {
+		req.Target = opts.WHOMask
+		if existing := rt.findMatchingWHOX(req); existing != nil {
+			existing.coalesce(req)
+			return "", "", false
+		}
 		rt.nextTok++
 		if rt.nextTok > 999 {
 			rt.nextTok = 1
 		}
 		whoxToken = strconv.FormatUint(rt.nextTok, 10)
 		req.WHOXToken = whoxToken
-		req.Target = opts.WHOMask
 		rt.whox[whoxToken] = req
-		return "", whoxToken, nil
+		return "", whoxToken, true
 	}
-	// Unlabeled WHOIS: route by target nick (handles remote/interleaved replies).
+	// Unlabeled WHOIS: route by target nick. A nick already in flight with
+	// the same local/remote form coalesces; a different form (WHOIS nick vs
+	// WHOIS nick nick vs WHOIS server nick) is a separate enquiry — the
+	// write is held until the in-flight nick exchange ends.
 	if cmd == "WHOIS" && len(opts.WhoisTargets) > 0 {
+		var need []string
 		for _, nick := range opts.WhoisTargets {
 			if nick == "" {
 				continue
@@ -298,50 +360,103 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, wait <
 				ClientLabel: opts.ClientLabel,
 				Command:     "WHOIS",
 				Target:      nick,
+				Remote:      opts.Remote,
 				EndCodes:    endCodesFor("WHOIS", rt.ircd),
 				Created:     time.Now(),
+				Outbound:    whoisOutbound(nick, opts.Remote),
 			}
-			rt.whois[nick] = append(rt.whois[nick], w)
+			if q := rt.whois[nick]; len(q) > 0 {
+				if existing := findRemoteMatch(q, opts.Remote); existing != nil {
+					existing.coalesce(w)
+					continue
+				}
+				w.HoldWrite = true
+				rt.whois[nick] = append(q, w)
+				continue
+			}
+			rt.whois[nick] = []*pendingRequest{w}
+			need = append(need, nick)
 		}
-		return "", "", nil
+		if opts.WhoisWire != nil {
+			*opts.WhoisWire = need
+		}
+		return "", "", len(need) > 0
 	}
-	// STATS: demux by query letter (y vs c may run concurrently).
+	// STATS: demux by query token. Same token+server coalesces; same token
+	// with a different server is held (219 does not name the target server).
 	if cmd == "STATS" && opts.StatsLetter != "" {
 		letter := opts.StatsLetter
 		req.Target = letter
-		waiters := rt.stats[letter]
-		if len(waiters) == 0 {
-			rt.stats[letter] = []*pendingRequest{req}
-			return "", "", nil
+		if q := rt.stats[letter]; len(q) > 0 {
+			if existing := findRemoteMatch(q, opts.Remote); existing != nil {
+				existing.coalesce(req)
+				return "", "", false
+			}
+			req.HoldWrite = true
+			rt.stats[letter] = append(q, req)
+			return "", "", false
 		}
-		// Same letter already in flight — hold until prior 219.
-		req.gate = make(chan struct{})
-		rt.stats[letter] = append(waiters, req)
-		return "", "", req.gate
+		rt.stats[letter] = []*pendingRequest{req}
+		return "", "", true
 	}
-	// MODE/TOPIC enquiries: demux by channel/nick (concurrent across targets).
-	if opts.EnquiryTarget != "" && (cmd == "MODE" || cmd == "TOPIC") {
-		queues := rt.mode
-		if cmd == "TOPIC" {
-			queues = rt.topic
+	// TOPIC: demux by channel (no coalesce — not in the identical-enquiry set).
+	if cmd == "TOPIC" && opts.EnquiryTarget != "" {
+		rt.topic[opts.EnquiryTarget] = append(rt.topic[opts.EnquiryTarget], req)
+		return "", "", true
+	}
+	// MODE: demux by channel/nick + list letters. Same (target, letters)
+	// coalesces; MODE #c b vs MODE #c e both write.
+	if cmd == "MODE" && opts.EnquiryTarget != "" {
+		letters := normalizeModeListLetters(opts.ModeLetters)
+		req.ModeLetters = letters
+		key := modeMapKey(opts.EnquiryTarget, letters)
+		if q := rt.mode[key]; len(q) > 0 {
+			q[0].coalesce(req)
+			return "", "", false
 		}
-		waiters := queues[opts.EnquiryTarget]
-		if len(waiters) == 0 {
-			queues[opts.EnquiryTarget] = []*pendingRequest{req}
-			return "", "", nil
+		rt.mode[key] = []*pendingRequest{req}
+		return "", "", true
+	}
+	// NAMES: 353/366 carry the channel. Duplicate NAMES for the same
+	// channel and server shares the in-flight write; NAMES #c vs
+	// NAMES #c server are different enquiries (held, not coalesced).
+	if cmd == "NAMES" && opts.EnquiryTarget != "" {
+		if q := rt.names[opts.EnquiryTarget]; len(q) > 0 {
+			if existing := findRemoteMatch(q, opts.Remote); existing != nil {
+				existing.coalesce(req)
+				return "", "", false
+			}
+			req.HoldWrite = true
+			rt.names[opts.EnquiryTarget] = append(q, req)
+			return "", "", false
 		}
-		req.gate = make(chan struct{})
-		queues[opts.EnquiryTarget] = append(waiters, req)
-		return "", "", req.gate
+		rt.names[opts.EnquiryTarget] = []*pendingRequest{req}
+		return "", "", true
 	}
-	// Serialize everything else (plain WHO, LIST, NAMES, letter-less STATS, …).
-	rt.queue = append(rt.queue, req)
-	if rt.active == nil {
-		rt.active = req
-		return "", "", nil
+	// Remaining commands: per-kind queue. LIST and plain WHO (and other
+	// streams whose replies cannot be split) hold the write; ISON/USERHOST
+	// send immediately and FIFO the unique end-numeric. Commands with an
+	// optional server (TIME, ADMIN, …) hold a different local/remote form
+	// so those replies are not mixed.
+	q := rt.serial[cmd]
+	req.HoldWrite = len(q) > 0 && (holdWrite(cmd) || (takesServerTarget(cmd) && serialHasOtherRemote(q, opts.Remote)))
+	rt.serial[cmd] = append(q, req)
+	return "", "", !req.HoldWrite
+}
+
+// holdWrite reports whether a second in-flight command of this kind must
+// wait to be *written* until the first's end-numeric. True when replies
+// are an unkeyed stream (LIST 322s, WHO 352s). False when each reply
+// uniquely identifies the exchange (ISON 303, USERHOST 302, TIME 391).
+func holdWrite(cmd string) bool {
+	switch cmd {
+	case "LIST", "WHO", "WHOX", "NAMES",
+		"LINKS", "MAP", "LUSERS", "TRACE", "USERS",
+		"HELP", "ADMIN", "SILENCE", "WHOWAS":
+		return true
+	default:
+		return false
 	}
-	req.gate = make(chan struct{})
-	return "", "", req.gate
 }
 
 // SetWHOXClientFix records how to rewrite 354 replies for this uplink token:
@@ -354,36 +469,57 @@ func (rt *RequestTracker) SetWHOXClientFix(uplinkToken string, injectT bool, cli
 		if !injectT {
 			req.WHOXClientToken = clientToken
 		}
+		for _, e := range req.extra {
+			e.fixWHOXRewrite(req.WHOXStripToken)
+		}
 	}
 }
 
-// ActiveClient returns the client owning the serialized active request, if any.
+// ActiveClient returns the client owning the head of any serialized
+// (hold-write or FIFO) command queue, if any.
 func (rt *RequestTracker) ActiveClient() (ClientID, bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.active == nil {
-		return "", false
+	for _, kind := range serialKindOrder {
+		if q := rt.serial[kind]; len(q) > 0 {
+			return q[0].Client, true
+		}
 	}
-	return rt.active.Client, true
+	return "", false
 }
 
-// RouteMessage decides which client should receive msg (empty = broadcast).
-// cm folds WHOIS target nicks. echoLabel is for labeled-response clients.
-// For 354: stripWHOXToken removes an injected querytype; restoreWHOXToken replaces it with the client's.
-func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (client ClientID, only bool, echoLabel string, stripWHOXToken bool, restoreWHOXToken string) {
+// TakeReady returns uplink lines that became writable because a prior
+// hold-write exchange ended (or its client dropped). Caller must write
+// them; Begin itself never waits.
+func (rt *RequestTracker) TakeReady() []irc.Message {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	out := rt.ready
+	rt.ready = nil
+	return out
+}
 
-	whoxFix := func(req *pendingRequest) (bool, string) {
-		if msg.Command != "354" {
-			return false, ""
-		}
-		if req.WHOXStripToken {
-			return true, ""
-		}
-		return false, req.WHOXClientToken
+// RouteAll returns the downlinks that should receive msg.
+// An empty result means broadcast (or drop — HandleMessage fans out to every downlink).
+// Replies for a coalesced enquiry are returned as one dest per waiter.
+func (rt *RequestTracker) RouteAll(msg irc.Message, cm irc.CaseMapping) []RouteDest {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.routeLocked(msg, cm)
+}
+
+// RouteMessage is RouteAll for the single-waiter case tests still use.
+// only is true when dests is non-empty; client/echo/WHOX rewrite are dests[0].
+func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (client ClientID, only bool, echoLabel string, stripWHOXToken bool, restoreWHOXToken string) {
+	dests := rt.RouteAll(msg, cm)
+	if len(dests) == 0 {
+		return "", false, "", false, ""
 	}
+	d := dests[0]
+	return d.Client, true, d.EchoLabel, d.StripWHOX, d.RestoreWHOX
+}
 
+func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []RouteDest {
 	if lbl, ok := msg.Tag("label"); ok && lbl != "" {
 		if req, ok := rt.labeled[lbl]; ok {
 			if req.EndCodes[msg.Command] {
@@ -394,12 +530,12 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 						target = cm.Canonical(msg.Params[1])
 					}
 					if target != "" {
-						rt.sticky[target] = &stickyRoute{Client: req.Client, Echo: req.ClientLabel, Code: "329"}
+						rt.sticky[target] = &stickyRoute{dests: destsOf(req), Code: "329"}
 					}
 				}
 				delete(rt.labeled, lbl)
 			}
-			return req.Client, true, req.ClientLabel, false, ""
+			return destsOf(req)
 		}
 	}
 
@@ -408,36 +544,39 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		target := cm.Canonical(msg.Params[1])
 		if s := rt.sticky[target]; s != nil && s.Code == "329" {
 			delete(rt.sticky, target)
-			return s.Client, true, s.Echo, false, ""
+			return s.dests
 		}
 	}
 
-	// MODE enquiry numerics: demux by channel/nick in params.
-	if target := modeEnquiryNumericTarget(msg, cm); target != "" {
-		if c, only, echo, ok := rt.routeTargetQueue(rt.mode, target, msg.Command, true); ok {
-			return c, only, echo, false, ""
-		}
+	if dests := rt.routeModeLocked(msg, cm); dests != nil {
+		return dests
 	}
 
 	// TOPIC enquiry numerics: demux by channel.
 	if target := topicEnquiryNumericTarget(msg, cm); target != "" {
-		if c, only, echo, ok := rt.routeTargetQueue(rt.topic, target, msg.Command, false); ok {
-			return c, only, echo, false, ""
+		if dests := rt.routeTargetQueue(rt.topic, target, msg.Command, false); dests != nil {
+			return dests
 		}
 	}
 
-	// WHOIS numerics: route by target nick (params[1]), oldest waiter first.
+	// NAMES: 353/366 carry the channel — concurrent across channels; same
+	// channel is one coalesced exchange.
+	if target := namesNumericTarget(msg, cm); target != "" {
+		if dests := rt.routeTargetQueue(rt.names, target, msg.Command, false); dests != nil {
+			return dests
+		}
+	}
+
+	// WHOIS numerics: route by target nick (params[1]).
 	if irc.IsWHOISReply(msg.Command, rt.ircd) && len(msg.Params) > 1 {
 		nick := cm.Canonical(msg.Params[1])
 		if waiters := rt.whois[nick]; len(waiters) > 0 {
 			req := waiters[0]
+			dests := destsOf(req)
 			if req.EndCodes[msg.Command] {
-				rt.whois[nick] = waiters[1:]
-				if len(rt.whois[nick]) == 0 {
-					delete(rt.whois, nick)
-				}
+				rt.popWaiters(rt.whois, nick)
 			}
-			return req.Client, true, req.ClientLabel, false, ""
+			return dests
 		}
 	}
 
@@ -446,20 +585,15 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		letter := foldStatsLetter(msg.Params[1])
 		if waiters := rt.stats[letter]; len(waiters) > 0 {
 			req := waiters[0]
-			rt.stats[letter] = waiters[1:]
-			if len(rt.stats[letter]) == 0 {
-				delete(rt.stats, letter)
-			} else {
-				rt.releaseGate(rt.stats[letter][0])
-			}
-			return req.Client, true, req.ClientLabel, false, ""
+			dests := destsOf(req)
+			rt.popWaiters(rt.stats, letter)
+			return dests
 		}
 	}
 	// Intermediate STATS numerics: only when a single letter is pending.
 	if isSTATSNumeric(msg.Command) && msg.Command != "219" {
-		if letter, req, ok := rt.singleStatsPending(); ok {
-			_ = letter
-			return req.Client, true, req.ClientLabel, false, ""
+		if _, req, ok := rt.singleStatsPending(); ok {
+			return destsOf(req)
 		}
 	}
 
@@ -467,8 +601,7 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 	if msg.Command == "354" && len(msg.Params) > 1 {
 		tok := msg.Params[1]
 		if req, ok := rt.whox[tok]; ok {
-			strip, restore := whoxFix(req)
-			return req.Client, true, req.ClientLabel, strip, restore
+			return destsOf(req)
 		}
 	}
 	if msg.Command == "315" {
@@ -478,7 +611,7 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		}
 		if req, tok, ok := rt.whoxByMask(mask); ok {
 			delete(rt.whox, tok)
-			return req.Client, true, req.ClientLabel, false, ""
+			return destsOf(req)
 		}
 		// Fallback: oldest pending WHOX.
 		var best *pendingRequest
@@ -494,58 +627,149 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 		}
 		if best != nil {
 			delete(rt.whox, bestTok)
-			return best.Client, true, best.ClientLabel, false, ""
+			return destsOf(best)
 		}
 	}
 
 	// Fallback: single pending WHOX request (token mismatch / server defaulted querytype).
 	if (msg.Command == "354" || msg.Command == "315") && len(rt.whox) == 1 {
 		for tok, req := range rt.whox {
-			strip, restore := whoxFix(req)
 			if msg.Command == "315" {
 				delete(rt.whox, tok)
 			}
-			return req.Client, true, req.ClientLabel, strip, restore
+			return destsOf(req)
 		}
 	}
 
-	if rt.active != nil {
-		cmd := msg.Command
-		if rt.active.ReplyCodes[cmd] || (len(rt.active.ReplyCodes) == 0 && isLikelyReply(cmd)) {
-			client := rt.active.Client
-			echo := rt.active.ClientLabel
-			if rt.active.EndCodes[cmd] {
-				rt.finishActive()
-			}
-			return client, true, echo, false, ""
+	if kind, req, ok := rt.serialHeadFor(msg.Command); ok {
+		dests := destsOf(req)
+		if req.EndCodes[msg.Command] {
+			rt.popSerial(kind)
 		}
+		return dests
 	}
-	return "", false, "", false, ""
+	return nil
 }
 
-// routeTargetQueue delivers a numeric to the oldest waiter for target.
-// sticky324 enables per-target 329 sticky when ending a MODE enquiry on 324.
-func (rt *RequestTracker) routeTargetQueue(queues map[string][]*pendingRequest, target, cmd string, sticky324 bool) (ClientID, bool, string, bool) {
+// routeTargetQueue delivers a numeric to the in-flight waiter for target
+// (plus coalesced extras). sticky324 is unused here — MODE has its own path.
+func (rt *RequestTracker) routeTargetQueue(queues map[string][]*pendingRequest, target, cmd string, sticky324 bool) []RouteDest {
 	waiters := queues[target]
 	if len(waiters) == 0 {
-		return "", false, "", false
+		return nil
 	}
 	req := waiters[0]
 	if len(req.ReplyCodes) > 0 && !req.ReplyCodes[cmd] {
-		return "", false, "", false
+		return nil
 	}
+	dests := destsOf(req)
 	if req.EndCodes[cmd] {
 		if sticky324 && req.Command == "MODE" && cmd == "324" && req.ReplyCodes["329"] {
-			rt.sticky[target] = &stickyRoute{Client: req.Client, Echo: req.ClientLabel, Code: "329"}
+			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329"}
 		}
-		queues[target] = waiters[1:]
-		if len(queues[target]) == 0 {
-			delete(queues, target)
-		} else {
-			rt.releaseGate(queues[target][0])
+		rt.popWaiters(queues, target)
+	}
+	return dests
+}
+
+func (rt *RequestTracker) routeModeLocked(msg irc.Message, cm irc.CaseMapping) []RouteDest {
+	target := modeEnquiryNumericTarget(msg, cm)
+	if target == "" {
+		return nil
+	}
+	if isModeEnquiryError(msg.Command) {
+		return rt.popAllModeTarget(target, msg.Command)
+	}
+	letter, ok := modeNumericLetter(msg.Command)
+	if !ok {
+		return nil
+	}
+	key, waiters := rt.findModeWaiters(target, letter)
+	if len(waiters) == 0 {
+		return nil
+	}
+	req := waiters[0]
+	if len(req.ReplyCodes) > 0 && !req.ReplyCodes[msg.Command] {
+		return nil
+	}
+	dests := destsOf(req)
+	if req.EndCodes[msg.Command] {
+		if req.Command == "MODE" && msg.Command == "324" && req.ReplyCodes["329"] {
+			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329"}
+		}
+		rt.mode[key] = waiters[1:]
+		if len(rt.mode[key]) == 0 {
+			delete(rt.mode, key)
 		}
 	}
-	return req.Client, true, req.ClientLabel, true
+	return dests
+}
+
+func (rt *RequestTracker) findModeWaiters(target, letter string) (key string, waiters []*pendingRequest) {
+	exact := modeMapKey(target, letter)
+	if q := rt.mode[exact]; len(q) > 0 {
+		return exact, q
+	}
+	if letter != "" {
+		var bestKey string
+		var bestCreated time.Time
+		found := false
+		for k, q := range rt.mode {
+			if len(q) == 0 || modeKeyTarget(k) != target {
+				continue
+			}
+			if !strings.Contains(modeKeyLetters(k), letter) {
+				continue
+			}
+			if !found || q[0].Created.Before(bestCreated) {
+				bestKey = k
+				bestCreated = q[0].Created
+				found = true
+			}
+		}
+		if found {
+			return bestKey, rt.mode[bestKey]
+		}
+	}
+	// Fallback: oldest waiter on this target (Begin without ModeLetters).
+	var bestKey string
+	var bestCreated time.Time
+	found := false
+	for k, q := range rt.mode {
+		if len(q) == 0 || modeKeyTarget(k) != target {
+			continue
+		}
+		if !found || q[0].Created.Before(bestCreated) {
+			bestKey = k
+			bestCreated = q[0].Created
+			found = true
+		}
+	}
+	if found {
+		return bestKey, rt.mode[bestKey]
+	}
+	return "", nil
+}
+
+// popAllModeTarget fans an error numeric to every MODE waiter for target and
+// clears them (the channel/nick is gone; every enquiry for it is finished).
+func (rt *RequestTracker) popAllModeTarget(target, cmd string) []RouteDest {
+	var dests []RouteDest
+	var keys []string
+	for k, q := range rt.mode {
+		if modeKeyTarget(k) != target || len(q) == 0 {
+			continue
+		}
+		if len(q[0].ReplyCodes) > 0 && !q[0].ReplyCodes[cmd] {
+			continue
+		}
+		dests = append(dests, destsOf(q[0])...)
+		keys = append(keys, k)
+	}
+	for _, k := range keys {
+		delete(rt.mode, k)
+	}
+	return dests
 }
 
 // modeEnquiryNumericTarget extracts the folded channel/nick from a MODE enquiry reply.
@@ -572,6 +796,21 @@ func modeEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
 func topicEnquiryNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
 	switch msg.Command {
 	case "331", "332", "333", "401", "403", "442", "461":
+		if len(msg.Params) > 1 {
+			return cm.Canonical(msg.Params[1])
+		}
+	}
+	return ""
+}
+
+// namesNumericTarget extracts the folded channel from a NAMES reply.
+func namesNumericTarget(msg irc.Message, cm irc.CaseMapping) string {
+	switch msg.Command {
+	case "353": // <nick> <type> <channel> :<names>
+		if len(msg.Params) > 2 {
+			return cm.Canonical(msg.Params[2])
+		}
+	case "366", "401", "403":
 		if len(msg.Params) > 1 {
 			return cm.Canonical(msg.Params[1])
 		}
@@ -613,22 +852,337 @@ func (rt *RequestTracker) singleStatsPending() (letter string, req *pendingReque
 	return letter, req, ok
 }
 
-func (rt *RequestTracker) releaseGate(req *pendingRequest) {
-	if req == nil || req.gate == nil {
-		return
-	}
-	close(req.gate)
-	req.gate = nil
+var serialKindOrder = []string{
+	"LIST", "WHO", "WHOX", "NAMES", "ISON", "USERHOST", "LUSERS",
+	"LINKS", "MAP", "WHOWAS", "TIME", "TRACE", "USERS", "HELP", "ADMIN", "SILENCE",
 }
 
-func (rt *RequestTracker) finishActive() {
-	if len(rt.queue) > 0 && rt.queue[0] == rt.active {
-		rt.queue = rt.queue[1:]
+func (rt *RequestTracker) serialHeadFor(numeric string) (kind string, req *pendingRequest, ok bool) {
+	for _, kind := range serialKindOrder {
+		q := rt.serial[kind]
+		if len(q) == 0 {
+			continue
+		}
+		head := q[0]
+		if head.ReplyCodes[numeric] || (len(head.ReplyCodes) == 0 && isLikelyReply(numeric)) {
+			return kind, head, true
+		}
 	}
-	rt.active = nil
-	if len(rt.queue) > 0 {
-		rt.active = rt.queue[0]
-		rt.releaseGate(rt.active)
+	return "", nil, false
+}
+
+func (rt *RequestTracker) popSerial(kind string) {
+	q := rt.serial[kind]
+	if len(q) == 0 {
+		return
+	}
+	rt.serial[kind] = q[1:]
+	if len(rt.serial[kind]) == 0 {
+		delete(rt.serial, kind)
+		return
+	}
+	next := rt.serial[kind][0]
+	if next.HoldWrite {
+		next.HoldWrite = false
+		if next.Outbound.Command != "" || next.Outbound.Raw != "" {
+			rt.ready = append(rt.ready, next.Outbound)
+		}
+	}
+}
+
+func (rt *RequestTracker) enqueueHeldWrite(req *pendingRequest) {
+	if req == nil || !req.HoldWrite {
+		return
+	}
+	req.HoldWrite = false
+	if req.Outbound.Command != "" || req.Outbound.Raw != "" {
+		rt.ready = append(rt.ready, req.Outbound)
+	}
+}
+
+func (rt *RequestTracker) popWaiters(queues map[string][]*pendingRequest, key string) {
+	q := queues[key]
+	if len(q) == 0 {
+		return
+	}
+	queues[key] = q[1:]
+	if len(queues[key]) == 0 {
+		delete(queues, key)
+		return
+	}
+	rt.enqueueHeldWrite(queues[key][0])
+}
+
+func findRemoteMatch(q []*pendingRequest, remote string) *pendingRequest {
+	for _, req := range q {
+		if req.Remote == remote {
+			return req
+		}
+	}
+	return nil
+}
+
+func serialHasOtherRemote(q []*pendingRequest, remote string) bool {
+	for _, req := range q {
+		if req.Remote != remote {
+			return true
+		}
+	}
+	return false
+}
+
+func takesServerTarget(cmd string) bool {
+	switch cmd {
+	case "TIME", "ADMIN", "USERS", "TRACE", "MAP", "LIST", "LINKS", "LUSERS", "WHOWAS":
+		return true
+	default:
+		return false
+	}
+}
+
+func whoisOutbound(nick, remote string) irc.Message {
+	switch remote {
+	case "":
+		return irc.Message{Command: "WHOIS", Params: []string{nick}}
+	case whoisRemoteNick:
+		return irc.Message{Command: "WHOIS", Params: []string{nick, nick}}
+	default:
+		return irc.Message{Command: "WHOIS", Params: []string{remote, nick}}
+	}
+}
+
+func foldServer(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// ParseWHOISRemote returns the WHOIS server/target identity.
+// Empty = local WHOIS <nick>. whoisRemoteNick = WHOIS <nick> <nick>.
+// Otherwise the folded explicit server from WHOIS <server> <nick>.
+func ParseWHOISRemote(params []string, cm irc.CaseMapping) string {
+	if len(params) < 2 || params[1] == "" {
+		return ""
+	}
+	if cm.Equal(params[0], params[1]) {
+		return whoisRemoteNick
+	}
+	return foldServer(params[0])
+}
+
+// EnquiryRemote extracts the optional server/target argument for a solicitous command.
+func EnquiryRemote(cmd string, params []string, cm irc.CaseMapping) string {
+	switch cmd {
+	case "WHOIS":
+		return ParseWHOISRemote(params, cm)
+	case "STATS":
+		if len(params) > 1 {
+			return foldServer(params[1])
+		}
+	case "NAMES", "LIST":
+		if len(params) > 1 {
+			return foldServer(params[1])
+		}
+	case "TIME", "ADMIN", "USERS", "TRACE", "MAP":
+		if len(params) > 0 {
+			return foldServer(params[0])
+		}
+	case "LUSERS":
+		if len(params) > 1 {
+			return foldServer(params[1])
+		}
+	case "LINKS":
+		if len(params) > 0 {
+			return foldServer(params[0])
+		}
+	case "WHOWAS":
+		if len(params) > 2 {
+			return foldServer(params[2])
+		}
+	}
+	return ""
+}
+
+func (rt *RequestTracker) dropQueueClient(queues map[string][]*pendingRequest, client ClientID) {
+	for target, waiters := range queues {
+		var kept []*pendingRequest
+		droppedHead := false
+		for i, req := range waiters {
+			if req.dropClient(client) {
+				if i == 0 {
+					droppedHead = true
+				}
+				continue
+			}
+			kept = append(kept, req)
+		}
+		if len(kept) == 0 {
+			delete(queues, target)
+			continue
+		}
+		queues[target] = kept
+		if droppedHead {
+			rt.enqueueHeldWrite(kept[0])
+		}
+	}
+}
+
+func destsOf(req *pendingRequest) []RouteDest {
+	if req == nil {
+		return nil
+	}
+	out := []RouteDest{{
+		Client:      req.Client,
+		EchoLabel:   req.ClientLabel,
+		StripWHOX:   req.WHOXStripToken,
+		RestoreWHOX: req.WHOXClientToken,
+	}}
+	for _, e := range req.extra {
+		out = append(out, RouteDest{
+			Client:      e.Client,
+			EchoLabel:   e.ClientLabel,
+			StripWHOX:   e.WHOXStripToken,
+			RestoreWHOX: e.WHOXClientToken,
+		})
+	}
+	return out
+}
+
+func (req *pendingRequest) coalesce(other *pendingRequest) {
+	if other == nil || other.Client == req.Client {
+		return
+	}
+	for _, e := range req.extra {
+		if e.Client == other.Client {
+			return
+		}
+	}
+	other.fixWHOXRewrite(req.WHOXStripToken)
+	req.extra = append(req.extra, other)
+}
+
+// fixWHOXRewrite keeps this waiter's own querytype token. Strip the injected
+// 't' field only when this client did not send a token.
+func (req *pendingRequest) fixWHOXRewrite(headInjectedT bool) {
+	if req.WHOXClientToken != "" {
+		req.WHOXStripToken = false
+		return
+	}
+	req.WHOXStripToken = headInjectedT
+}
+
+// dropClient removes client from this exchange. True means the request is empty.
+func (req *pendingRequest) dropClient(client ClientID) bool {
+	if req.Client == client {
+		if len(req.extra) == 0 {
+			return true
+		}
+		head := req.extra[0]
+		req.Client = head.Client
+		req.ClientLabel = head.ClientLabel
+		req.WHOXStripToken = head.WHOXStripToken
+		req.WHOXClientToken = head.WHOXClientToken
+		req.extra = req.extra[1:]
+		return false
+	}
+	var kept []*pendingRequest
+	for _, e := range req.extra {
+		if e.Client != client {
+			kept = append(kept, e)
+		}
+	}
+	req.extra = kept
+	return false
+}
+
+func (rt *RequestTracker) findMatchingWHOX(req *pendingRequest) *pendingRequest {
+	for _, existing := range rt.whox {
+		if existing.Target == req.Target &&
+			existing.WHOXFlags == req.WHOXFlags &&
+			whoxFieldsKey(existing.WHOXFields) == whoxFieldsKey(req.WHOXFields) {
+			return existing
+		}
+	}
+	return nil
+}
+
+// whoxFieldsKey drops querytype 't' so two WHOX that differ only by token
+// (o%nuhs vs o%nuhst,9) still match. Other field letters must be identical.
+func whoxFieldsKey(fields string) string {
+	var b strings.Builder
+	for i := 0; i < len(fields); i++ {
+		c := fields[i]
+		if c == 't' || c == 'T' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func modeMapKey(target, letters string) string {
+	return target + "\x00" + letters
+}
+
+func modeKeyTarget(key string) string {
+	if i := strings.IndexByte(key, 0); i >= 0 {
+		return key[:i]
+	}
+	return key
+}
+
+func modeKeyLetters(key string) string {
+	if i := strings.IndexByte(key, 0); i >= 0 {
+		return key[i+1:]
+	}
+	return ""
+}
+
+func normalizeModeListLetters(modes string) string {
+	var seen [256]bool
+	for i := 0; i < len(modes); i++ {
+		c := modes[i]
+		if c == '+' || c == '-' {
+			continue
+		}
+		seen[c] = true
+	}
+	var b []byte
+	for _, c := range []byte("beIq") {
+		if seen[c] {
+			b = append(b, c)
+			seen[c] = false
+		}
+	}
+	for c := 0; c < 256; c++ {
+		if seen[c] {
+			b = append(b, byte(c))
+		}
+	}
+	return string(b)
+}
+
+func modeNumericLetter(cmd string) (letter string, ok bool) {
+	switch cmd {
+	case "221", "324", "329":
+		return "", true
+	case "367", "368":
+		return "b", true
+	case "348", "349":
+		return "e", true
+	case "346", "347":
+		return "I", true
+	case "728", "729":
+		return "q", true
+	default:
+		return "", false
+	}
+}
+
+func isModeEnquiryError(cmd string) bool {
+	switch cmd {
+	case "401", "403", "442", "461", "472", "482":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -637,87 +1191,49 @@ func (rt *RequestTracker) DropClient(client ClientID) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	for k, req := range rt.labeled {
-		if req.Client == client {
+		if req.dropClient(client) {
 			delete(rt.labeled, k)
 		}
 	}
 	for k, req := range rt.whox {
-		if req.Client == client {
+		if req.dropClient(client) {
 			delete(rt.whox, k)
 		}
 	}
-	for nick, waiters := range rt.whois {
-		var kept []*pendingRequest
-		for _, req := range waiters {
-			if req.Client != client {
-				kept = append(kept, req)
+	rt.dropQueueClient(rt.whois, client)
+	rt.dropQueueClient(rt.stats, client)
+	rt.dropQueueClient(rt.mode, client)
+	rt.dropQueueClient(rt.topic, client)
+	rt.dropQueueClient(rt.names, client)
+	for target, s := range rt.sticky {
+		var kept []RouteDest
+		for _, d := range s.dests {
+			if d.Client != client {
+				kept = append(kept, d)
 			}
 		}
 		if len(kept) == 0 {
-			delete(rt.whois, nick)
+			delete(rt.sticky, target)
 		} else {
-			rt.whois[nick] = kept
+			s.dests = kept
 		}
 	}
-	for letter, waiters := range rt.stats {
+	for kind, q := range rt.serial {
 		var kept []*pendingRequest
-		droppedHead := len(waiters) > 0 && waiters[0].Client == client
-		for _, req := range waiters {
+		droppedHead := len(q) > 0 && q[0].Client == client
+		for _, req := range q {
 			if req.Client == client {
-				rt.releaseGate(req)
 				continue
 			}
 			kept = append(kept, req)
 		}
 		if len(kept) == 0 {
-			delete(rt.stats, letter)
-		} else {
-			rt.stats[letter] = kept
-			if droppedHead {
-				rt.releaseGate(kept[0])
-			}
-		}
-	}
-	for _, queues := range []map[string][]*pendingRequest{rt.mode, rt.topic} {
-		for target, waiters := range queues {
-			var kept []*pendingRequest
-			droppedHead := len(waiters) > 0 && waiters[0].Client == client
-			for _, req := range waiters {
-				if req.Client == client {
-					rt.releaseGate(req)
-					continue
-				}
-				kept = append(kept, req)
-			}
-			if len(kept) == 0 {
-				delete(queues, target)
-			} else {
-				queues[target] = kept
-				if droppedHead {
-					rt.releaseGate(kept[0])
-				}
-			}
-		}
-	}
-	for target, s := range rt.sticky {
-		if s.Client == client {
-			delete(rt.sticky, target)
-		}
-	}
-	var nq []*pendingRequest
-	for _, req := range rt.queue {
-		if req.Client == client {
-			rt.releaseGate(req)
+			delete(rt.serial, kind)
 			continue
 		}
-		nq = append(nq, req)
-	}
-	rt.queue = nq
-	if rt.active != nil && rt.active.Client == client {
-		rt.active = nil
-		if len(rt.queue) > 0 {
-			rt.active = rt.queue[0]
-			rt.releaseGate(rt.active)
+		rt.serial[kind] = kept
+		if droppedHead {
+			rt.enqueueHeldWrite(kept[0])
 		}
 	}
 }

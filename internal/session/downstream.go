@@ -36,6 +36,7 @@ func (s *Session) Detach(id ClientID) {
 	delete(s.heldFlushSent, id)
 	s.mu.Unlock()
 	s.tracker.DropClient(id)
+	s.flushTrackerWrites()
 	s.unsubscribeDebug(id)
 }
 
@@ -410,21 +411,38 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 		statsLetter = ParseStatsLetter(msg.Params)
 	}
 	enquiryTarget := ""
-	if cmd == "MODE" || cmd == "TOPIC" {
+	modeLetters := ""
+	if cmd == "MODE" || cmd == "TOPIC" || cmd == "NAMES" {
 		enquiryTarget = cm.Canonical(msg.Param(0))
 	}
-	label, token, wait := s.tracker.Begin(BeginOpts{
-		Client:        d.ID(),
-		Cmd:           cmd,
-		ClientLabel:   clientLabel,
-		PreferLabel:   preferLabel,
-		PreferWHOX:    preferWHOX && clientWHOX,
-		WhoisTargets:  whoisTargets,
-		WHOMask:       whoMask,
-		StatsLetter:   statsLetter,
-		EnquiryTarget: enquiryTarget,
-	})
+	if cmd == "MODE" && len(msg.Params) > 1 {
+		modeLetters = msg.Params[1]
+	}
+	whoxFlags, whoxFields, whoxClientTok := "", "", ""
+	if (cmd == "WHO" || cmd == "WHOX") && clientWHOX {
+		whoxFlags, whoxFields, whoxClientTok = parseWHOXParam(msg.Param(1))
+	}
+	remote := EnquiryRemote(cmd, msg.Params, cm)
+	var whoisWire []string
 	out := s.toUplink(msg)
+	label, token, writeNow := s.tracker.Begin(BeginOpts{
+		Client:          d.ID(),
+		Cmd:             cmd,
+		ClientLabel:     clientLabel,
+		PreferLabel:     preferLabel,
+		PreferWHOX:      preferWHOX && clientWHOX,
+		WhoisTargets:    whoisTargets,
+		WhoisWire:       &whoisWire,
+		WHOMask:         whoMask,
+		WHOXFlags:       whoxFlags,
+		WHOXFields:      whoxFields,
+		WHOXClientToken: whoxClientTok,
+		StatsLetter:     statsLetter,
+		EnquiryTarget:   enquiryTarget,
+		ModeLetters:     modeLetters,
+		Remote:          remote,
+		Outbound:        out,
+	})
 	if label != "" {
 		if out.Tags == nil {
 			out.Tags = map[string]string{}
@@ -440,10 +458,31 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 			Params:  []string{msg.Param(0), spec},
 		}
 	}
-	if wait != nil {
-		<-wait // hold until prior exchange's end-numeric
+	if cmd == "WHOIS" && writeNow && len(whoisWire) > 0 {
+		out.Params = rewriteWHOISParams(whoisWire, remote)
+		out.Raw = ""
+	}
+	if !writeNow {
+		return nil
 	}
 	return s.WriteMessage(out)
+}
+
+// rewriteWHOISParams builds the uplink WHOIS from nicks that still need a
+// query after coalescing, preserving local vs remote form.
+func rewriteWHOISParams(nicks []string, remote string) []string {
+	joined := strings.Join(nicks, ",")
+	switch remote {
+	case "":
+		return []string{joined}
+	case whoisRemoteNick:
+		if len(nicks) == 1 {
+			return []string{nicks[0], nicks[0]}
+		}
+		return []string{joined, joined}
+	default:
+		return []string{remote, joined}
+	}
 }
 
 // echoSelfLocally synthesizes a self PRIVMSG/NOTICE/TAGMSG when the uplink

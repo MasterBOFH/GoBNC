@@ -24,31 +24,17 @@ import (
 //     5-25ms sleep, and unrelated targets' replies are woven through each
 //     other rather than sent burst-by-burst — the closest a loopback TCP
 //     test can get to real network jitter without a real network.
-//   - Two clients WHOIS the *same* nick concurrently — the case none of
-//     the existing routing tests exercise: RequestTracker queues both
-//     under one key (rt.whois["alice"]) and must hand the first reply
-//     burst to whichever client actually queued first, the second to the
-//     other, not interleave the two by chance.
+//   - Two clients WHOIS the *same* nick concurrently — RequestTracker
+//     coalesces the second onto the in-flight write and fans the one
+//     reply burst to both, rather than sending a duplicate WHOIS.
 //   - A repeat poll: a client that already completed one WHOIS immediately
-//     issues another for a new target, concurrently with a second repeat
-//     poll from a different client — proving a finished request's queue
-//     entry is fully cleaned up rather than leaving something for the next
-//     round to trip over.
+//     issues another for a new target, concurrently with a second client
+//     asking for that same nick — proving a finished request's queue
+//     entry is fully cleaned up, and the new pair coalesces again.
 //   - WHOX on two different channels running the whole time alongside all
 //     of the above, demuxed by token exactly like
 //     TestSolicitousE2EConcurrentWHOXAndHold already proves in isolation,
 //     now under the same shared load.
-//
-// One real, load-bearing constraint this test is built around rather than
-// fighting: RequestTracker's WHOIS-by-nick queue has no way to tell two
-// concurrent reply *bursts* for the same nick apart except by end-numeric
-// (318) — every 311/312 in between routes to whichever request is
-// currently at the front of that nick's queue, regardless of which burst
-// it logically belongs to. A real ircd answers one WHOIS command's burst
-// to completion before starting the next for the same nick, so this
-// script does the same for alice's two callers (round-trip lag is still
-// injected between their lines) — interleaving would misattribute lines
-// by design, not by bug, and isn't a shape a real server produces.
 func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 	ln, host, port := newFakeIRCListener(t)
 
@@ -81,14 +67,22 @@ func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 		d.clearSent()
 	}
 
-	// Round 1: five concurrent requests, two of them (d1, d3) targeting the
-	// same nick — d3's is deliberately held back until the server has
-	// actually seen d1's on the wire, the only way to make "which one
-	// queued first" a real, checkable fact instead of a coin flip.
+	// Round 1: five concurrent requests. d1 and d3 both WHOIS alice — the
+	// second is coalesced onto the first uplink write.
 	var wg sync.WaitGroup
-	wg.Add(4)
-	go func() { defer wg.Done(); _ = s.HandleClientMessage(d1, irc.Message{Command: "WHOIS", Params: []string{"alice"}}) }()
-	go func() { defer wg.Done(); _ = s.HandleClientMessage(d2, irc.Message{Command: "WHOIS", Params: []string{"bob"}}) }()
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		_ = s.HandleClientMessage(d1, irc.Message{Command: "WHOIS", Params: []string{"alice"}})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = s.HandleClientMessage(d2, irc.Message{Command: "WHOIS", Params: []string{"bob"}})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = s.HandleClientMessage(d3, irc.Message{Command: "WHOIS", Params: []string{"alice"}})
+	}()
 	go func() {
 		defer wg.Done()
 		_ = s.HandleClientMessage(d4, irc.Message{Command: "WHO", Params: []string{"#chan1", "%tuhn,10"}})
@@ -97,10 +91,6 @@ func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 		defer wg.Done()
 		_ = s.HandleClientMessage(d5, irc.Message{Command: "WHO", Params: []string{"#chan2", "%tuhn,20"}})
 	}()
-
-	waitForReq(t, reqSeen, "alice")
-	wg.Add(1)
-	go func() { defer wg.Done(); _ = s.HandleClientMessage(d3, irc.Message{Command: "WHOIS", Params: []string{"alice"}}) }()
 	wg.Wait()
 
 	waitUntil(t, 5*time.Second, func() bool {
@@ -115,19 +105,16 @@ func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 		t.Fatalf("same-target WHOIS burst leaked across clients: d1=%d d3=%d 311s",
 			countCmd(d1, "311"), countCmd(d3, "311"))
 	}
-	// FIFO, not just non-overlapping: d1 queued first (its request is what
-	// waitForReq confirmed landed before d3's was ever sent), so it must
-	// get the first burst's content, not merely *a* clean one.
 	a1 := firstCmd(d1, "311")
 	a3 := firstCmd(d3, "311")
 	if a1 == nil || a3 == nil {
 		t.Fatalf("missing alice 311: d1=%v d3=%v", d1.snapshot(), d3.snapshot())
 	}
 	if !strings.Contains(a1.Trailing(), "Queued First") {
-		t.Fatalf("d1 (queued first) got wrong burst: %+v", a1.Params)
+		t.Fatalf("d1 got wrong burst: %+v", a1.Params)
 	}
-	if !strings.Contains(a3.Trailing(), "Queued Second") {
-		t.Fatalf("d3 (queued second) got wrong burst: %+v", a3.Params)
+	if !strings.Contains(a3.Trailing(), "Queued First") {
+		t.Fatalf("d3 must share d1's coalesced burst: %+v", a3.Params)
 	}
 
 	m4 := firstCmd(d4, "354")
@@ -152,11 +139,15 @@ func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 	// request in round 1 (one WHOIS, one WHO) — same same-nick-queue
 	// ordering discipline as round 1, now proving round 1's queue entries
 	// didn't leave anything behind for this round to trip over.
-	wg.Add(1)
-	go func() { defer wg.Done(); _ = s.HandleClientMessage(d1, irc.Message{Command: "WHOIS", Params: []string{"erin"}}) }()
-	waitForReq(t, reqSeen, "erin")
-	wg.Add(1)
-	go func() { defer wg.Done(); _ = s.HandleClientMessage(d4, irc.Message{Command: "WHOIS", Params: []string{"erin"}}) }()
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = s.HandleClientMessage(d1, irc.Message{Command: "WHOIS", Params: []string{"erin"}})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = s.HandleClientMessage(d4, irc.Message{Command: "WHOIS", Params: []string{"erin"}})
+	}()
 	wg.Wait()
 
 	waitUntil(t, 5*time.Second, func() bool {
@@ -173,10 +164,10 @@ func TestReplyRoutingStressLagsAndConcurrentPolls(t *testing.T) {
 		t.Fatalf("missing erin 311: d1=%v d4=%v", d1.snapshot(), d4.snapshot())
 	}
 	if !strings.Contains(e1.Trailing(), "Erin First") {
-		t.Fatalf("round 2: d1 (queued first) got wrong burst: %+v", e1.Params)
+		t.Fatalf("round 2: d1 got wrong burst: %+v", e1.Params)
 	}
-	if !strings.Contains(e4.Trailing(), "Erin Second") {
-		t.Fatalf("round 2: d4 (queued second) got wrong burst: %+v", e4.Params)
+	if !strings.Contains(e4.Trailing(), "Erin First") {
+		t.Fatalf("round 2: d4 must share d1's coalesced burst: %+v", e4.Params)
 	}
 
 	select {
@@ -270,11 +261,11 @@ func runRoutingStressServer(server net.Conn, deadline time.Time, reqSeen chan<- 
 		return line, nil
 	}
 
-	// Round 1: collect exactly the five expected requests, whatever order
-	// they arrive in (two of them share "WHOIS alice" verbatim).
+	// Round 1: collect the four on-wire requests. A second WHOIS alice is
+	// coalesced by the tracker and never reaches the uplink.
 	var aliceCount, bobSeen int
 	var who1Tok, who2Tok string
-	for aliceCount < 2 || bobSeen == 0 || who1Tok == "" || who2Tok == "" {
+	for aliceCount < 1 || bobSeen == 0 || who1Tok == "" || who2Tok == "" {
 		line, err := readReq()
 		if err != nil {
 			return fmt.Errorf("round 1 read: %w", err)
@@ -298,30 +289,20 @@ func runRoutingStressServer(server net.Conn, deadline time.Time, reqSeen chan<- 
 			":server 318 me " + nick + " :End of /WHOIS list.",
 		}
 	}
-	// The two alice bursts carry different realnames deliberately — same
-	// content would make a FIFO-vs-LIFO queue-order bug undetectable, since
-	// "d1 and d3 each got exactly one clean burst" would hold either way.
-	aliceBurst1 := whoisBurst("alice", "Queued First")
-	aliceBurst2 := whoisBurst("alice", "Queued Second")
+	aliceBurst := whoisBurst("alice", "Queued First")
 	bobBurst := whoisBurst("bob", "Real Name")
 
-	// Interleaved, but alice's two bursts stay internally contiguous (see
-	// this test's own doc comment on why) — everything else is woven
-	// through both of them and through each other.
 	schedule := []string{
 		bobBurst[0],
 		":server 354 me " + who1Tok + " #chan1 n1",
-		aliceBurst1[0],
+		aliceBurst[0],
 		":server 354 me " + who2Tok + " #chan2 n2",
 		bobBurst[1],
-		aliceBurst1[1],
+		aliceBurst[1],
 		":server 315 me #chan1 :End",
-		aliceBurst1[2],
+		aliceBurst[2],
 		bobBurst[2],
 		":server 315 me #chan2 :End",
-		aliceBurst2[0],
-		aliceBurst2[1],
-		aliceBurst2[2],
 	}
 	for _, l := range schedule {
 		if err := write(l); err != nil {
@@ -329,10 +310,9 @@ func runRoutingStressServer(server net.Conn, deadline time.Time, reqSeen chan<- 
 		}
 	}
 
-	// Round 2: two repeat polls for a fresh, shared target — same
-	// contiguous-burst discipline.
+	// Round 2: one on-wire WHOIS erin; the second client coalesces.
 	var erinCount int
-	for erinCount < 2 {
+	for erinCount < 1 {
 		line, err := readReq()
 		if err != nil {
 			return fmt.Errorf("round 2 read: %w", err)
@@ -341,7 +321,7 @@ func runRoutingStressServer(server net.Conn, deadline time.Time, reqSeen chan<- 
 			erinCount++
 		}
 	}
-	for _, l := range append(whoisBurst("erin", "Erin First"), whoisBurst("erin", "Erin Second")...) {
+	for _, l := range whoisBurst("erin", "Erin First") {
 		if err := write(l); err != nil {
 			return err
 		}

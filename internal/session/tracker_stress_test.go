@@ -5,7 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
@@ -26,8 +25,8 @@ func TestRequestTrackerStressConcurrentWHOX(t *testing.T) {
 		_, tok, wait := rt.Begin(BeginOpts{
 			Client: id, Cmd: "WHO", PreferWHOX: true, WHOMask: mask, ClientLabel: fmt.Sprintf("L%d", i),
 		})
-		if wait != nil || tok == "" {
-			t.Fatalf("begin %d: tok=%q wait=%v", i, tok, wait)
+		if !wait || tok == "" {
+			t.Fatalf("begin %d: tok=%q writeNow=%v", i, tok, wait)
 		}
 		rt.SetWHOXClientFix(tok, true, "")
 		jobs[i] = job{client: id, tok: tok, mask: mask}
@@ -74,25 +73,25 @@ func TestRequestTrackerStressSameCommandHold(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	const n = 20
-	gates := make([]<-chan struct{}, n)
 	for i := 0; i < n; i++ {
-		_, _, wait := rt.Begin(BeginOpts{Client: ClientID(fmt.Sprintf("c%d", i)), Cmd: "LIST"})
-		gates[i] = wait
-		if i == 0 && wait != nil {
-			t.Fatal("first LIST must not hold")
+		_, _, writeNow := rt.Begin(BeginOpts{
+			Client:   ClientID(fmt.Sprintf("c%d", i)),
+			Cmd:      "LIST",
+			Outbound: irc.Message{Command: "LIST", Params: []string{fmt.Sprintf("%d", i)}},
+		})
+		if i == 0 && !writeNow {
+			t.Fatal("first LIST must send")
 		}
-		if i > 0 && wait == nil {
-			t.Fatalf("LIST %d must hold", i)
+		if i > 0 && writeNow {
+			t.Fatalf("LIST %d must queue", i)
 		}
 	}
 
-	// Simulate lag: end-numerics arrive slowly; each release should unblock the next.
 	for i := 0; i < n; i++ {
 		if i > 0 {
-			select {
-			case <-gates[i]:
-			case <-time.After(2 * time.Second):
-				t.Fatalf("gate %d not released", i)
+			got := rt.TakeReady()
+			if len(got) != 1 {
+				t.Fatalf("LIST %d not released, got %d", i, len(got))
 			}
 		}
 		c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "323", Params: []string{"me", "End"}}, cm)
@@ -109,48 +108,30 @@ func TestRequestTrackerStressSameCommandHold(t *testing.T) {
 func TestRequestTrackerLagBeforeEndNumeric(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
-	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST"})
-	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST"})
-	if w1 != nil || w2 == nil {
+	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST", Outbound: irc.Message{Command: "LIST"}})
+	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST", Outbound: irc.Message{Command: "LIST"}})
+	if !w1 || w2 {
 		t.Fatal(w1, w2)
 	}
-
-	released := make(chan struct{})
-	go func() {
-		select {
-		case <-w2:
-			close(released)
-		case <-time.After(3 * time.Second):
-		}
-	}()
-
-	time.Sleep(80 * time.Millisecond) // simulated uplink lag
-	select {
-	case <-released:
-		t.Fatal("second must stay held during lag")
-	default:
+	if got := rt.TakeReady(); len(got) != 0 {
+		t.Fatal("second must stay queued during lag")
 	}
-
 	rt.RouteMessage(irc.Message{Command: "323", Params: []string{"me", "End"}}, cm)
-	select {
-	case <-released:
-	case <-time.After(2 * time.Second):
-		t.Fatal("second not released after end numeric")
+	if got := rt.TakeReady(); len(got) != 1 {
+		t.Fatal("second LIST not released after end numeric")
 	}
 }
 
 func TestRequestTrackerDropClientReleasesHold(t *testing.T) {
 	rt := NewRequestTracker()
-	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST"})
-	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST"})
-	if w1 != nil || w2 == nil {
+	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "LIST", Outbound: irc.Message{Command: "LIST"}})
+	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "LIST", Outbound: irc.Message{Command: "LIST"}})
+	if !w1 || w2 {
 		t.Fatal(w1, w2)
 	}
 	rt.DropClient("c1")
-	select {
-	case <-w2:
-	case <-time.After(2 * time.Second):
-		t.Fatal("dropping active client should release next hold")
+	if got := rt.TakeReady(); len(got) != 1 {
+		t.Fatal("dropping active client should release next LIST write")
 	}
 	active, ok := rt.ActiveClient()
 	if !ok || active != "c2" {
@@ -163,15 +144,10 @@ func TestRequestTrackerDropClientReleasesSTATSHold(t *testing.T) {
 	cm := irc.CaseRFC1459
 	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "STATS", StatsLetter: "y"})
 	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "STATS", StatsLetter: "y"})
-	if w1 != nil || w2 == nil {
-		t.Fatal(w1, w2)
+	if !w1 || w2 {
+		t.Fatal("duplicate STATS y coalesces; only first writes", w1, w2)
 	}
 	rt.DropClient("c1")
-	select {
-	case <-w2:
-	case <-time.After(2 * time.Second):
-		t.Fatal("drop should release same-letter STATS hold")
-	}
 	c, only, _, _, _ := rt.RouteMessage(irc.Message{Command: "219", Params: []string{"me", "y", "End"}}, cm)
 	if !only || c != "c2" {
 		t.Fatal(c, only)
@@ -182,8 +158,11 @@ func TestRequestTrackerSameWHOXMaskTwoClients(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
 	mask := cm.Canonical("#same")
-	_, t1, _ := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO", PreferWHOX: true, WHOMask: mask})
-	_, t2, _ := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHO", PreferWHOX: true, WHOMask: mask})
+	_, t1, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO", PreferWHOX: true, WHOMask: mask, WHOXFlags: "o", WHOXFields: "nuhs"})
+	_, t2, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHO", PreferWHOX: true, WHOMask: mask, WHOXFlags: "x", WHOXFields: "nuhs"})
+	if !w1 || !w2 {
+		t.Fatal("different WHOX flags must both write", w1, w2)
+	}
 	rt.SetWHOXClientFix(t1, true, "")
 	rt.SetWHOXClientFix(t2, true, "")
 	if t1 == t2 {
@@ -231,15 +210,7 @@ func TestRequestTrackerRaceHammer(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				id := ClientID(fmt.Sprintf("g%d-%d", g, i%5))
 				letter := string(rune('a' + (i % 4)))
-				_, _, wait := rt.Begin(BeginOpts{Client: id, Cmd: "STATS", StatsLetter: letter})
-				if wait != nil {
-					select {
-					case <-wait:
-					case <-time.After(3 * time.Second):
-						t.Errorf("hold timeout g=%d i=%d", g, i)
-						return
-					}
-				}
+				_, _, _ = rt.Begin(BeginOpts{Client: id, Cmd: "STATS", StatsLetter: letter})
 				rt.RouteMessage(irc.Message{Command: "219", Params: []string{"me", letter, "End"}}, cm)
 				ops.Add(1)
 				if i%17 == 0 {
