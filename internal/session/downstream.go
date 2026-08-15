@@ -778,6 +778,34 @@ func (s *Session) persistChannel(name, key string) {
 	s.syncUplinkChannels()
 }
 
+// pushChannelBlobFromStore rebuilds the blob store's "channel:#foo" entry
+// for a self-JOIN that stateJOINLocked did not already cover via persist
+// (auto-join at connect, uplink-driven rejoin, invite auto-join — anything
+// but a live client JOIN). The keeper clears blob state unconditionally on
+// every disconnect (docs/keeper-design.md), so unlike the SQL row, the blob
+// has nothing to fall back on by itself — without this, a resumed brain
+// would never learn about a channel it never saw a client explicitly JOIN
+// since the last reconnect. Unlike persistChannel, this never writes SQL:
+// the row it looks up is already correct — that's why the channel got
+// auto-joined in the first place — so this only mirrors it into the blob.
+func (s *Session) pushChannelBlobFromStore(name string) {
+	key := ""
+	if s.store != nil && s.Network.ID != 0 {
+		s.mu.RLock()
+		cm := s.isupport.CaseMapping
+		s.mu.RUnlock()
+		if chs, err := s.store.ListChannels(context.Background(), s.Network.ID); err == nil {
+			for _, c := range chs {
+				if cm.Equal(c.Name, name) {
+					key = c.Key
+					break
+				}
+			}
+		}
+	}
+	s.pushBlob("channel:"+name, keeper.BlobModeReplace, []byte(key))
+}
+
 func (s *Session) persistRemoveChannel(name string) {
 	s.pushBlob("channel:"+name, keeper.BlobModeDelete, nil)
 	if s.store == nil || s.Network.ID == 0 {
