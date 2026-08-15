@@ -801,8 +801,16 @@ func (c *Client) sendCapListReply() error {
 // DownlinkOutQueueSize bounds how far a downlink client's own outbound
 // queue may lag before it's judged too slow to keep and disconnected —
 // sized to absorb a large channel's WHO/NAMES reply burst (thousands of
-// lines) without a normal client ever tripping it. Overridable in tests.
-var DownlinkOutQueueSize = 4096
+// lines) without a normal client ever tripping it. 16384 comfortably
+// covers even the largest real-world channels (several thousand members)
+// with headroom for other concurrent traffic during the burst. Worst-case
+// memory per client stays bounded even so: irc.MaxServerLine (8703 bytes —
+// the largest a single line can be, full combined IRCv3 tag section plus
+// a 512-byte message) times this gives ~136MiB per fully-backed-up
+// client, times config.DefaultMaxClients (32) gives a worst-case ceiling
+// in the low GiBs — never reached in practice, since real traffic is far
+// smaller than max-tag-size on every line at once. Overridable in tests.
+var DownlinkOutQueueSize = 16384
 
 // downlinkWriteTimeout bounds how long writeLoop may block on one write to
 // a client that has stopped reading entirely — without this, a genuinely
