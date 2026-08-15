@@ -16,6 +16,14 @@ import (
 
 // TestSolicitousE2EConcurrentWHOXAndHold exercises two downlinks against a
 // scripted uplink: concurrent WHOX demux with lag, plus LIST hold-until-end.
+// The WHOX replies (354/315) come from the fake server itself, over the
+// real keeper<->brain wire (see runSolicitousServer) — not injected
+// directly into Session — so this actually proves demux-by-token holds up
+// through the full real architecture, not just in-process. The LIST
+// hold/release replies (323) stay directly injected: that half is testing
+// RequestTracker's own serialization of two same-command requests from
+// different clients, a Session-local property with no keeper/brain wire
+// step in the middle to verify.
 func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 	ln, host, port := newFakeIRCListener(t)
 
@@ -91,12 +99,10 @@ func TestSolicitousE2EConcurrentWHOXAndHold(t *testing.T) {
 		t.Fatalf("tokens: %q %q from %q / %q", tok1, tok2, who1, who2)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	s.HandleMessage(irc.Message{Command: "354", Params: []string{"me", tok2, "#b", "n2"}})
-	s.HandleMessage(irc.Message{Command: "354", Params: []string{"me", tok1, "#a", "n1"}})
-	s.HandleMessage(irc.Message{Command: "315", Params: []string{"me", "#a", "End"}})
-	s.HandleMessage(irc.Message{Command: "315", Params: []string{"me", "#b", "End"}})
-
+	// The fake server (runSolicitousServer) replies with real 354/315 lines
+	// itself, over the real wire, once it has seen both WHO requests — no
+	// direct HandleMessage injection here anymore (see this test's own doc
+	// comment).
 	waitUntil(t, 2*time.Second, func() bool {
 		return countCmd(d1, "354") >= 1 && countCmd(d2, "354") >= 1
 	})
@@ -264,6 +270,7 @@ func runSolicitousServer(c net.Conn, deadline time.Time, who, list chan<- string
 		return err
 	}
 
+	whoTokByChan := map[string]string{}
 	for time.Now().Before(deadline) {
 		_ = c.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		line, err := br.readLine()
@@ -280,6 +287,27 @@ func runSolicitousServer(c net.Conn, deadline time.Time, who, list chan<- string
 			select {
 			case who <- line:
 			default:
+			}
+			chName, tok := "", whoToken(line)
+			if strings.Contains(line, "#a") {
+				chName = "#a"
+			} else if strings.Contains(line, "#b") {
+				chName = "#b"
+			}
+			if chName != "" && tok != "" {
+				whoTokByChan[chName] = tok
+			}
+			// Reply only once both channels' WHO have arrived — real
+			// replies over the real wire, deliberately in reversed
+			// (#b-then-#a) and cross-numeric order, the same
+			// out-of-request-order shape the original in-process
+			// injection used to stress demux under lag.
+			if tokA, tokB := whoTokByChan["#a"], whoTokByChan["#b"]; tokA != "" && tokB != "" {
+				time.Sleep(50 * time.Millisecond)
+				_ = write(":server 354 me " + tokB + " #b n2")
+				_ = write(":server 354 me " + tokA + " #a n1")
+				_ = write(":server 315 me #a :End")
+				_ = write(":server 315 me #b :End")
 			}
 		case strings.HasPrefix(line, "LIST"):
 			select {
