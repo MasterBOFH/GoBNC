@@ -477,6 +477,22 @@ func (k *Keeper) Dial(ctx context.Context, cfg DialConfig) error {
 // Close closes the current connection, if any. It is idempotent and safe to
 // call whether or not a connection is live. It does not redial — dialling
 // again is a separate, brain-driven decision.
+//
+// Clears the blob itself, deliberately, rather than leaving that to
+// readLoop's own cleanup (see the epoch-staleness comment below its own
+// blob.Clear() call): Close mutates k.conn to nil before readLoop's
+// blocked read ever unblocks, so by the time readLoop's cleanup checks
+// "is this still the current connection" (stillCurrent := k.conn == c),
+// it's always false for a deliberate Close specifically — Close itself
+// already made it so. Skipping the clear there is correct given that
+// check's purpose (don't let a stale readLoop instance react to a
+// connection that's already been superseded), but it means a deliberate
+// Close needs its own clear, or the blob silently survives it — found by
+// writing a direct probe (Dial, PushBlob, Close, assert BlobSnapshot is
+// empty) rather than trusting the "clearing is unconditional" claim in
+// docs/keeper-design.md at face value; the probe failed before this line
+// was added. QuitClose and Retire both funnel through Close, so this
+// covers them too.
 func (k *Keeper) Close() error {
 	k.mu.Lock()
 	c := k.conn
@@ -492,6 +508,8 @@ func (k *Keeper) Close() error {
 	k.state = NotConnected
 	k.lastErr = nil
 	k.mu.Unlock()
+
+	k.blob.Clear()
 
 	if cancel != nil {
 		cancel()
@@ -663,6 +681,17 @@ func (k *Keeper) readLoop(ctx context.Context, c *connio.Conn, epoch uint64, rea
 		// just as invalid either way. Done after releasing k.mu above:
 		// k.mu also guards Dial/Close/State and must not be held across a
 		// blob store call.
+		//
+		// stillCurrent is only ever false here for one reason: Close()
+		// already reassigned k.conn to nil (and its own state fields)
+		// before this cleanup got a chance to run, which is exactly the
+		// deliberate-Close path — so this branch, despite the comment
+		// above, never actually fires for a deliberate Close; that case
+		// is covered by Close()'s own k.blob.Clear() call instead. Kept
+		// unconditional on stillCurrent anyway, not narrowed to "only the
+		// socket-died path": a future readLoop cleanup path that reaches
+		// here with stillCurrent true must never have to remember to add
+		// its own clear.
 		k.blob.Clear()
 	}
 
