@@ -322,6 +322,52 @@ func (d *Driver) RegisterNetwork(id keeper.NetworkID, cfg NetworkConfig) {
 	d.mu.Unlock()
 }
 
+// RegisterResumedNetwork is RegisterNetwork's counterpart for a network the
+// keeper already holds live from before this brain process attached (a
+// resumed network — see Server.resumedAtBoot's doc comment on the caller
+// side) — the exact case RegisterNetwork's own doc comment warns not to use
+// it for.
+//
+// It still makes id tracked (so Driver.Lines() forwards its replayed
+// backlog downstream — Session rebuilds its own state entirely by watching
+// that replay directly, independent of anything in this State; see
+// Session.HandleLine's doc comment), but installs the State already at
+// registration.PhaseComplete instead of a fresh one. Step is a documented
+// no-op once Phase is terminal (see Step's own doc comment), so every line
+// in the replayed backlog passes through as a pure no-op: no ActionSend
+// (which would otherwise re-send CAP REQ/CAP END/etc. out to the still-live
+// uplink for real, and a real ircd answers for real — a second live CAP ACK
+// for traffic that already completed) and no re-fired ActionRegistered
+// (which would otherwise re-run auto-join and restart nick recovery against
+// a connection that was never actually re-registered).
+//
+// Known gap: nick-recovery state isn't actually resumed — there is no
+// snapshot to resume it from (that needs the blob store
+// docs/keeper-design.md defers). If id was off its primary nick when this
+// brain attached, recovery does not resume until a live NICK event
+// corrects Driver's assumption; this method only stops the resend/
+// re-registration hazard, it does not restore full pre-restart state.
+func (d *Driver) RegisterResumedNetwork(id keeper.NetworkID, cfg NetworkConfig) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.configs[id] = cfg
+	state := registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state.Phase = registration.PhaseComplete
+	state.GotWelcome = true
+	d.states[id] = state
+	delete(d.currentNick, id)
+	if t, ok := d.deadlines[id]; ok {
+		t.Stop()
+		delete(d.deadlines, id)
+	}
+	// A recovery loop from whatever this brain instance's own state
+	// (there shouldn't be one yet — id has never been tracked by this
+	// Driver before) might otherwise leak; matches resetStateLocked's own
+	// belt-and-suspenders call. Safe to call while d.mu is held — see
+	// resetStateLocked's own comment on this.
+	d.stopNickRecovery(id)
+}
+
 // peerLabel returns id's display name (see NetworkConfig.Name) for a log
 // line, falling back to the bare numeric ID for a network logged before
 // RegisterNetwork ever ran for it (shouldn't happen in practice — see
