@@ -530,7 +530,21 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	s.sess[n.Name] = sess
 	s.sessByNetID[netID] = sess
 
-	s.driver.RegisterNetwork(netID, s.networkConfigForLocked(n))
+	// A network the keeper already held live at this brain's own attach
+	// (see resumedAtBoot's doc comment, and dialNetworkLocked's use of the
+	// same flag) must not redrive registration — see
+	// brain.Driver.RegisterNetwork's own doc comment for the hazard this
+	// avoids (duplicate CAP negotiation actually reaching the live uplink,
+	// duplicate auto-join/nick-recovery restart). Read here, before
+	// dialNetworkLocked's own check of the same flag runs and consumes it
+	// (deletes the entry) — registerNetworkLocked always runs first in
+	// every caller (Run's boot pass, StartNetworkByName), so the flag is
+	// still accurate at this point for whichever it is.
+	if s.resumedAtBoot[netID] {
+		s.driver.RegisterResumedNetwork(netID, s.networkConfigForLocked(n))
+	} else {
+		s.driver.RegisterNetwork(netID, s.networkConfigForLocked(n))
+	}
 	s.driver.SetChannels(netID, channelJoinsFor(chs))
 	s.driver.SetFloodParams(netID, n.FloodBurst, n.FloodRate)
 	return sess, nil
