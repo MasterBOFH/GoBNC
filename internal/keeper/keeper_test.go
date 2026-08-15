@@ -300,9 +300,15 @@ func TestRingOverflowNoSubscriberSelfCloses(t *testing.T) {
 // continuously, and B must receive everything on time regardless of A's
 // state.
 func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
+	old := lineSubBuffer
+	lineSubBuffer = 256
+	t.Cleanup(func() { lineSubBuffer = old })
+
 	srv := newFakeServer(t)
 	defer srv.close()
-	k := newTestKeeper(t)
+	// Long idle timeout: a 2s default would close the uplink while this
+	// test is still waiting on Overflow, which is not the thing under test.
+	k := New(8192, 64, nil, WithReadIdleTimeout(time.Hour))
 	host, port := hostPort(srv.addr())
 
 	acceptedCh := make(chan net.Conn, 1)
@@ -321,13 +327,28 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	defer unsubFast()
 
 	const n = 500 // well past the 256-entry buffer, so slow overflows partway through
+
+	// Prime the fast subscriber so the drain loop is running before the
+	// burst; otherwise a tight send of 500 can fill the 256-entry buffer
+	// before this goroutine enters the receive select, and fast overflows
+	// too — a flake, not a blocked-by-slow failure.
+	srv.send(t, conn, "NOTICE * :line0")
+	select {
+	case _, ok := <-fast.Lines:
+		if !ok {
+			t.Fatal("fast subscriber closed on the priming line")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast subscriber got nothing")
+	}
+
 	go func() {
-		for i := 0; i < n; i++ {
+		for i := 1; i < n; i++ {
 			srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
 		}
 	}()
 
-	received := 0
+	received := 1
 	deadline := time.Now().Add(5 * time.Second)
 	for received < n {
 		select {
@@ -375,7 +396,7 @@ func TestReadLoopNeverBlocksOnSubscriber(t *testing.T) {
 	_, unsub2 := k.SubscribeLines()
 	defer unsub2()
 
-	const n = 1000 // several multiples of the 256-entry subscriber buffer
+	const n = 1000 // several multiples of a typical subscriber buffer; progress must not depend on anyone draining
 	for i := 0; i < n; i++ {
 		srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
 	}

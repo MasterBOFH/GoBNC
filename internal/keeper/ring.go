@@ -19,16 +19,17 @@ type Entry struct {
 // the crash-and-respawn window), not average throughput. When full, the
 // oldest entry is evicted to make room.
 //
-// Two different "overflow" scenarios exist and only one is wired so far.
+// Two different "overflow" scenarios exist.
 //
 //  1. A live-attached client falls behind delivery for one network and its
 //     per-connection buffer fills (Keeper.SubscribeLines' Overflow signal).
-//     This is wired: Listener kills that connection with an explicit error
-//     rather than silently dropping (see listener.go's serveLive/
-//     fanInNetwork), and per the multi-network design only that one
-//     connection dies — every other network's delivery on it, and every
-//     other attached brain's networks entirely, are unaffected since each
-//     network has its own Keeper, ring, and subscriber set.
+//     Listener does not kill the attach for this: the ring still holds the
+//     lines, and fanInNetwork resubscribes and catches up via Since. Kill
+//     only if that Since returns ok=false (this ring has already evicted
+//     the catch-up window) — a genuine holed stream, the same gap Since
+//     exists to report. A traffic burst (WHO/NAMES) overflowing the live
+//     channel is not that; killing it used to break the keeper↔brain unix
+//     socket with a broken pipe on the next WriteRequest.
 //  2. The ring itself evicting (this type's push, below) independent of
 //     whether anyone is consuming — e.g. a netsplit burst that outpaces
 //     ring capacity with nobody attached to notice. The original
@@ -80,8 +81,8 @@ func (r *ring) push(e Entry) (evicted bool) {
 // since returns entries with Seq > afterSeq, oldest first. If the requested
 // watermark has already fallen out of the buffer, ok is false — the caller
 // has no way to recover the gap from this ring and must treat it as data
-// loss (this is what the overflow-kills-the-process policy exists to avoid
-// once a brain is actually attached; see the doc comment on ring).
+// loss (fanInNetwork still kills the attach in this case; live-buffer
+// overflow without a ring gap does not).
 func (r *ring) since(afterSeq uint64) (entries []Entry, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

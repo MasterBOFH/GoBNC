@@ -196,7 +196,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		stopped:              make(map[keeper.NetworkID]bool),
 		flood:                make(map[keeper.NetworkID]*floodState),
 		results:              make(chan Result, 16),
-		lines:                make(chan keeper.LineMsg, 64),
+		lines:                make(chan keeper.LineMsg, 8192),
 		dialResults:          make(chan keeper.DialResultMsg, 16),
 		closeResults:         make(chan keeper.CloseResultMsg, 16),
 		writeResults:         make(chan keeper.WriteResultMsg, 16),
@@ -936,7 +936,10 @@ func (d *Driver) recordEpoch(id keeper.NetworkID, epoch uint64) {
 
 // trySend* helpers: non-blocking, matching keeper's own publish pattern —
 // a slow consumer of these channels shouldn't be able to stall the read
-// loop that's also responsible for driving registration forward.
+// loop that's also responsible for driving registration forward and for
+// draining the keeper unix socket. Driver.lines is sized to absorb a
+// WHO/NAMES burst (thousands of lines) so a healthy demux never hits the
+// default drop; a wedged demux still must not deadlock the attach.
 
 func trySendResult(ch chan Result, v Result) {
 	select {

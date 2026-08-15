@@ -292,20 +292,20 @@ Two different "overflow" scenarios exist, both now built:
 
 1. **A live-attached client falls behind delivery for one network and its
    per-connection buffer fills.** `Keeper.SubscribeLines`'s `Overflow`
-   signal fires once, and the `Listener` kills that one connection with
-   an explicit error rather than silently dropping — dropping would hand
-   the client a holed stream with no indication, the same gap problem
-   `Since`'s `ok=false` exists to prevent one layer down. Only that one
-   connection dies; every other network on it and every other attached
-   brain's networks are unaffected, since each network has its own
-   `Keeper`, ring, and subscriber set.
+   signal fires once. The `Listener` does **not** kill the attach: the
+   ring still holds the lines, and `fanInNetwork` resubscribes and
+   catches up via `Since(lastSent)`. A WHO/NAMES burst is faster than
+   the unix-socket JSON framing; treating that lag as fatal is what
+   produced a `write: broken pipe` on the next `WriteRequest` from a
+   still-healthy brain. Kill only if `Since` returns `ok=false` — the
+   ring has already evicted the catch-up window, a genuine holed stream,
+   the same gap `Since`'s `ok=false` exists to report one layer down.
 2. **The ring itself evicts independent of whether anyone is consuming**
    (a netsplit burst outpacing ring capacity with nobody attached to
    notice). Wired in `Keeper.readLoop`: a push that evicts, observed while
    `hasLineSubscribers()` is false, closes the connection itself (loudly
    logged) rather than waiting for a future attach to discover the gap via
-   `since()`'s `ok=false` and have its whole live session killed over one
-   network's history. The self-close resets that network's resume
+   `since()`'s `ok=false`. The self-close resets that network's resume
    watermark to 0 in addition to the blob (both STEP-3-wiring-point
    consequences, but the watermark reset is scoped to this path only — an
    *ordinary* disconnect leaves the watermark alone, since seq is
