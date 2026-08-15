@@ -2,7 +2,12 @@ package session
 
 import "github.com/MasterBOFH/GoBNC/internal/irc"
 
-func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string) {
+// stateJOINLocked returns persist (SQL+blob upserts for a confirmed
+// client-initiated JOIN key) and blobOnly (channel names from any other
+// self-JOIN — auto-join at connect, uplink-driven rejoin, invite auto-join —
+// that need their blob entry rebuilt from the already-correct SQL row, since
+// the blob is cleared on every disconnect; see pushChannelBlobFromStore).
+func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string, blobOnly []string) {
 	cm := s.isupport.CaseMapping
 	chName := msg.Param(0)
 	if chName == "" {
@@ -21,14 +26,22 @@ func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string) {
 	ch.Members[cm.Canonical(u.Nick)] = struct{}{}
 	if u == s.self {
 		ch.Name = chName
-		// Persist only after a confirmed self-JOIN from a client JOIN (pending key).
-		// Uplink auto-rejoin already has a DB row; do not upsert an empty key over it.
+		// Persist to SQL only after a confirmed self-JOIN from a client JOIN
+		// (pending key). Uplink auto-rejoin already has a DB row; do not
+		// upsert an empty key over it. The blob has no such row to fall back
+		// on by itself — it's cleared on every disconnect — so every other
+		// self-JOIN still needs its blob entry rebuilt, just from the store
+		// instead of from a fresh client-supplied key.
 		if s.pendingJoinKeys != nil {
 			if key, ok := s.pendingJoinKeys[folded]; ok {
 				delete(s.pendingJoinKeys, folded)
 				ch.Key = key
 				persist = append(persist, [2]string{ch.Name, ch.Key})
+			} else {
+				blobOnly = append(blobOnly, ch.Name)
 			}
+		} else {
+			blobOnly = append(blobOnly, ch.Name)
 		}
 	}
 	// extended-join: JOIN #chan account :Real Name
@@ -40,7 +53,7 @@ func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string) {
 			u.Account = acct
 		}
 	}
-	return persist
+	return persist, blobOnly
 }
 
 func (s *Session) statePartKickLocked(msg irc.Message) (remove []string) {

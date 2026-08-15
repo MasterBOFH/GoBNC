@@ -30,6 +30,7 @@ type testUplink struct {
 	t      *testing.T
 	sess   *Session
 	driver *brain.Driver
+	mgr    *keeper.Manager
 	netID  keeper.NetworkID
 	cancel context.CancelFunc
 }
@@ -105,7 +106,7 @@ func newTestUplink(t *testing.T, sess *Session, netCfg store.Network, host strin
 	// registration itself works fine via the demux below (which only
 	// needs tu.driver, not sess.driver, to relay inbound lines).
 	sess.driver = driver
-	tu := &testUplink{t: t, sess: sess, driver: driver, netID: sess.NetworkID()}
+	tu := &testUplink{t: t, sess: sess, driver: driver, mgr: mgr, netID: sess.NetworkID()}
 
 	driver.RegisterNetwork(tu.netID, brain.NetworkConfig{
 		PrimaryNick:  netCfg.Nick,
@@ -160,6 +161,27 @@ func newFakeIRCListener(t *testing.T) (ln net.Listener, host string, port int) {
 		t.Fatalf("port %q: %v", p, err)
 	}
 	return ln, h, portN
+}
+
+// blobValue returns the latest value under key in this network's current
+// blob snapshot ("" and false if absent) — a live in-process read of
+// keeper.Manager's own blobStore, the same state a resuming brain's
+// HelloAck would deliver.
+func (tu *testUplink) blobValue(key string) (string, bool) {
+	for _, st := range tu.mgr.Snapshot() {
+		if st.ID != tu.netID {
+			continue
+		}
+		for _, e := range st.Blob {
+			if e.Key == key {
+				if len(e.Values) == 0 {
+					return "", true
+				}
+				return string(e.Values[len(e.Values)-1]), true
+			}
+		}
+	}
+	return "", false
 }
 
 // demux is internal/server.runDemux's shape, scoped to this one test

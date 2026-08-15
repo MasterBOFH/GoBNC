@@ -20,6 +20,7 @@ import (
 func (s *Session) applyState(msg irc.Message) {
 	var persist [][2]string // name, key
 	var remove []string
+	var blobOnlyJoins []string
 	var blobIsupport, blobCloak, blobSelfNick []byte
 
 	s.mu.Lock()
@@ -29,9 +30,9 @@ func (s *Session) applyState(msg irc.Message) {
 	switch msg.Command {
 	// Commands
 	case "JOIN":
-		if p := s.stateJOINLocked(msg); p != nil {
-			persist = append(persist, p...)
-		}
+		p, b := s.stateJOINLocked(msg)
+		persist = append(persist, p...)
+		blobOnlyJoins = append(blobOnlyJoins, b...)
 	case "PART", "KICK":
 		remove = append(remove, s.statePartKickLocked(msg)...)
 	case "QUIT":
@@ -74,6 +75,9 @@ func (s *Session) applyState(msg irc.Message) {
 
 	for _, p := range persist {
 		s.persistChannel(p[0], p[1])
+	}
+	for _, name := range blobOnlyJoins {
+		s.pushChannelBlobFromStore(name)
 	}
 	for _, name := range remove {
 		s.persistRemoveChannel(name)
