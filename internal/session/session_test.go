@@ -1433,6 +1433,36 @@ func TestState302USERHOSTLearnsSelfHost(t *testing.T) {
 	}
 }
 
+// TestRPLLoggedInUsesUplinkServerName is the regression test for the
+// synthesized RPL_LOGGEDIN (900) replayed on attach using the bouncer's own
+// "gobnc" placeholder as its source even when the real uplink server name
+// is known — it should match the source a live 900 actually arrives with.
+func TestRPLLoggedInUsesUplinkServerName(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.applyAccountFromSASL(irc.Message{Command: "900", Params: []string{"me", "me!u@h", "MrIron", "You are now logged in as MrIron"}})
+
+	s.mu.Lock()
+	msg, ok := s.rplLoggedInLocked()
+	s.mu.Unlock()
+	if !ok {
+		t.Fatal("expected synthesized 900")
+	}
+	if msg.Source != ServerName {
+		t.Fatalf("before uplink server known, source=%q want fallback %q", msg.Source, ServerName)
+	}
+
+	s.mu.Lock()
+	s.uplinkServer = "iridium.libera.chat"
+	msg, ok = s.rplLoggedInLocked()
+	s.mu.Unlock()
+	if !ok {
+		t.Fatal("expected synthesized 900")
+	}
+	if msg.Source != "iridium.libera.chat" {
+		t.Fatalf("source=%q want real uplink server name", msg.Source)
+	}
+}
+
 // TestState352WHOReplyDoesNotClobberSelfHost is the regression test for the
 // bug where a client-issued WHO whose reply happens to include our own row
 // overwrote the real cloak (learned from SASL RPL_LOGGEDIN) with whatever
