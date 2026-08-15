@@ -105,8 +105,15 @@ func (s *Session) state352Locked(msg irc.Message) {
 		return
 	}
 	u := s.ensureUserLocked(msg.Param(5))
-	u.User = msg.Param(2)
-	u.Host = msg.Param(3)
+	// self's ident/host is only ever trusted from RPL_LOGGEDIN (900), CHGHOST,
+	// or an observed nick!user@host prefix (touchUserFromPrefixLocked) — a WHO
+	// reply's user/host fields for self are not one of those and have been
+	// observed to diverge from the real cloak (e.g. a raw connecting address
+	// instead of a cloak), so this only applies them to other nicks.
+	if u != s.self {
+		u.User = msg.Param(2)
+		u.Host = msg.Param(3)
+	}
 	u.ApplyWHOFlags(msg.Param(6))
 }
 
