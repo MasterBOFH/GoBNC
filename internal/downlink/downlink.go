@@ -193,7 +193,6 @@ func (l *Listener) tryAcquireClient() bool {
 
 func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	defer l.active.Add(-1)
-	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(60 * time.Second))
 
 	tc, ok := c.(*tls.Conn)
@@ -202,10 +201,12 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		tc = tls.Server(c, l.tlsCfg)
 		if err := tc.Handshake(); err != nil {
 			l.log.Debug("tls handshake failed", "err", err)
+			_ = c.Close()
 			return
 		}
 	} else if err := tc.Handshake(); err != nil {
 		l.log.Debug("tls handshake failed", "err", err)
+		_ = c.Close()
 		return
 	}
 
@@ -217,6 +218,13 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		capsSeen: make(map[string]bool),
 		log:      l.log,
 	}
+	// From here on, cl (not the raw conn) owns connection teardown: Close
+	// stops new sends but lets writeLoop flush whatever's already queued
+	// (e.g. an ERROR sent right before an auth-failure return below) before
+	// it closes the actual connection — see writeLoop's own doc comment. A
+	// bare defer c.Close() here would race that flush and could drop the
+	// queued message entirely.
+	defer cl.Close()
 
 	// Cert-only: reject unknown/missing client certs before any IRC (CAP/PASS/…).
 	cfg := l.config()
@@ -575,6 +583,24 @@ type Client struct {
 	cap302     bool // client sent CAP LS 302
 	pendingLS  bool // CAP LS received before the network (PASS) was known
 	lastRXUnix int64
+
+	// outOnce lazily starts out/writeLoop on first Send/Close, rather than
+	// requiring construction through a constructor — several tests build
+	// &Client{} via a bare struct literal and must keep working unmodified.
+	outOnce sync.Once
+	// out is this client's own outbound queue, drained by writeLoop. Send
+	// only ever enqueues here — it never performs the actual network
+	// write — so a downlink client too slow to drain its own TCP window
+	// can never block the demux goroutine that services every network's
+	// line feed (see docs/keeper-design.md and this fix's own commit
+	// message for why that matters: a slow *client* must never be able to
+	// stall the keeper<->brain link, which acks a line once the brain has
+	// seen it, not once it's been delivered downstream).
+	out chan irc.Message
+	// closed guards out/conn teardown, both under wmu, so Send racing a
+	// concurrent Close (e.g. keepaliveLoop's timeout firing mid-Send)
+	// can never send on or double-close out.
+	closed bool
 }
 
 // Keepalive timing (overridable in tests).
@@ -772,22 +798,87 @@ func (c *Client) sendCapListReply() error {
 	})
 }
 
-func (c *Client) Send(msg irc.Message) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	raw := msg.Wire()
-	// A /bnc debug relay message must never be logged as ordinary outgoing
-	// traffic — a raw/all-mode subscriber would otherwise see it fed right
-	// back into the same subscription and relay again, forever (see
-	// session.DebugSource's doc comment for how this was actually found).
-	if msg.Source != session.DebugSource {
-		gobnclog.IRC(c.log, c.logPeer(), ">>", raw)
-	}
-	_, err := io.WriteString(c.conn, raw+"\r\n")
-	return err
+// DownlinkOutQueueSize bounds how far a downlink client's own outbound
+// queue may lag before it's judged too slow to keep and disconnected —
+// sized to absorb a large channel's WHO/NAMES reply burst (thousands of
+// lines) without a normal client ever tripping it. Overridable in tests.
+var DownlinkOutQueueSize = 4096
+
+// downlinkWriteTimeout bounds how long writeLoop may block on one write to
+// a client that has stopped reading entirely — without this, a genuinely
+// dead/wedged client would keep its writer goroutine (and its fd) alive
+// forever. It must stay comfortably larger than any real momentary stall:
+// DownlinkOutQueueSize is what absorbs ordinary burst-vs-drain-rate
+// mismatches; this deadline only exists to eventually reclaim resources
+// from a connection that will never read again. Overridable in tests.
+var downlinkWriteTimeout = 30 * time.Second
+
+func (c *Client) ensureWriter() {
+	c.outOnce.Do(func() {
+		c.out = make(chan irc.Message, DownlinkOutQueueSize)
+		go c.writeLoop()
+	})
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+// writeLoop is the one goroutine that ever writes to c.conn, draining out
+// in order — Send/Close only ever enqueue or close(out), this does the
+// actual (potentially slow) network write, off whatever goroutine called
+// Send (normally the shared demux — see out's own doc comment). It, and
+// only it, closes c.conn — once out is fully drained (normal shutdown) or
+// a write fails/times out (dead client) — so a message enqueued right
+// before a Send/Close (e.g. a final ERROR before disconnecting a client)
+// is never dropped by an immediate close racing its own delivery.
+func (c *Client) writeLoop() {
+	for msg := range c.out {
+		raw := msg.Wire()
+		// A /bnc debug relay message must never be logged as ordinary outgoing
+		// traffic — a raw/all-mode subscriber would otherwise see it fed right
+		// back into the same subscription and relay again, forever (see
+		// session.DebugSource's doc comment for how this was actually found).
+		if msg.Source != session.DebugSource {
+			gobnclog.IRC(c.log, c.logPeer(), ">>", raw)
+		}
+		_ = c.conn.SetWriteDeadline(time.Now().Add(downlinkWriteTimeout))
+		if _, err := io.WriteString(c.conn, raw+"\r\n"); err != nil {
+			break
+		}
+	}
+	_ = c.conn.Close()
+}
+
+func (c *Client) Send(msg irc.Message) error {
+	c.ensureWriter()
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if c.closed {
+		return net.ErrClosed
+	}
+	select {
+	case c.out <- msg:
+		return nil
+	default:
+		// This client's own queue is full — it's too slow to keep up with
+		// its own traffic. Drop it, on its own: never the shared keeper
+		// attach, never any other client or network sharing the demux.
+		// writeLoop finishes flushing whatever was already queued (best
+		// effort) and closes the connection itself once it does.
+		c.log.Warn("downlink client too slow, buffer overflow; disconnecting", "client", c.id)
+		c.closed = true
+		close(c.out)
+		return fmt.Errorf("downlink client too slow, buffer overflow")
+	}
+}
+
+func (c *Client) Close() error {
+	c.ensureWriter()
+	c.wmu.Lock()
+	if !c.closed {
+		c.closed = true
+		close(c.out)
+	}
+	c.wmu.Unlock()
+	return nil
+}
 
 func (c *Client) inputNick() string {
 	if c.sess != nil {
