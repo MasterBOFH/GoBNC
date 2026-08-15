@@ -21,6 +21,13 @@ import (
 // which closes every channel together — see Driver.Run's own defers), and
 // treats the first closed channel it observes as authoritative rather than
 // busy-looping on the others (a closed channel is always select-ready).
+//
+// Lines are preferred over Results/NetworkEvents when more than one is
+// ready. Driver publishes each line before the PhaseFailed Result it may
+// produce (see brain.Driver.handleLine); a fair select can still deliver
+// the Result first, and Session.HandleDisconnect would then miss the
+// stashed 433. Draining Lines first shrinks that window; HandleDisconnect
+// still synthesizes from the Err if the stash is empty.
 func (s *Server) runDemux(ctx context.Context) {
 	for {
 		select {
@@ -30,23 +37,18 @@ func (s *Server) runDemux(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if sess := s.sessionByNetwork(line.Network); sess != nil {
-				sess.HandleLine(line.Raw, line.Seq)
-				// Ack only after HandleLine has fully returned — including
-				// any blob push its processing triggered, since
-				// Driver.PushBlob blocks for its own confirmation before
-				// returning to whatever Session code called it. This one
-				// goroutine, this ordering, is what satisfies
-				// docs/keeper-design.md's blob-store ordering requirement
-				// without any locking between the two: a brain crash
-				// between HandleLine returning and this line running never
-				// happens (same goroutine, back-to-back), and a crash
-				// before HandleLine returns means this line's ack is never
-				// sent, so the next attach receives it again.
-				if err := s.driver.AckSeq(line.Network, line.Seq); err != nil {
-					s.log.Warn("AckSeq", "network", line.Network, "seq", line.Seq, "err", err)
-				}
+			s.dispatchLine(line)
+			continue
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case line, ok := <-s.driver.Lines():
+			if !ok {
+				return
 			}
+			s.dispatchLine(line)
 		case res, ok := <-s.driver.Results():
 			if !ok {
 				return
@@ -82,6 +84,26 @@ func (s *Server) runDemux(ctx context.Context) {
 					s.log.Warn("StartRegistration", "network", dr.Network, "err", err)
 				}
 			}
+		}
+	}
+}
+
+func (s *Server) dispatchLine(line keeper.LineMsg) {
+	if sess := s.sessionByNetwork(line.Network); sess != nil {
+		sess.HandleLine(line.Raw, line.Seq)
+		// Ack only after HandleLine has fully returned — including
+		// any blob push its processing triggered, since
+		// Driver.PushBlob blocks for its own confirmation before
+		// returning to whatever Session code called it. This one
+		// goroutine, this ordering, is what satisfies
+		// docs/keeper-design.md's blob-store ordering requirement
+		// without any locking between the two: a brain crash
+		// between HandleLine returning and this line running never
+		// happens (same goroutine, back-to-back), and a crash
+		// before HandleLine returns means this line's ack is never
+		// sent, so the next attach receives it again.
+		if err := s.driver.AckSeq(line.Network, line.Seq); err != nil {
+			s.log.Warn("AckSeq", "network", line.Network, "seq", line.Seq, "err", err)
 		}
 	}
 }

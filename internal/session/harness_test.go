@@ -185,9 +185,24 @@ func (tu *testUplink) blobValue(key string) (string, bool) {
 }
 
 // demux is internal/server.runDemux's shape, scoped to this one test
-// network/session.
+// network/session. Lines are drained before Results so a nick-error 433
+// is stashed before HandleDisconnect runs; HandleDisconnect still
+// synthesizes from the Err if the Result wins anyway.
 func (tu *testUplink) demux(ctx context.Context) {
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case line, ok := <-tu.driver.Lines():
+			if !ok {
+				return
+			}
+			if line.Network == tu.netID {
+				tu.sess.HandleLine(line.Raw, line.Seq)
+			}
+			continue
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return

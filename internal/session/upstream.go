@@ -573,9 +573,17 @@ func (s *Session) HandleDisconnect(err error) {
 	// unrelated failure happened later) fails this check and is correctly
 	// never surfaced — matches internal/uplink's old behavior, where the
 	// numeric was relayed synchronously, only on the ladder-exhausted path.
-	if hadNickErr && strings.Contains(reason, "nick error:") {
+	//
+	// The line that produced the failure is published on Driver.Lines()
+	// before the PhaseFailed Result, but demux select can still deliver
+	// the Result first; if the stash is empty we synthesize from the Err.
+	if strings.Contains(reason, "nick error:") {
+		line := nickErrLine
+		if !hadNickErr {
+			line = nickErrorFallback(reason, nick)
+		}
 		for _, d := range clients {
-			_ = d.Send(s.rewriteFor(d, nickErrLine))
+			_ = d.Send(s.rewriteFor(d, line))
 		}
 	}
 	for _, d := range clients {
@@ -592,6 +600,45 @@ func nickOrStar(nick string) string {
 		return "*"
 	}
 	return nick
+}
+
+func nickErrorFallback(reason, nick string) irc.Message {
+	cmd, text := "433", "Nickname is already in use."
+	target := "*"
+	if nick == "" {
+		nick = "*"
+	}
+	_, rest, found := strings.Cut(reason, "nick error: ")
+	if !found {
+		return irc.Message{Command: cmd, Params: []string{target, nick, text}}
+	}
+	cmdTok, after, hasAfter := strings.Cut(strings.TrimSpace(rest), " ")
+	switch cmdTok {
+	case "432":
+		cmd, text = "432", "Erroneous Nickname"
+	case "433":
+		cmd, text = "433", "Nickname is already in use."
+	case "437":
+		cmd, text = "437", "Nick/channel is temporarily unavailable"
+	}
+	if !hasAfter {
+		return irc.Message{Command: cmd, Params: []string{target, nick, text}}
+	}
+	after = strings.TrimSpace(after)
+	if strings.HasPrefix(after, "[") && strings.HasSuffix(after, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(after, "["), "]")
+		parts := strings.SplitN(inner, " ", 3)
+		if len(parts) >= 1 && parts[0] != "" {
+			target = parts[0]
+		}
+		if len(parts) >= 2 && parts[1] != "" {
+			nick = parts[1]
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			text = parts[2]
+		}
+	}
+	return irc.Message{Command: cmd, Params: []string{target, nick, text}}
 }
 
 func disconnectReason(err error) string {
