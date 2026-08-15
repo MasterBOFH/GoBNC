@@ -35,11 +35,27 @@ type Downlink interface {
 
 // ChannelState is per-channel cached state.
 type ChannelState struct {
-	Name    string
-	Key     string // channel key (+k), persisted for auto-rejoin
-	Topic   string
-	Modes   *irc.ChannelModes
-	Members map[string]struct{} // folded nick → present (details in Session.users)
+	Name  string
+	Key   string // channel key (+k), persisted for auto-rejoin
+	Topic string
+	Modes *irc.ChannelModes
+	// Members is only ever a genuine, confirmed roster once RosterKnown is
+	// true — see RosterKnown's own doc comment. Folded nick → present
+	// (details in Session.users).
+	Members map[string]struct{}
+	// RosterKnown is false from the moment a ChannelState is created
+	// (stateJOINLocked's fresh-channel branch, or seedChannelLocked on
+	// resume) until a real RPL_ENDOFNAMES (366) confirms Members reflects
+	// an actual server-reported roster, not just self. A resumed channel
+	// in particular starts with only self in Members (the blob never
+	// carried a roster — see seedChannelLocked's doc comment), so without
+	// this flag Session.Attach would hand a newly-attaching client a
+	// self-only 353 as if it were the real thing. Attach checks this and
+	// withholds 353/366 until it's true, relying on the real reply
+	// (state366Locked sets it) to reach that already-attached client the
+	// ordinary way once it arrives, rather than fabricating an interim
+	// answer.
+	RosterKnown bool
 }
 
 // Session is one network: one uplink, many downlinks.
@@ -64,7 +80,15 @@ type Session struct {
 	// pendingJoinKeys remembers keys from client JOIN until the uplink self-JOIN
 	// confirms the channel (so refused joins are not persisted for auto-rejoin).
 	pendingJoinKeys map[string]string // folded name → key (may be "")
-	downlinks       map[ClientID]Downlink
+	// pendingNamesRefresh holds channel names SeedFromBlob just seeded from
+	// the blob, awaiting RefreshResumedChannelNames — see SeedFromBlob's
+	// doc comment for why the actual uplink write can't happen from
+	// SeedFromBlob itself.
+	pendingNamesRefresh []string
+	// pendingUserHostRefresh mirrors pendingNamesRefresh for
+	// RefreshSelfUserHost — true when SeedFromBlob left self.Host unknown.
+	pendingUserHostRefresh bool
+	downlinks              map[ClientID]Downlink
 	isupport        *irc.ISUPPORT
 	upCaps          map[string]bool
 	// upSASLAvailable / upSASLMechs track whether the uplink currently

@@ -1380,7 +1380,7 @@ func TestInviteAutoJoinsRememberedUnjoinedChannel(t *testing.T) {
 
 func TestSelfPrefix(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
-	if got := s.SelfPrefix(); got != "me!u" {
+	if got := s.SelfPrefix(); got != "me!u@"+ServerName {
 		t.Fatalf("seeded=%q", got)
 	}
 	s.applyState(irc.Message{Source: "me!~gobnc@172.18.0.1", Command: "JOIN", Params: []string{"#c"}})
@@ -1403,6 +1403,33 @@ func TestSelfPrefix(t *testing.T) {
 	}
 	if join.Source != "me!~gobnc@cloak.example" {
 		t.Fatalf("attach JOIN source=%q", join.Source)
+	}
+}
+
+// TestState302USERHOSTLearnsSelfHost covers RefreshSelfUserHost's answer
+// path: a resumed session with no cloak blob entry has no way to learn its
+// own host except by asking (see RefreshSelfUserHost's doc comment), and
+// this is what applies that answer once it arrives. Also the regression
+// test for the invalid-prefix bug itself: before any of self.User/Host is
+// known, Prefix() must fall back to nick!user@ServerName, never bare
+// "nick!user" (RFC 2812 has no such prefix form — at least one real client
+// has been observed rejecting a JOIN over exactly that shape).
+func TestState302USERHOSTLearnsSelfHost(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	if got := s.SelfPrefix(); got != "me!u@"+ServerName {
+		t.Fatalf("seeded=%q", got)
+	}
+
+	// RPL_USERHOST: <requester> :nick[*]=[+-]ident@host ...
+	s.applyState(irc.Message{Source: "irc.example", Command: "302", Params: []string{"me", "me=+~iron@real.example.net"}})
+	if got := s.SelfPrefix(); got != "me!~iron@real.example.net" {
+		t.Fatalf("after 302=%q", got)
+	}
+
+	// An entry for a different nick in the same reply must not touch self.
+	s.applyState(irc.Message{Source: "irc.example", Command: "302", Params: []string{"me", "other*=-~x@y.example"}})
+	if got := s.SelfPrefix(); got != "me!~iron@real.example.net" {
+		t.Fatalf("unrelated USERHOST entry changed self: %q", got)
 	}
 }
 

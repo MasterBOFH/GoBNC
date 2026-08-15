@@ -251,6 +251,21 @@ func TestResumeDoesNotRedriveRegistration(t *testing.T) {
 		t.Fatalf("first brain: registration did not complete within timeout")
 	}
 
+	// Driver sends one USERHOST for itself the moment it sees 001 (see
+	// handleLine) — legitimate first-brain traffic, not the bug this test
+	// guards against, but it lands in srv.extra like anything else read
+	// after the handshake, so it must be drained here rather than left to
+	// be misread as a redrive artifact by the resume check at the bottom
+	// of this test.
+	select {
+	case line := <-srv.extra:
+		if !hasPrefix(line, "USERHOST gobncbrain") {
+			t.Fatalf("first brain: expected self USERHOST, got %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("first brain: expected self USERHOST, got nothing")
+	}
+
 	// "Restart": detach the first brain's attach WITHOUT closing the
 	// uplink — matches Server.detachFromKeeper's own contract (a brain
 	// exiting never disconnects any uplink; see QuitNetwork's doc

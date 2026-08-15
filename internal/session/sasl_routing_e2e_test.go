@@ -310,6 +310,16 @@ func runClientSASLMultiServer(server net.Conn, deadline time.Time) error {
 	if err := write(":server 001 testnick :Welcome"); err != nil {
 		return err
 	}
+
+	// brain.Driver sends this the moment it sees 001 (see Driver.handleLine)
+	// to learn its own ident/host — unrelated to SASL, but it lands on the
+	// wire before anything else since it fires strictly before Session
+	// even reaches completeRegistration (376, next).
+	line, err = read()
+	if err != nil || !strings.HasPrefix(line, "USERHOST testnick") {
+		return fmt.Errorf("self USERHOST: %q %v", line, err)
+	}
+
 	if err := write(":server 376 testnick :End of MOTD"); err != nil {
 		return err
 	}

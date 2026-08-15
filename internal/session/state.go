@@ -24,8 +24,34 @@ func (s *Session) applyState(msg irc.Message) {
 	var blobIsupport, blobCloak, blobSelfNick []byte
 
 	s.mu.Lock()
+	prevSelfHost := ""
+	if s.self != nil {
+		prevSelfHost = s.self.Host
+	}
 	if msg.Source != "" {
 		s.touchUserFromPrefixLocked(msg.Source)
+	}
+	// Any uplink line sourced ":ournick!user@host" is authoritative for our
+	// own identity, regardless of which command carries it — enumerating
+	// every numeric that might reveal a host change (CHGHOST, RPL_VISIBLEHOST/
+	// 396, a SASL RPL_LOGGEDIN mask, whatever an ircd-specific "changed
+	// host" numeric happens to be called this week) is exactly the fragile
+	// approach this replaces: a self-JOIN echo, a self-echoed PRIVMSG
+	// (echo-message), a self-KICK-as-kicker, anything at all works
+	// uniformly, with no per-command allowlist to keep up to date. Checked
+	// generically here, before the switch below, purely by diffing
+	// self.Host across the touchUserFromPrefixLocked call above — that
+	// call already updates whichever user the source names, self included,
+	// so a change here means this message's source really was self's.
+	// CHGHOST is the one command whose *source* is deliberately the old
+	// identity (the new one only ever arrives in its params) — its own
+	// case below overwrites blobCloak with the correct value in the
+	// normal case; on a malformed CHGHOST with no new-host param it
+	// leaves this generic (and, in that specific case, still-current)
+	// value in place instead, which is a harmless redundant re-push, not
+	// a staleness bug.
+	if s.self != nil && s.self.Host != "" && s.self.Host != prevSelfHost {
+		blobCloak = []byte(s.self.Host)
 	}
 	switch msg.Command {
 	// Commands
@@ -56,6 +82,8 @@ func (s *Session) applyState(msg irc.Message) {
 		s.state221Locked(msg)
 	case "301":
 		s.state301Locked(msg)
+	case "302":
+		blobCloak = s.state302Locked(msg)
 	case "305":
 		s.state305Locked(msg)
 	case "306":
@@ -66,6 +94,8 @@ func (s *Session) applyState(msg irc.Message) {
 		s.state352Locked(msg)
 	case "353":
 		s.state353Locked(msg)
+	case "366":
+		s.state366Locked(msg)
 	case "381":
 		s.state381Locked(msg)
 	case "396":

@@ -36,7 +36,21 @@ import (
 // matches brain.Driver.RegisterResumedNetwork's own documented
 // nick-recovery gap for the same underlying reason (no snapshot to
 // resume them from).
+//
+// Does NOT write anything to the uplink itself, including the live NAMES
+// refresh a resumed channel needs (see RefreshResumedChannelNames) — this
+// runs from internal/server's registerNetworkLocked, which the whole
+// brain process's boot sequence deliberately calls *before*
+// keeperClient.SendLiveReady goes out (every network must be registered
+// first — see Run's own comment on why). The keeper's serveLive doesn't
+// read anything at all, a WriteRequest included, until LiveReady is the
+// first frame it sees; a write fired from here would race that and get
+// read as a malformed LiveReady, killing the whole live attach. The
+// channel names this seeded are stashed on Session instead, for the
+// caller to flush once it's actually safe to write.
 func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
+	var resumedChannels []string
+
 	s.mu.Lock()
 	// isupport first: channel case-mapping below depends on it being
 	// current. Snapshot's own first-push order already happens to put
@@ -81,30 +95,119 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 				s.self.Account = string(e.Values[0])
 			}
 		case strings.HasPrefix(e.Key, "channel:"):
-			s.seedChannelLocked(strings.TrimPrefix(e.Key, "channel:"), e.Values)
+			name := strings.TrimPrefix(e.Key, "channel:")
+			s.seedChannelLocked(name, e.Values)
+			resumedChannels = append(resumedChannels, name)
 		}
 	}
 	s.gotWelcome = true
+	s.pendingNamesRefresh = resumedChannels
+	// Known only when a "cloak" blob entry existed (see the case above) —
+	// that key is only ever pushed from CHGHOST/396 (state.go's applyState),
+	// never from the ordinary self-JOIN echo a live session normally learns
+	// it from for free, since a resumed network never sends that JOIN (see
+	// RefreshSelfUserHost's own doc comment). Most resumed sessions land
+	// here with self.Host still empty, which is exactly the case
+	// User.Prefix() must not turn into an RFC-invalid "nick!user" (no host)
+	// prefix on the very next JOIN this session replays to a client.
+	s.pendingUserHostRefresh = s.self != nil && s.self.Host == ""
 	s.mu.Unlock()
 
 	s.completeRegistration()
+}
+
+// RefreshResumedChannelNames asks the uplink for a real NAMES list on every
+// channel the most recent SeedFromBlob call seeded, then clears the
+// pending list (safe to call more than once; a second call is a no-op).
+//
+// The blob only ever carried a channel's name and key (see
+// seedChannelLocked's doc comment), never a member roster — a resumed
+// channel starts with only self in Members. Unlike an ordinary self-JOIN,
+// a resumed attach never sends JOIN to the uplink (it's already joined;
+// see brain.Driver.RegisterResumedNetwork), so there is no implicit
+// JOIN-triggered 353/366 to repopulate it either.
+//
+// Call once the brain has actually sent LiveReady — internal/server's
+// dialNetworkLocked, in its resumedAtBoot branch, is the one caller,
+// chosen specifically because it's the earliest point in the boot
+// sequence that runs after SendLiveReady (see SeedFromBlob's own doc
+// comment for why a write can't happen any earlier).
+//
+// One NAMES per channel, not a single comma-joined command, since real
+// networks cap NAMES targets tightly (Libera advertises ISUPPORT
+// TARGMAX=NAMES:1). The reply comes back through the ordinary unsolicited
+// path (no downlink requested it, so RequestTracker.RouteMessage has
+// nothing to route it to specifically) and both updates ch.Members via
+// state353Locked and broadcasts to every attached downlink like any other
+// server-sent NAMES reply — the same thing a client's own manual /NAMES
+// would produce, just fired automatically instead of waiting for someone
+// to notice the roster is thin.
+func (s *Session) RefreshResumedChannelNames() {
+	s.mu.Lock()
+	names := s.pendingNamesRefresh
+	s.pendingNamesRefresh = nil
+	s.mu.Unlock()
+	for _, name := range names {
+		_ = s.WriteMessage(irc.Message{Command: "NAMES", Params: []string{name}})
+	}
+}
+
+// RefreshSelfUserHost asks the uplink for our own ident/host via USERHOST
+// when the most recent SeedFromBlob call left self.Host unknown, then
+// clears the pending flag (safe to call more than once; a second call is a
+// no-op). Same safe-to-write-only-after-LiveReady timing as
+// RefreshResumedChannelNames — same caller, same reasoning, see that
+// method's doc comment.
+//
+// A live (non-resumed) registration normally learns self's host for free,
+// the moment the uplink echoes our own self-JOIN with a full
+// nick!user@host prefix (touchUserFromPrefixLocked, applyState's first
+// line, fires for every message with a source) — no explicit query
+// needed. A resumed network never sends that JOIN at all
+// (brain.Driver.RegisterResumedNetwork installs registration.PhaseComplete
+// directly, so registration.Step never re-drives it — see
+// docs/keeper-design.md), and the blob's "cloak" key is only ever pushed
+// from a later CHGHOST/396, not from that first self-JOIN's own prefix —
+// so a resumed session commonly has no way to learn its own host at all
+// without asking. Without this, self.Host stays "" and User.Prefix()'s own
+// ServerName fallback papers over it in every synthesized message, forever
+// — worse than transient, since nothing else would ever prompt a real
+// answer. The reply (RPL_USERHOST, 302) is parsed by state302Locked,
+// reached through the ordinary HandleLine path like any other line.
+func (s *Session) RefreshSelfUserHost() {
+	s.mu.Lock()
+	need := s.pendingUserHostRefresh
+	s.pendingUserHostRefresh = false
+	nick := ""
+	if s.self != nil {
+		nick = s.self.Nick
+	}
+	s.mu.Unlock()
+	if !need || nick == "" {
+		return
+	}
+	_ = s.WriteMessage(irc.Message{Command: "USERHOST", Params: []string{nick}})
 }
 
 // seedChannelLocked installs one resumed channel — mirrors
 // stateJOINLocked's own ChannelState construction (self included in
 // Members, Modes non-nil) so a resumed channel isn't observably different
 // in shape from one learned via a live self-JOIN, even though its member
-// roster beyond self is empty until live traffic (JOIN/NAMES/WHO) repopulates
-// it — the blob only carries what persistChannel itself tracks (name and
-// key), not a full roster snapshot; see this method's own doc comment on
-// SeedFromBlob for why that's the accepted scope, not an oversight.
+// roster beyond self is empty until live traffic (RefreshResumedChannelNames'
+// NAMES query, answered via state366Locked) repopulates it — the blob only
+// carries what persistChannel itself tracks (name and key), not a full
+// roster snapshot; see this method's own doc comment on SeedFromBlob for
+// why that's the accepted scope, not an oversight. RosterKnown starts
+// false (its zero value) for exactly this reason — spelled out here
+// anyway since leaving it implicit next to a struct literal that sets
+// every other field explicitly would read as an oversight, not a choice.
 func (s *Session) seedChannelLocked(name string, values [][]byte) {
 	var key string
 	if len(values) > 0 {
 		key = string(values[0])
 	}
 	folded := s.isupport.CaseMapping.Canonical(name)
-	ch := &ChannelState{Name: name, Key: key, Modes: irc.NewChannelModes(), Members: map[string]struct{}{}}
+	ch := &ChannelState{Name: name, Key: key, Modes: irc.NewChannelModes(), Members: map[string]struct{}{}, RosterKnown: false}
 	if s.self != nil {
 		ch.Members[s.isupport.CaseMapping.Canonical(s.self.Nick)] = struct{}{}
 	}

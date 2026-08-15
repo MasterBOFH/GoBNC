@@ -155,6 +155,66 @@ func (s *Session) state353Locked(msg irc.Message) {
 	}
 }
 
+// state366Locked handles RPL_ENDOFNAMES (366 <nick> <channel> :End of
+// /NAMES list.), marking the channel's roster confirmed — see
+// ChannelState.RosterKnown's doc comment for why Session.Attach depends on
+// this rather than treating Members as trustworthy the moment a
+// ChannelState exists. Fires for any 366, not just one
+// RefreshResumedChannelNames solicited — an ordinary live self-JOIN's own
+// automatic 353/366 burst confirms the roster exactly the same way, so
+// this needs no special-casing for how the NAMES answer came about.
+func (s *Session) state366Locked(msg irc.Message) {
+	if len(msg.Params) < 2 {
+		return
+	}
+	if ch := s.channels[s.isupport.CaseMapping.Canonical(msg.Param(1))]; ch != nil {
+		ch.RosterKnown = true
+	}
+}
+
+// state302Locked handles RPL_USERHOST (302 <nick> :entries...), each entry
+// shaped "nick[*]=[+-]ident@host" (the optional "*" marks an IRC operator,
+// the mandatory "+"/"-" marks away status) — used to learn self's own
+// ident/host (see Session.RefreshSelfUserHost, the proactive query this
+// answers) without depending on a self-JOIN echo, which a resumed session
+// never gets (RegisterResumedNetwork never redrives registration, so no
+// JOIN is ever sent to the uplink for an already-joined channel — see
+// docs/keeper-design.md). Returns the new host as the cloak blob entry to
+// push (once s.mu is released — see applyState) when it updates self,
+// nil otherwise. Only self's own entry is applied; any other nick's in the
+// same reply (a multi-nick USERHOST this brain didn't itself issue) is
+// left alone — Session tracks identity for self and channel members via
+// other paths, not a general USERHOST cache.
+func (s *Session) state302Locked(msg irc.Message) []byte {
+	if s.self == nil || len(msg.Params) < 2 {
+		return nil
+	}
+	cm := s.isupport.CaseMapping
+	for _, ent := range strings.Fields(msg.Trailing()) {
+		eq := strings.IndexByte(ent, '=')
+		if eq < 0 {
+			continue
+		}
+		nick := strings.TrimSuffix(ent[:eq], "*")
+		if !cm.Equal(nick, s.self.Nick) {
+			continue
+		}
+		rest := ent[eq+1:]
+		if len(rest) > 0 && (rest[0] == '+' || rest[0] == '-') {
+			rest = rest[1:]
+		}
+		at := strings.IndexByte(rest, '@')
+		if at < 0 {
+			continue
+		}
+		s.self.User = rest[:at]
+		host := rest[at+1:]
+		s.self.Host = host
+		return []byte(host)
+	}
+	return nil
+}
+
 func (s *Session) state381Locked(msg irc.Message) {
 	_ = msg
 	s.self.Oper = true
