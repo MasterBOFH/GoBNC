@@ -528,6 +528,82 @@ func TestTwoConcurrentEarlyAwaitingClients(t *testing.T) {
 	}
 }
 
+func TestNickErrorFallbackParsesRegistrationErr(t *testing.T) {
+	got := nickErrorFallback("nick error: 432 [* badnick Erroneous Nickname]", "cfg")
+	if got.Command != "432" || got.Param(1) != "badnick" || got.Trailing() != "Erroneous Nickname" {
+		t.Fatalf("432: %+v", got)
+	}
+	got = nickErrorFallback("nick error: 437 [* hold Nick/channel is temporarily unavailable]", "cfg")
+	if got.Command != "437" || got.Param(1) != "hold" {
+		t.Fatalf("437: %+v", got)
+	}
+}
+
+func TestNickErrorDisconnectRelaysWithoutStash(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "taken"}, nil, nil, nil, nil)
+	a := &fakeDL{id: "a", caps: map[string]bool{}}
+	b := &fakeDL{id: "b", caps: map[string]bool{}}
+	_ = s.Attach(a)
+	_ = s.Attach(b)
+	a.clearSent()
+	b.clearSent()
+
+	// Result delivered before the 433 line — the demux race this covers.
+	s.HandleDisconnect(fmt.Errorf("nick error: 433 [* taken Nickname is already in use.]"))
+
+	for _, d := range []*fakeDL{a, b} {
+		if countMsgCmd(d.snapshot(), "433") != 1 {
+			t.Fatalf("%s missing synthesized 433: %+v", d.id, d.snapshot())
+		}
+		if countMsgCmd(d.snapshot(), "NOTICE") != 1 {
+			t.Fatalf("%s missing NOTICE: %+v", d.id, d.snapshot())
+		}
+		if !afterCmd(d.snapshot(), "433", "NOTICE") {
+			t.Fatalf("%s 433 must precede NOTICE: %+v", d.id, d.snapshot())
+		}
+	}
+}
+
+func TestNickErrorDisconnectDoesNotRelayStaleNumeric(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "taken"}, nil, nil, nil, nil)
+	d := &fakeDL{id: "a", caps: map[string]bool{}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	s.HandleRegistrationLine(irc.Message{
+		Source: "irc.example", Command: "433", Params: []string{"*", "taken", "Nickname is already in use."},
+	})
+	s.HandleDisconnect(fmt.Errorf("registration deadline exceeded (10s)"))
+	if countMsgCmd(d.snapshot(), "433") != 0 {
+		t.Fatalf("swallowed 433 must not surface on an unrelated failure: %+v", d.snapshot())
+	}
+	if countMsgCmd(d.snapshot(), "NOTICE") != 1 {
+		t.Fatalf("want reconnect NOTICE: %+v", d.snapshot())
+	}
+}
+
+func TestNickErrorDisconnectUsesStashedLine(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "taken"}, nil, nil, nil, nil)
+	d := &fakeDL{id: "a", caps: map[string]bool{}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	s.HandleRegistrationLine(irc.Message{
+		Source: "irc.example", Command: "433", Params: []string{"*", "taken", "Nickname is already in use."},
+	})
+	if countMsgCmd(d.snapshot(), "433") != 0 {
+		t.Fatalf("433 must not relay until disconnect: %+v", d.snapshot())
+	}
+	s.HandleDisconnect(fmt.Errorf("nick error: 433 [* taken Nickname is already in use.]"))
+	snap := d.snapshot()
+	if countMsgCmd(snap, "433") != 1 {
+		t.Fatalf("missing stashed 433: %+v", snap)
+	}
+	if snap[0].Source != "irc.example" {
+		t.Fatalf("want uplink source, got %+v", snap[0])
+	}
+}
+
 func TestNickInUseRelayedThenDisconnect(t *testing.T) {
 	ln, host, port := newFakeIRCListener(t)
 
