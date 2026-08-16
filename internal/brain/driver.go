@@ -123,6 +123,8 @@ type Driver struct {
 
 	registrationTimeout  time.Duration
 	nickRecoveryInterval time.Duration
+	keepaliveIdle        time.Duration
+	keepaliveGrace       time.Duration
 	minBackoff           time.Duration
 	maxBackoff           time.Duration
 	maxFloodQueue        int
@@ -154,6 +156,12 @@ type Driver struct {
 	reconnectTimers map[keeper.NetworkID]*time.Timer
 	stopped         map[keeper.NetworkID]bool
 
+	// keepMu guards idle-PING keepalive state, separately from mu for the
+	// same reason nickRecMu is — see keepalive.go.
+	keepMu    sync.Mutex
+	keepStops map[keeper.NetworkID]chan struct{}
+	lastRX    map[keeper.NetworkID]int64
+
 	// floodMu guards flood-pacing state, separately from mu for the same
 	// reason nickRecMu is — see flood.go.
 	floodMu sync.Mutex
@@ -178,6 +186,8 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		client:               client,
 		registrationTimeout:  DefaultRegistrationTimeout,
 		nickRecoveryInterval: DefaultNickRecoveryInterval,
+		keepaliveIdle:        KeepaliveIdle,
+		keepaliveGrace:       KeepaliveGrace,
 		minBackoff:           DefaultMinBackoff,
 		maxBackoff:           DefaultMaxBackoff,
 		states:               make(map[keeper.NetworkID]registration.State),
@@ -191,6 +201,8 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		blobPushWaiters:      make(map[keeper.NetworkID]chan keeper.BlobPushResultMsg),
 		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
 		isonPending:          make(map[keeper.NetworkID]bool),
+		keepStops:            make(map[keeper.NetworkID]chan struct{}),
+		lastRX:               make(map[keeper.NetworkID]int64),
 		backoff:              make(map[keeper.NetworkID]time.Duration),
 		reconnectTimers:      make(map[keeper.NetworkID]*time.Timer),
 		stopped:              make(map[keeper.NetworkID]bool),
@@ -368,6 +380,11 @@ func (d *Driver) RegisterResumedNetwork(id keeper.NetworkID, cfg NetworkConfig) 
 	// belt-and-suspenders call. Safe to call while d.mu is held — see
 	// resetStateLocked's own comment on this.
 	d.stopNickRecovery(id)
+	// The keeper already held this socket; this brain will never see an
+	// EventConnected for it. Start the idle-PING loop here, the same
+	// place a live EventConnected would for a fresh dial.
+	d.noteRX(id)
+	d.startKeepaliveIfNeeded(id)
 }
 
 // peerLabel returns id's display name (see NetworkConfig.Name) for a log
@@ -428,10 +445,12 @@ func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
 		t.Stop()
 		delete(d.deadlines, id)
 	}
-	// A recovery loop from whatever connection this State is superseding
-	// is no longer valid — stopNickRecovery only touches nickRecMu, safe
-	// to call while d.mu (the caller's lock) is held.
+	// A recovery/keepalive loop from whatever connection this State is
+	// superseding is no longer valid — stopNickRecovery/stopKeepalive
+	// only touch their own mutexes, safe to call while d.mu (the
+	// caller's lock) is held.
 	d.stopNickRecovery(id)
+	d.stopKeepalive(id)
 }
 
 // Dial asks the keeper to dial (or redial) network id with cfg, recording
@@ -790,6 +809,13 @@ func (d *Driver) Run(ctx context.Context) error {
 			if ev.DialResult.OK {
 				d.recordEpoch(ev.DialResult.Network, ev.DialResult.Epoch)
 				d.resetBackoff(ev.DialResult.Network)
+				// EventConnected is published by Keeper.Dial before the
+				// listener subscribes fan-in, so this brain typically
+				// never sees it for a fresh dial. DialResult.OK is the
+				// reliable "socket is live" signal — start the idle-PING
+				// loop here.
+				d.noteRX(ev.DialResult.Network)
+				d.startKeepaliveIfNeeded(ev.DialResult.Network)
 			} else {
 				d.armReconnect(ev.DialResult.Network)
 			}
@@ -825,7 +851,6 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	}
 
 	gobnclog.IRC(d.log, d.peerLabel(line.Network), "<<", string(line.Raw))
-	trySendLine(d.lines, line)
 
 	// LineMsg.Raw is []byte specifically because server-sent content isn't
 	// guaranteed valid UTF-8 (see keeper's protocol doc) — irc.Parse takes
@@ -833,14 +858,26 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	// doesn't validate or normalize anything, it's the same bytes.
 	msg, err := irc.Parse(string(line.Raw))
 	if err != nil {
+		trySendLine(d.lines, line)
 		return // unparseable line; nothing registration.Step can act on
 	}
 
 	// Nick recovery reacts to the same parsed traffic, independent of
 	// registration.Step — it only matters post-registration (Step
 	// itself is a no-op there), and doesn't need or want Step's own
-	// interpretation of these lines.
-	d.handleNickRecoveryTraffic(line.Network, msg)
+	// interpretation of these lines. A 303 that belongs to our own ISON
+	// poll is consumed here and not republished: Session would otherwise
+	// broadcast it to every downlink (internal/uplink hid these).
+	if d.handleNickRecoveryTraffic(line.Network, msg) {
+		return
+	}
+	trySendLine(d.lines, line)
+	// 303 is excluded: ISON reclaim's own replies must not count as
+	// liveness, or the keepalive PING never fires while recovery is
+	// polling — see noteRX's doc comment.
+	if msg.Command != "303" {
+		d.noteRX(line.Network)
+	}
 
 	newState, actions := registration.Step(state, registration.Input{Msg: msg})
 
@@ -884,16 +921,19 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	}
 }
 
-// handleNetworkEvent resolves a still-registering network's State to
-// PhaseFailed the moment its uplink disconnects mid-registration, instead
-// of leaving it stuck with no Result ever sent — see the pre-3b regression
-// net in docs/keeper-design.md, which is what this closes. Only
-// EventDisconnected is acted on; EventConnected needs no handling here
-// (registration only actually begins once the caller calls
-// StartRegistration in reaction to it). A network already at a terminal
-// phase (registered, or already failed by this same path or the deadline)
-// is a no-op via failRegistration's own Phase guard.
+// handleNetworkEvent starts the idle-PING loop on EventConnected, and on
+// EventDisconnected resolves a still-registering network's State to
+// PhaseFailed instead of leaving it stuck with no Result ever sent — see
+// the pre-3b regression net in docs/keeper-design.md, which is what this
+// closes. A network already at a terminal phase (registered, or already
+// failed by this same path or the deadline) is a no-op via
+// failRegistration's own Phase guard.
 func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
+	if ev.Kind == keeper.EventConnected {
+		d.noteRX(ev.Network)
+		d.startKeepaliveIfNeeded(ev.Network)
+		return
+	}
 	if ev.Kind != keeper.EventDisconnected {
 		return
 	}
@@ -912,6 +952,7 @@ func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
 	// still be running at that point and needs tearing down here, not
 	// just on the next fresh registration attempt).
 	d.stopNickRecovery(ev.Network)
+	d.stopKeepalive(ev.Network)
 	msg := "uplink disconnected during registration"
 	if ev.Error != "" {
 		msg += ": " + ev.Error
