@@ -67,10 +67,21 @@ func (s *Session) IRCd() string {
 }
 
 func (s *Session) state221Locked(msg irc.Message) {
+	if s.self == nil {
+		return
+	}
 	ms := msg.Param(1)
+	if ms == "" {
+		ms = msg.Trailing()
+	}
 	if ms != "" && ms[0] != '+' && ms[0] != '-' {
 		ms = "+" + ms
 	}
+	// RPL_UMODEIS is the full current set, not a delta — replace rather
+	// than ApplyUModes onto leftovers from a previous life (empty after
+	// resume, but a later 221 must not keep modes the server no longer
+	// reports).
+	s.self.UModes = make(map[byte]bool)
 	s.self.ApplyUModes(ms)
 }
 

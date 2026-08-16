@@ -826,9 +826,11 @@ turns out to be:
   registration-phase concern.
 - **User-mode tracking** (221 `RPL_UMODEIS`, unsolicited `MODE`,
   `u.umodes`/`UserModeString`) — spans the entire connection lifetime, not
-  just registration, and answers downstream clients' own-mode queries.
-  `registration.State` has no umode field, correctly, since this outlives
-  registration.
+  just registration. `registration.State` has no umode field, correctly,
+  since this outlives registration. Built in `internal/session`: Attach
+  bursts `:prefix MODE nick +modes` when umodes are known; a resumed brain
+  polls `MODE nick` after LiveReady (`RefreshSelfUModes`) and rewrites the
+  unsolicited 221 into the same MODE line for already-attached clients.
 - **Post-registration CAP traffic** (`handleCAP`'s `u.Registered()`
   branch — `CAP NEW`/`CAP ACK` arriving after connection, `OnCapsChanged`)
   — `stepCAP`'s `default: // NEW, DEL, LIST` case correctly no-ops these,
@@ -1377,7 +1379,8 @@ Also done, contrary to what this list previously said:
 - **User-mode tracking** and **post-registration CAP handling**
   (`CAP NEW`/dynamic `ACK`/`DEL`) — as this section speculated, both fell
   out of `Driver.Lines()` wiring into `internal/session`'s own traffic
-  watching (`tracker.go`'s `221` handling, `upstream.go`'s
+  watching (`tracker.go`'s `221` handling, Attach's own-MODE burst,
+  `RefreshSelfUModes` after resume, `upstream.go`'s
   `handleCAPLine`/`broadcastCapNotify`), no dedicated `Driver`-side port
   needed.
 - **The paced flood-control writer** — built (`internal/brain/flood.go`,

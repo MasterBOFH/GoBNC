@@ -697,9 +697,13 @@ func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error
 		// RefreshSelfUserHost — the blob's "cloak" key is often absent too
 		// (see its own doc comment), and self.Host staying unknown forever
 		// is what produces an RFC-invalid nick!user prefix on every JOIN
-		// this session ever replays to a client.
+		// this session ever replays to a client. Same again for
+		// RefreshSelfUModes — usermodes have no blob key, and without a
+		// live MODE nick poll a resumed Attach would omit the own-MODE
+		// line connecting clients need to learn their modes.
 		sess.RefreshResumedChannelNames()
 		sess.RefreshSelfUserHost()
+		sess.RefreshSelfUModes()
 		return nil
 	}
 	if err := s.driver.Dial(netID, s.dialConfigForLocked(n), 0); err != nil {

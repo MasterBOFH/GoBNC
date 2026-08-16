@@ -90,6 +90,85 @@ func TestDownlinkAfterResumeGetsJoinThenRealNames(t *testing.T) {
 	}
 }
 
+// TestDownlinkAfterResumeGetsSelfUMode is the usermode analogue of
+// TestDownlinkAfterResumeGetsJoinThenRealNames: the blob never carried
+// umodes (SeedFromBlob leaves UModes empty), so a client attaching right
+// after resume must not get a fabricated own-MODE. Once the uplink's real
+// 221 lands (RefreshSelfUModes' job, exercised end-to-end in
+// internal/server's TestResumeFetchesLiveSelfUModes; here simulated
+// directly via HandleMessage), the already-attached downlink must get the
+// synthesized `:prefix MODE nick +modes` through broadcastSelfUMode, and a
+// later Attach must include that MODE in its burst.
+func TestDownlinkAfterResumeGetsSelfUMode(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "cloak", Values: [][]byte{[]byte("h.example")}},
+	})
+	if !s.Registered() {
+		t.Fatal("SeedFromBlob must mark the session registered")
+	}
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range d.snapshot() {
+		if m.Command == "MODE" && m.Param(0) == "me" {
+			t.Fatalf("attach burst must not fabricate own MODE before umodes are known: %+v", d.snapshot())
+		}
+	}
+
+	d.clearSent()
+	s.HandleMessage(irc.Message{Source: "server", Command: "221", Params: []string{"me", "+iw"}})
+
+	sent := d.snapshot()
+	var gotMODE bool
+	for _, m := range sent {
+		if m.Command == "MODE" && m.Param(0) == "me" && m.Param(1) == "+iw" && m.Source == "me!u@h.example" {
+			gotMODE = true
+		}
+		if m.Command == "221" {
+			t.Fatalf("unsolicited 221 must not be forwarded as 221: %+v", sent)
+		}
+	}
+	if !gotMODE {
+		t.Fatalf("already-attached downlink never got synthesized own MODE: %+v", sent)
+	}
+
+	late := &fakeDL{id: "c2", caps: map[string]bool{}}
+	if err := s.Attach(late); err != nil {
+		t.Fatal(err)
+	}
+	var burstMODE, burst221 bool
+	var after376 bool
+	for _, m := range late.snapshot() {
+		switch m.Command {
+		case "376":
+			after376 = true
+		case "MODE":
+			if !after376 {
+				t.Fatal("own MODE must come after 376")
+			}
+			burstMODE = true
+			if m.Param(0) != "me" || m.Param(1) != "+iw" {
+				t.Fatalf("late attach MODE=%v", m.Params)
+			}
+			if m.Source != "me!u@h.example" {
+				t.Fatalf("late attach MODE source=%q", m.Source)
+			}
+		case "221":
+			burst221 = true
+		}
+	}
+	if !burstMODE {
+		t.Fatalf("later attach missing own MODE: %+v", late.snapshot())
+	}
+	if burst221 {
+		t.Fatalf("later attach must send MODE not 221: %+v", late.snapshot())
+	}
+}
+
 // TestDownlinkAfterResumeGetsLoggedIn is the regression test for the
 // resumed-brain gap where SeedFromBlob restored the account blob key onto
 // self.Account but left Session.loggedIn false. Attach's synthesized

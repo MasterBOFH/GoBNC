@@ -88,9 +88,14 @@ type Session struct {
 	// pendingUserHostRefresh mirrors pendingNamesRefresh for
 	// RefreshSelfUserHost — true when SeedFromBlob left self.Host unknown.
 	pendingUserHostRefresh bool
-	downlinks              map[ClientID]Downlink
-	isupport               *irc.ISUPPORT
-	upCaps                 map[string]bool
+	// pendingUModeRefresh mirrors pendingNamesRefresh for RefreshSelfUModes
+	// — true after SeedFromBlob, because the blob never carried usermodes
+	// (a live session learns them from the uplink's own `:nick MODE nick
+	// +modes` during registration, which a resumed attach never replays).
+	pendingUModeRefresh bool
+	downlinks           map[ClientID]Downlink
+	isupport            *irc.ISUPPORT
+	upCaps              map[string]bool
 	// upSASLAvailable / upSASLMechs track whether the uplink currently
 	// offers sasl at all (CAP LS/NEW/DEL, post-registration too) — the
 	// Session-owned equivalent of internal/uplink.Uplink's own

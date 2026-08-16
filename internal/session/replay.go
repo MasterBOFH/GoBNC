@@ -131,16 +131,6 @@ func (s *Session) Attach(d Downlink) error {
 		m.Source = src
 		send(m)
 	}
-	if umode != "" {
-		// RPL_UMODEIS modes are a middle param (no leading ':'); set Raw so Wire
-		// does not Encode them as trailing.
-		send(irc.Message{
-			Source:  src,
-			Command: "221",
-			Params:  []string{nick, umode},
-			Raw:     ":" + src + " 221 " + nick + " " + umode,
-		})
-	}
 	// Clients often wait for end-of-MOTD to finish registration; we don't burst the
 	// uplink MOTD, but tell them how to fetch it and close with 376.
 	send(irc.Message{Source: src, Command: "375", Params: []string{nick, "- GoBNC Message of the Day -"}})
@@ -149,6 +139,17 @@ func (s *Session) Attach(d Downlink) error {
 
 	if haveLogin {
 		send(loggedIn)
+	}
+
+	// Own usermodes as `:prefix MODE nick +modes`, the same form a live
+	// uplink sends during registration. 221 RPL_UMODEIS is a query reply
+	// (MODE nick) and clients connecting to the bouncer typically ignore
+	// it as part of a burst — they watch this MODE instead. Withheld when
+	// umodes are unknown (empty after a resume, before RefreshSelfUModes'
+	// 221 lands); the synthesized MODE reaches already-attached clients
+	// through broadcastSelfUMode once it does, matching NAMES/RosterKnown.
+	if umode != "" {
+		send(irc.Message{Source: prefix, Command: "MODE", Params: []string{nick, umode}})
 	}
 
 	for _, ch := range chans {
@@ -178,6 +179,46 @@ func (s *Session) Attach(d Downlink) error {
 	}
 	s.notifyAttachCaps(d)
 	return nil
+}
+
+// selfUModeMessageLocked is the `:own-prefix MODE own-nick +modes` line
+// Attach bursts and broadcastSelfUMode send. Zero Message when umodes
+// aren't known yet (UModeString empty). Caller must hold s.mu.
+func (s *Session) selfUModeMessageLocked() irc.Message {
+	if s.self == nil {
+		return irc.Message{}
+	}
+	umode := s.self.UModeString()
+	if umode == "" {
+		return irc.Message{}
+	}
+	return irc.Message{
+		Source:  s.self.Prefix(),
+		Command: "MODE",
+		Params:  []string{s.self.Nick, umode},
+	}
+}
+
+// broadcastSelfUMode sends the attach-burst own-MODE to every currently
+// attached downlink. Used when an unsolicited 221 arrives (the answer to
+// RefreshSelfUModes, or a server that emits RPL_UMODEIS without a client
+// query) so a client that attached after a resume, before umodes were
+// known, still learns them — the NAMES analogue of forwarding the live
+// 353/366 rather than waiting for the next Attach.
+func (s *Session) broadcastSelfUMode() {
+	s.mu.RLock()
+	msg := s.selfUModeMessageLocked()
+	downlinks := make([]Downlink, 0, len(s.downlinks))
+	for _, d := range s.downlinks {
+		downlinks = append(downlinks, d)
+	}
+	s.mu.RUnlock()
+	if msg.Command == "" {
+		return
+	}
+	for _, d := range downlinks {
+		_ = d.Send(s.rewriteFor(d, msg))
+	}
 }
 
 func (s *Session) networkIdent() string {
