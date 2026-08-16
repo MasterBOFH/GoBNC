@@ -164,10 +164,31 @@ field is base64-encoded by `encoding/json` without inspecting content.
 Verified with genuinely invalid UTF-8 through a full frame round-trip
 (`TestLineMsgPreservesNonUTF8Bytes`).
 
-**Version negotiation**: the client advertises the highest version it
-supports in `Hello`; the keeper negotiates down to the highest both sides
-support, or rejects if there's no overlap. Permanent contract in the sense
-that an old keeper must be able to serve a new brain.
+**Version negotiation**: two independent axes.
+
+- **Wire protocol** (`ProtocolVersion` / `ProtocolMinVersion` in Hello):
+  the client advertises the highest version it supports and the oldest it
+  will accept; the keeper negotiates down to the highest both sides
+  support, or rejects if there's no overlap. Additive JSON fields do not
+  bump this — `encoding/json` ignores unrecognized keys, which is the
+  permanent "old keeper serves a new brain" contract for non-breaking
+  evolution.
+- **Component generations** (`internal/version.BrainVersion`,
+  `KeeperVersion`, `MinKeeperVersion`): independent integers. Hello carries
+  `brain_version` and `min_keeper_version`; HelloAck carries
+  `keeper_version`. Pre-versioning keepers omit `keeper_version` (0),
+  which is generation 1. `version.CanUpgrade` classifies a running keeper
+  as `none` (current), `should` (older but `>= MinKeeperVersion`), or
+  `must` (`< MinKeeperVersion`). A new brain's live or validate Attach
+  fails on `must` **before** the live slot is claimed (keeper-side check
+  on new keepers; brain-side check after HelloAck so old keepers that
+  ignore the field still cannot serve a breaking brain). `gobnc can-upgrade`
+  probes in validate mode with `min_keeper_version` left 0 so it can
+  always read the running generation without stealing the live attach.
+  Operators do not start `gobnc-keeper` themselves: the brain spawns it.
+  On `must`, `gobnc die` then start this binary so it can spawn a new
+  keeper (`reload` refuses because it would detach the live brain and
+  then fail to attach).
 
 **`WriteRequest`/`WriteResult`** (added for part 3a): the only way a
 live-mode client can put a line on a network's uplink — `Keeper.WriteLine`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/daemon"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/server"
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 func main() {
@@ -21,8 +23,11 @@ func main() {
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 			runServe()
 			return
-		case "network", "auth", "rehash", "stop", "help", "-h", "--help":
+		case "network", "auth", "rehash", "reload", "die", "stop", "status", "can-upgrade", "help", "-h", "--help":
 			if err := runCLI(os.Args[1:]); err != nil {
+				if errors.Is(err, errMustUpgrade) {
+					os.Exit(2)
+				}
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
@@ -119,6 +124,9 @@ func runServe() {
 	}()
 
 	logger.Info("gobnc starting",
+		"version", version.Version,
+		"brain_version", version.BrainVersion,
+		"keeper_version", version.KeeperVersion,
 		"listen", cfg.ListenAddr,
 		"db", cfg.DBPath,
 		"log_file", logFile,
@@ -128,6 +136,27 @@ func runServe() {
 	if err := srv.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Error("server stopped", "err", err)
 		os.Exit(1)
+	}
+	if srv.WantReload() {
+		path := srv.ConfigPath()
+		if path == "" {
+			path = *cfgPath
+		}
+		inherit := !isChild || srv.DebugConsole()
+		pid, err := daemon.SpawnReplacement(path, pidPath, srv.DebugConsole(), inherit)
+		if err != nil {
+			logger.Error("reload spawn failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("spawned replacement brain", "pid", pid)
+		return
+	}
+	if srv.WantDie() {
+		if err := stopKeeperProcess(); err != nil {
+			logger.Error("die: stop keeper", "err", err)
+		} else {
+			logger.Info("keeper stopped")
+		}
 	}
 	logger.Info("gobnc stopped")
 }

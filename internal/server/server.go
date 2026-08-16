@@ -25,6 +25,7 @@ import (
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // Server is the bouncer process.
@@ -64,7 +65,20 @@ type Server struct {
 
 	certs *certHolder
 	dl    *downlink.Listener
+
+	// shutdownKind is set by RequestReload/RequestDie before canceling
+	// runCtx so cmd/gobnc can spawn a replacement brain or stop the keeper
+	// after Run returns. Zero means an ordinary stop (keeper stays).
+	shutdownKind shutdownKind
 }
+
+type shutdownKind int
+
+const (
+	shutdownStop shutdownKind = iota
+	shutdownReload
+	shutdownDie
+)
 
 // New opens the DB and prepares sessions.
 func New(cfg config.Config, log *slog.Logger) (*Server, error) {
@@ -461,6 +475,15 @@ func (s *Server) handleControl(c net.Conn) {
 		case control.CmdShutdown:
 			reply = "OK"
 			go s.RequestShutdown()
+		case control.CmdReload:
+			if err := s.RequestReload(); err != nil {
+				reply = "ERR " + err.Error()
+			} else {
+				reply = "OK"
+			}
+		case control.CmdDie:
+			reply = "OK"
+			go func() { _ = s.RequestDie() }()
 		case control.CmdStatus:
 			reply = statusControlReply(s)
 		}
@@ -469,6 +492,7 @@ func (s *Server) handleControl(c net.Conn) {
 }
 
 // RequestShutdown cancels the run context (graceful stop via SIGTERM path).
+// The keeper is not signaled; uplinks stay up.
 func (s *Server) RequestShutdown() {
 	s.mu.RLock()
 	cancel := s.cancel
@@ -476,6 +500,71 @@ func (s *Server) RequestShutdown() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// RequestReload asks the brain process to exit and be replaced by a fresh
+// exec of the on-disk binary. The keeper is not touched. Fails without
+// canceling if the running keeper is below this binary's MinKeeperVersion
+// (the old brain stays attached). On that failure the operator runs
+// gobnc die then starts this binary, which spawns a new keeper.
+func (s *Server) RequestReload() error {
+	s.mu.Lock()
+	running := 0
+	if s.keeperClient != nil {
+		running = s.keeperClient.KeeperVersion
+	}
+	if version.CanUpgrade(running) == version.UpgradeMust {
+		s.mu.Unlock()
+		return fmt.Errorf("keeper is incompatible; gobnc die then start this binary")
+	}
+	s.shutdownKind = shutdownReload
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel == nil {
+		return fmt.Errorf("server not running")
+	}
+	cancel()
+	return nil
+}
+
+// RequestDie asks this brain to exit and, after Run returns, for cmd/gobnc
+// to SIGTERM the keeper (QUIT every uplink).
+func (s *Server) RequestDie() error {
+	s.mu.Lock()
+	s.shutdownKind = shutdownDie
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel == nil {
+		return fmt.Errorf("server not running")
+	}
+	cancel()
+	return nil
+}
+
+func (s *Server) WantReload() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.shutdownKind == shutdownReload
+}
+
+func (s *Server) WantDie() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.shutdownKind == shutdownDie
+}
+
+// ConfigPath is the bootstrap JSON path (for re-exec on reload).
+func (s *Server) ConfigPath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfgPath
+}
+
+// DebugConsole reports whether serve -debug was set (re-exec should keep it).
+func (s *Server) DebugConsole() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.debugCons
 }
 
 // StartNetworkByName loads a network from the DB and starts its uplink.

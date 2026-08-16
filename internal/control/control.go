@@ -12,13 +12,15 @@ import (
 
 // Commands understood by the daemon.
 const (
-	CmdPing          = "PING"
-	CmdStartNetwork  = "START_NETWORK"
-	CmdStopNetwork   = "STOP_NETWORK"
+	CmdPing             = "PING"
+	CmdStartNetwork     = "START_NETWORK"
+	CmdStopNetwork      = "STOP_NETWORK"
 	CmdReloadNetwork    = "RELOAD_NETWORK"    // refresh config for next reconnect; do not drop uplink
 	CmdReconnectNetwork = "RECONNECT_NETWORK" // reload config and drop uplink to force reconnect
 	CmdRehash           = "REHASH"            // reload gobnc.json + refresh networks (same as SIGHUP)
-	CmdShutdown         = "SHUTDOWN"          // graceful stop (same as SIGTERM)
+	CmdReload           = "RELOAD"            // restart the brain process; keeper and uplinks stay
+	CmdDie              = "DIE"               // stop brain and keeper (QUIT every uplink)
+	CmdShutdown         = "SHUTDOWN"          // graceful brain stop (same as SIGTERM); keeper stays
 	CmdStatus           = "STATUS"            // live daemon/network status (OK <json>)
 )
 

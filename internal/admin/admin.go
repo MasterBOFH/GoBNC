@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/MasterBOFH/GoBNC/internal/store"
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // Runtime applies live daemon actions after SQLite updates.
@@ -19,6 +20,10 @@ type Runtime interface {
 	ReloadNetwork(name string) (ok bool, err error)
 	ReconnectNetwork(name string) error
 	Rehash() error
+	// Reload restarts the brain process; the keeper and uplinks stay.
+	Reload() error
+	// Die stops the brain and the keeper (QUIT every uplink).
+	Die() error
 	// Status returns a live snapshot. ok=false means the daemon is not running.
 	Status() (st Status, ok bool, err error)
 }
@@ -52,6 +57,8 @@ func Help() string {
   help
   status
   rehash
+  reload
+  die
   reconnect [<name>]
   disconnect [<name>]
   network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
@@ -87,7 +94,23 @@ func Run(ctx context.Context, deps Deps, opts Options, args []string) ([]string,
 			return nil, err
 		}
 		return []string{"Rehash complete."}, nil
-	case "serve", "auth", "stop":
+	case "reload":
+		if deps.Runtime == nil {
+			return nil, fmt.Errorf("runtime not configured")
+		}
+		if err := deps.Runtime.Reload(); err != nil {
+			return nil, err
+		}
+		return []string{"Reloading brain (keeper stays)."}, nil
+	case "die":
+		if deps.Runtime == nil {
+			return nil, fmt.Errorf("runtime not configured")
+		}
+		if err := deps.Runtime.Die(); err != nil {
+			return nil, err
+		}
+		return []string{"Stopping brain and keeper."}, nil
+	case "serve", "auth", "stop", "can-upgrade":
 		return nil, fmt.Errorf("%s is not available via BNC; use the gobnc CLI", args[0])
 	default:
 		return nil, fmt.Errorf("unknown command %q", args[0])
@@ -148,7 +171,12 @@ func runStatus(ctx context.Context, deps Deps) ([]string, error) {
 		}
 	}
 	// Offline / daemon down: config listen addr + DB networks.
-	st := Status{Running: false, ListenAddr: deps.ListenAddr}
+	st := Status{
+		Running:      false,
+		ListenAddr:   deps.ListenAddr,
+		Version:      version.Version,
+		BrainVersion: version.BrainVersion,
+	}
 	if deps.Store != nil {
 		nets, err := deps.Store.ListNetworks(ctx)
 		if err != nil {

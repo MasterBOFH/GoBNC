@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // Listener serves the keeper<->brain protocol over a unix socket, backed by
@@ -150,11 +152,31 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	l.log.Debug("keeper listener: received Hello", "mode", hello.Mode, "client_version", hello.ClientVersion)
+	l.log.Debug("keeper listener: received Hello",
+		"mode", hello.Mode,
+		"client_version", hello.ClientVersion,
+		"min_protocol", hello.MinProtocol,
+		"brain_version", hello.BrainVersion,
+		"min_keeper_version", hello.MinKeeperVersion,
+	)
 
-	negotiated, err := negotiateVersion(hello.ClientVersion)
+	negotiated, err := negotiateVersion(hello.ClientVersion, hello.MinProtocol)
 	if err != nil {
 		_ = writeFrame(conn, msgError, ErrorMsg{Reason: err.Error()})
+		return
+	}
+
+	// Component-version check before claiming the live slot: a breaking
+	// new brain must fail Hello while the old live brain is still
+	// attached (validate probes never claim live; this also covers a
+	// ModeLive attempt that would otherwise wait on liveAttached).
+	if hello.MinKeeperVersion > version.KeeperVersion {
+		reason := fmt.Sprintf("keeper version %d is below brain minimum %d", version.KeeperVersion, hello.MinKeeperVersion)
+		_ = writeFrame(conn, msgError, ErrorMsg{Reason: reason})
+		l.log.Warn("keeper listener: rejected Hello: keeper too old for this brain",
+			"keeper_version", version.KeeperVersion,
+			"min_keeper_version", hello.MinKeeperVersion,
+		)
 		return
 	}
 
@@ -181,10 +203,17 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	networks := l.mgr.All()
 	ack := HelloAckMsg{
 		NegotiatedVersion: negotiated,
+		KeeperVersion:     version.KeeperVersion,
+		KeeperRelease:     version.Version,
 		Mode:              hello.Mode,
 		Networks:          statusOf(networks),
 	}
-	l.log.Debug("keeper listener: sending HelloAck", "negotiated_version", negotiated, "mode", hello.Mode, "networks", len(ack.Networks))
+	l.log.Debug("keeper listener: sending HelloAck",
+		"negotiated_version", negotiated,
+		"keeper_version", ack.KeeperVersion,
+		"mode", hello.Mode,
+		"networks", len(ack.Networks),
+	)
 	if err := writeFrame(conn, msgHelloAck, ack); err != nil {
 		l.log.Warn("keeper listener: write HelloAck failed", "err", err)
 		return
@@ -816,12 +845,15 @@ func entryToLineMsg(network NetworkID, e Entry) LineMsg {
 	return LineMsg{Network: network, Seq: e.Seq, Epoch: e.Epoch, Raw: []byte(e.Line), Time: e.Time}
 }
 
-func negotiateVersion(clientVersion int) (int, error) {
+func negotiateVersion(clientVersion, clientMin int) (int, error) {
+	if clientMin <= 0 {
+		clientMin = 1 // pre-versioning brains omit min_protocol
+	}
 	negotiated := clientVersion
 	if negotiated > keeperMaxVersion {
 		negotiated = keeperMaxVersion
 	}
-	if negotiated < keeperMinVersion {
+	if negotiated < keeperMinVersion || negotiated < clientMin {
 		return 0, errors.New("keeper protocol: no compatible version")
 	}
 	return negotiated, nil
