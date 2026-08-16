@@ -89,3 +89,68 @@ func TestDownlinkAfterResumeGetsJoinThenRealNames(t *testing.T) {
 		t.Fatal("RosterKnown should be true once the real 366 has been processed")
 	}
 }
+
+// TestDownlinkAfterResumeGetsLoggedIn is the regression test for the
+// resumed-brain gap where SeedFromBlob restored the account blob key onto
+// self.Account but left Session.loggedIn false. Attach's synthesized
+// RPL_LOGGEDIN (rplLoggedInLocked) requires both, so a client connecting
+// after a brain restart never saw 900 even though the previous brain had
+// SASL-authenticated and pushed the account into the keeper blob.
+func TestDownlinkAfterResumeGetsLoggedIn(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "account", Values: [][]byte{[]byte("acct")}},
+	})
+	if !s.Registered() {
+		t.Fatal("SeedFromBlob must mark the session registered")
+	}
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+
+	var saw376, saw900 bool
+	for _, m := range d.snapshot() {
+		switch m.Command {
+		case "376":
+			saw376 = true
+			if saw900 {
+				t.Fatal("900 must come after registration (376)")
+			}
+		case "900":
+			if !saw376 {
+				t.Fatal("900 before 376")
+			}
+			saw900 = true
+			if m.Param(2) != "acct" {
+				t.Fatalf("%+v", m)
+			}
+		}
+	}
+	if !saw900 {
+		t.Fatalf("attach burst after resume missing 900: %+v", d.snapshot())
+	}
+}
+
+// TestDownlinkAfterResumeOmitsLoggedInWhenLoggedOut is the 901 counterpart:
+// applyAccountFromSASL replaces the account blob with a nil value, which
+// SeedFromBlob must not treat as a still-logged-in session.
+func TestDownlinkAfterResumeOmitsLoggedInWhenLoggedOut(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "account", Values: [][]byte{nil}},
+	})
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range d.snapshot() {
+		if m.Command == "900" {
+			t.Fatalf("must not replay 900 after a logged-out account blob: %+v", d.snapshot())
+		}
+	}
+}
