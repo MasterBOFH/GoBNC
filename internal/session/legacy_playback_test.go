@@ -113,7 +113,13 @@ func TestLegacyPlaybackOnlyPRIVMSGandNOTICE(t *testing.T) {
 		case "PRIVMSG", "NOTICE", "001", "002", "003", "004", "005", "221", "375", "372", "376", "JOIN", "332", "353", "366", "CAP":
 			// JOIN here is attach state JOIN, not history replay of stored JOIN.
 			continue
-		case "TAGMSG", "PART", "TOPIC", "MODE", "KICK", "QUIT", "NICK":
+		case "MODE":
+			// Attach-burst own MODE (nick target), not history of channel MODE.
+			if len(m.Params) > 0 && m.Params[0] != "" && m.Params[0][0] != '#' && m.Params[0][0] != '&' && m.Params[0][0] != '+' && m.Params[0][0] != '!' {
+				continue
+			}
+			t.Fatalf("legacy replay must not send event/TAGMSG %s", m.Command)
+		case "TAGMSG", "PART", "TOPIC", "KICK", "QUIT", "NICK":
 			t.Fatalf("legacy replay must not send event/TAGMSG %s", m.Command)
 		}
 	}

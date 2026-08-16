@@ -38,16 +38,17 @@ import (
 // resume them from).
 //
 // Does NOT write anything to the uplink itself, including the live NAMES
-// refresh a resumed channel needs (see RefreshResumedChannelNames) — this
-// runs from internal/server's registerNetworkLocked, which the whole
-// brain process's boot sequence deliberately calls *before*
-// keeperClient.SendLiveReady goes out (every network must be registered
-// first — see Run's own comment on why). The keeper's serveLive doesn't
-// read anything at all, a WriteRequest included, until LiveReady is the
-// first frame it sees; a write fired from here would race that and get
-// read as a malformed LiveReady, killing the whole live attach. The
-// channel names this seeded are stashed on Session instead, for the
-// caller to flush once it's actually safe to write.
+// refresh a resumed channel needs (see RefreshResumedChannelNames) or the
+// MODE nick poll for usermodes (see RefreshSelfUModes) — this runs from
+// internal/server's registerNetworkLocked, which the whole brain process's
+// boot sequence deliberately calls *before* keeperClient.SendLiveReady
+// goes out (every network must be registered first — see Run's own
+// comment on why). The keeper's serveLive doesn't read anything at all, a
+// WriteRequest included, until LiveReady is the first frame it sees; a
+// write fired from here would race that and get read as a malformed
+// LiveReady, killing the whole live attach. The channel names this seeded
+// are stashed on Session instead, for the caller to flush once it's
+// actually safe to write.
 func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 	var resumedChannels []string
 
@@ -118,6 +119,11 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 	// User.Prefix() must not turn into an RFC-invalid "nick!user" (no host)
 	// prefix on the very next JOIN this session replays to a client.
 	s.pendingUserHostRefresh = s.self != nil && s.self.Host == ""
+	// Usermodes have no blob key (a live session learns them from the
+	// uplink's own MODE nick during registration, which gap-only resume
+	// never replays). Always poll after SeedFromBlob; RefreshSelfUModes
+	// is the write, deferred to after LiveReady like NAMES/USERHOST.
+	s.pendingUModeRefresh = true
 	s.mu.Unlock()
 
 	s.completeRegistration()
@@ -194,6 +200,40 @@ func (s *Session) RefreshSelfUserHost() {
 		return
 	}
 	_ = s.WriteMessage(irc.Message{Command: "USERHOST", Params: []string{nick}})
+}
+
+// RefreshSelfUModes asks the uplink for our own usermodes via MODE nick
+// when the most recent SeedFromBlob left them unknown, then clears the
+// pending flag (safe to call more than once; a second call is a no-op).
+// Same safe-to-write-only-after-LiveReady timing as
+// RefreshResumedChannelNames — same caller, same reasoning, see that
+// method's doc comment.
+//
+// A live (non-resumed) registration normally learns umodes for free, from
+// the uplink's own `:nick MODE nick +modes` during or just after welcome
+// (stateMODELocked). A resumed network never sees that burst (gap-only
+// delivery; see docs/keeper-design.md), and the blob has no umode key, so
+// without this a resumed Session's UModes stay empty forever: Attach would
+// omit the own-MODE line connecting clients need, and nothing else would
+// ever prompt a real answer. The reply is RPL_UMODEIS (221), parsed by
+// state221Locked; an unsolicited 221 (this poll, no downlink queried
+// MODE nick) is rewritten to the same `:prefix MODE nick +modes` line
+// Attach bursts, via broadcastSelfUMode, so a client that attached before
+// the answer landed still learns the modes — matching NAMES' live 353/366
+// catch-up.
+func (s *Session) RefreshSelfUModes() {
+	s.mu.Lock()
+	need := s.pendingUModeRefresh
+	s.pendingUModeRefresh = false
+	nick := ""
+	if s.self != nil {
+		nick = s.self.Nick
+	}
+	s.mu.Unlock()
+	if !need || nick == "" {
+		return
+	}
+	_ = s.WriteMessage(irc.Message{Command: "MODE", Params: []string{nick}})
 }
 
 // seedChannelLocked installs one resumed channel — mirrors

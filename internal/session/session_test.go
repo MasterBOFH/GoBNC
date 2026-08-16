@@ -1506,17 +1506,27 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 	cmds := map[string]int{}
 	var got005 []string
+	var saw376BeforeMODE, sawMODE bool
 	for _, m := range d.sent {
 		cmds[m.Command]++
 		switch m.Command {
 		case "005":
 			got005 = append(got005, m.Params[1:]...)
-		case "221":
-			if m.Param(1) != "+i" {
-				t.Fatalf("221=%v", m.Params)
+		case "376":
+			if sawMODE {
+				t.Fatal("own MODE must come after 376")
 			}
-			if got := m.Wire(); strings.Contains(got, ":+") || !strings.Contains(got, " +i") {
-				t.Fatalf("attach 221 must not trailing-encode modes: %q", got)
+			saw376BeforeMODE = true
+		case "MODE":
+			if !saw376BeforeMODE {
+				t.Fatal("own MODE must come after 376")
+			}
+			sawMODE = true
+			if m.Param(0) != "me" || m.Param(1) != "+i" {
+				t.Fatalf("MODE=%v", m.Params)
+			}
+			if m.Source != s.self.Prefix() {
+				t.Fatalf("MODE source=%q want own prefix %q", m.Source, s.self.Prefix())
 			}
 		case "372":
 			if m.Trailing() == "" && (len(m.Params) < 2 || m.Params[1] == "") {
@@ -1524,19 +1534,26 @@ func TestAttachWelcomeBurst(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"001", "002", "003", "004", "005", "221", "375", "372", "376"} {
+	for _, want := range []string{"001", "002", "003", "004", "005", "375", "372", "376", "MODE"} {
 		if cmds[want] == 0 {
 			t.Fatalf("missing %s in %#v", want, cmds)
 		}
 	}
+	if cmds["221"] != 0 {
+		t.Fatalf("attach burst must send MODE not 221, got 221 count %d", cmds["221"])
+	}
 	for _, m := range d.sent {
 		switch m.Command {
-		case "001", "002", "003", "004", "005", "221", "375", "372", "376":
+		case "001", "002", "003", "004", "005", "375", "372", "376":
 			if m.Source != "ircu2.example" {
 				t.Fatalf("%s source=%q want ircu2.example: %+v", m.Command, m.Source, m)
 			}
 			if _, ok := m.Tag("time"); !ok {
 				t.Fatalf("%s missing @time for server-time client: %+v", m.Command, m)
+			}
+		case "MODE":
+			if _, ok := m.Tag("time"); !ok {
+				t.Fatalf("MODE missing @time for server-time client: %+v", m)
 			}
 		}
 	}
@@ -1561,6 +1578,10 @@ func TestLive221PreservesUplinkColonation(t *testing.T) {
 	_ = s.Attach(d)
 	d.clearSent()
 
+	// A client-issued MODE nick enquiry still receives 221 as 221 — the
+	// unsolicited path (RefreshSelfUModes) rewrites it to MODE instead.
+	s.tracker.Begin(BeginOpts{Client: d.ID(), Cmd: "MODE", EnquiryTarget: "me"})
+
 	line := `:irc.example.com 221 me +iw`
 	msg, err := irc.Parse(line)
 	if err != nil {
@@ -1577,6 +1598,33 @@ func TestLive221PreservesUplinkColonation(t *testing.T) {
 	}
 	if strings.Contains(got, ":+") {
 		t.Fatalf("live 221 must not add trailing colon: %q", got)
+	}
+}
+
+func TestUnsolicited221SynthesizesSelfMODE(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	s.mu.Lock()
+	s.registered = true
+	s.self.Host = "h.example"
+	s.mu.Unlock()
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	_ = s.Attach(d)
+	d.clearSent()
+
+	s.HandleMessage(irc.Message{Source: "irc.example.com", Command: "221", Params: []string{"me", "+iw"}})
+
+	if len(d.sent) != 1 || d.sent[0].Command != "MODE" {
+		t.Fatalf("unsolicited 221 must become MODE, sent=%+v", d.sent)
+	}
+	m := d.sent[0]
+	if m.Source != "me!u@h.example" {
+		t.Fatalf("MODE source=%q", m.Source)
+	}
+	if m.Param(0) != "me" || m.Param(1) != "+iw" {
+		t.Fatalf("MODE params=%v", m.Params)
+	}
+	if s.self.UModeString() != "+iw" {
+		t.Fatalf("umodes=%q", s.self.UModeString())
 	}
 }
 

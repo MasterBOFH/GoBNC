@@ -770,6 +770,17 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 		return
 	}
+	// Unsolicited RPL_UMODEIS (221): the answer to RefreshSelfUModes, or a
+	// server that emits 221 without a client MODE nick query. Connecting
+	// clients expect `:own-prefix MODE own-nick +modes` (Attach's burst,
+	// the same form a live uplink sends during registration), not the
+	// numeric — 221 is a query reply, and most clients ignore it outside
+	// of one they issued. A client that itself queried MODE nick is the
+	// dests>0 path above and still receives 221.
+	if msg.Command == "221" {
+		s.broadcastSelfUMode()
+		return
+	}
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
