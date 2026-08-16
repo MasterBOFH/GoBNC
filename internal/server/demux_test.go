@@ -19,8 +19,9 @@ import (
 // here (rather than exported and shared) because it's a handful of lines
 // and these are two different packages' test-only fixtures.
 type demuxFakeIRC struct {
-	ln     net.Listener
-	connCh chan net.Conn // accepted connection, published as soon as Accept succeeds
+	ln          net.Listener
+	connCh      chan net.Conn // accepted connection, published as soon as Accept succeeds
+	welcomeNick string        // if set, 001/002/… use this instead of the client's NICK
 }
 
 func newDemuxFakeIRC(t *testing.T) *demuxFakeIRC {
@@ -114,12 +115,16 @@ func (f *demuxFakeIRC) serveOne(t *testing.T, server string, closeAfter <-chan s
 			break
 		}
 	}
-	send(":" + server + " 001 " + nick + " :Welcome")
-	send(":" + server + " 002 " + nick + " :Your host is " + server)
-	send(":" + server + " 003 " + nick + " :This server was created today")
-	send(":" + server + " 004 " + nick + " " + server + " test-1.0 a a")
-	send(":" + server + " 005 " + nick + " NICKLEN=30 :are supported by this server")
-	send(":" + server + " 376 " + nick + " :End of MOTD")
+	welcome := nick
+	if f.welcomeNick != "" {
+		welcome = f.welcomeNick
+	}
+	send(":" + server + " 001 " + welcome + " :Welcome")
+	send(":" + server + " 002 " + welcome + " :Your host is " + server)
+	send(":" + server + " 003 " + welcome + " :This server was created today")
+	send(":" + server + " 004 " + welcome + " " + server + " test-1.0 a a")
+	send(":" + server + " 005 " + welcome + " NICKLEN=30 :are supported by this server")
+	send(":" + server + " 376 " + welcome + " :End of MOTD")
 
 	if closeAfter == nil {
 		return

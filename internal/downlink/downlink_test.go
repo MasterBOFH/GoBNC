@@ -15,6 +15,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/auth"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/testutil"
@@ -451,6 +452,85 @@ func TestAuthCertOnlySuccess(t *testing.T) {
 	}
 }
 
+func TestRegisteredAttach001IgnoresClientNICK(t *testing.T) {
+	// Case 2: client NICK during downlink registration may differ from
+	// the live nick the attach burst addresses. 001 is the source of
+	// truth — no self-NICK.
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.SetPasswordHash(ctx, mustHash(t, "s3cret")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.UpsertNetwork(ctx, store.Network{Name: "libera", Host: "x", Port: 1, Nick: "configured", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "libera")
+	sess := session.New(netw, db, nil, nil, nil)
+	sess.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("assigned_")}},
+		{Key: "uplink-server", Values: [][]byte{[]byte("irc.example")}},
+	})
+
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(serveCtx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	write := func(s string) { _, _ = c.Write([]byte(s + "\r\n")) }
+	write("PASS libera/s3cret")
+	write("NICK requested")
+	write("USER me 0 * :me")
+
+	raw, err := readUntilAccum(c, " 376 ", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msgs []irc.Message
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		m, err := irc.Parse(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		msgs = append(msgs, m)
+	}
+	var nicks []string
+	for _, m := range msgs {
+		if m.Command == "NICK" {
+			t.Fatalf("attach must not send NICK; 001 is the nick source of truth: %+v", msgs)
+		}
+		if m.Command == "001" {
+			nicks = append(nicks, m.Param(0))
+		}
+	}
+	if len(nicks) != 1 || nicks[0] != "assigned_" {
+		t.Fatalf("want one 001 targeting assigned_ (not configured or requested), got %v in %+v", nicks, msgs)
+	}
+}
+
 func TestAuthFailedText(t *testing.T) {
 	if got := authFailedText(""); got != "Authentication failed" {
 		t.Fatalf("empty fp: %q", got)
@@ -614,10 +694,10 @@ func TestReplaceListenerAcceptsOnNewAddr(t *testing.T) {
 
 func TestRegistrationReady(t *testing.T) {
 	cases := []struct {
-		name                                    string
-		nick                                    string
+		name                                     string
+		nick                                     string
 		gotUser, capStarted, capEnded, lsPending bool
-		want                                    bool
+		want                                     bool
 	}{
 		{"empty", "", false, false, false, false, false},
 		{"nick only", "me", false, false, false, false, false},
@@ -717,6 +797,11 @@ func dialAuthClient(t *testing.T, withClientCert bool) *tls.Conn {
 }
 
 func readUntil(c net.Conn, want string, timeout time.Duration) error {
+	_, err := readUntilAccum(c, want, timeout)
+	return err
+}
+
+func readUntilAccum(c net.Conn, want string, timeout time.Duration) (string, error) {
 	_ = c.SetReadDeadline(time.Now().Add(timeout))
 	var got string
 	buf := make([]byte, 4096)
@@ -725,11 +810,11 @@ func readUntil(c net.Conn, want string, timeout time.Duration) error {
 		if n > 0 {
 			got += string(buf[:n])
 			if contains(got, want) {
-				return nil
+				return got, nil
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("read until %q: %w (got %q)", want, err, got)
+			return got, fmt.Errorf("read until %q: %w (got %q)", want, err, got)
 		}
 	}
 }

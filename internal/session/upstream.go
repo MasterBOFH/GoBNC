@@ -128,8 +128,6 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	}
 
 	s.mu.Lock()
-	cfgNick := s.Network.Nick
-	var nickChangeFrom string
 	if msg.Command == "001" && len(msg.Params) > 0 {
 		actual := msg.Params[0]
 		s.ensureSelfLocked(actual)
@@ -138,11 +136,6 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 			s.uplinkServer = src
 		}
 		s.gotWelcome = true
-		// Clients may already have a synthetic 001 with the configured nick.
-		// Send self-NICK before the real 001 when the live nick differs.
-		if cfgNick != "" && !s.isupport.CaseMapping.Equal(cfgNick, actual) {
-			nickChangeFrom = cfgNick
-		}
 	}
 	visible := isRegistrationVisible(msg.Command)
 	if visible {
@@ -157,22 +150,11 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 			}
 		}
 	}
-	ident := s.Network.Username
 	gotWelcome := s.gotWelcome
 	s.mu.Unlock()
 
 	if visible {
-		if ident == "" {
-			ident = "gobnc"
-		}
 		for _, d := range targets {
-			if nickChangeFrom != "" {
-				_ = d.Send(s.rewriteFor(d, irc.Message{
-					Source:  nickChangeFrom + "!" + ident + "@" + ServerName,
-					Command: "NICK",
-					Params:  []string{msg.Params[0]},
-				}))
-			}
 			_ = d.Send(s.rewriteFor(d, msg))
 		}
 	}

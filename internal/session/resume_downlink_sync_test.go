@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -232,4 +233,127 @@ func TestDownlinkAfterResumeOmitsLoggedInWhenLoggedOut(t *testing.T) {
 			t.Fatalf("must not replay 900 after a logged-out account blob: %+v", d.snapshot())
 		}
 	}
+}
+
+// TestDownlinkAfterResumeGetsWelcomeNumerics is the regression for the
+// resumed-brain gap where 002/003/004 (and the 001 source prefix) were
+// learned live during registration but never pushed to the blob. Those
+// numerics cannot be re-queried, so a client attaching after a brain
+// restart saw 001+005+MOTD with no 002/003/004 — not enough for the
+// client to detect which ircd it is on. SeedFromBlob must restore them
+// (and detectIRCdLocked from 002/004) so Attach bursts them.
+func TestDownlinkAfterResumeGetsWelcomeNumerics(t *testing.T) {
+	rpl002, err := json.Marshal([]string{"Your host is irc.example running version UnrealIRCd-6.1.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpl003, err := json.Marshal([]string{"This server was created Jan 1 2020 at 00:00:00 UTC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpl004, err := json.Marshal([]string{"irc.example", "UnrealIRCd-6.1.4", "iowz", "biklmnopst"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "uplink-server", Values: [][]byte{[]byte("irc.example")}},
+		{Key: "rpl002", Values: [][]byte{rpl002}},
+		{Key: "rpl003", Values: [][]byte{rpl003}},
+		{Key: "rpl004", Values: [][]byte{rpl004}},
+	})
+	if !s.Registered() {
+		t.Fatal("SeedFromBlob must mark the session registered")
+	}
+	if s.IRCd() != irc.IRCdUnreal {
+		t.Fatalf("ircd=%q want unrealircd from restored 002", s.IRCd())
+	}
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+
+	var saw002, saw003, saw004 bool
+	for _, m := range d.snapshot() {
+		if m.Source != "irc.example" && (m.Command == "002" || m.Command == "003" || m.Command == "004" || m.Command == "001") {
+			t.Fatalf("%s source=%q want irc.example: %+v", m.Command, m.Source, m)
+		}
+		switch m.Command {
+		case "002":
+			saw002 = true
+			if m.Param(1) != "Your host is irc.example running version UnrealIRCd-6.1.4" {
+				t.Fatalf("002 params=%v", m.Params)
+			}
+		case "003":
+			saw003 = true
+			if m.Param(1) != "This server was created Jan 1 2020 at 00:00:00 UTC" {
+				t.Fatalf("003 params=%v", m.Params)
+			}
+		case "004":
+			saw004 = true
+			if m.Param(1) != "irc.example" || m.Param(2) != "UnrealIRCd-6.1.4" {
+				t.Fatalf("004 params=%v", m.Params)
+			}
+		}
+	}
+	if !saw002 || !saw003 || !saw004 {
+		t.Fatalf("attach burst after resume missing welcome numerics 002=%v 003=%v 004=%v: %+v", saw002, saw003, saw004, d.snapshot())
+	}
+}
+
+// TestDownlinkAfterResumeUsesAssignedNickNotConfigured is the regression
+// for attach bursting 001/002/… to Network.Nick (the nick we requested at
+// registration) after a resume. self-nick used to be pushed only on a
+// later NICK line (stateNICKLocked), never on 001, so a session whose
+// assigned nick differed from the configured one (collision, guest nick,
+// …) silently fell back to the configured nick on SeedFromBlob. Attach
+// must use the assigned nick in every numeric; 001 is the nick source of
+// truth (no self-NICK).
+func TestDownlinkAfterResumeUsesAssignedNickNotConfigured(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "primary"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("primary_")}},
+		{Key: "uplink-server", Values: [][]byte{[]byte("irc.example")}},
+		{Key: "rpl002", Values: [][]byte{mustJSON(t, []string{"Your host is irc.example"})}},
+	})
+	if got := s.Nick(); got != "primary_" {
+		t.Fatalf("session nick after resume=%q want primary_", got)
+	}
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	sent := d.snapshot()
+	assertNoSelfNICK(t, sent)
+	var saw001, saw002 bool
+	for _, m := range sent {
+		switch m.Command {
+		case "001":
+			saw001 = true
+			if m.Param(0) != "primary_" {
+				t.Fatalf("001 target=%q want assigned nick primary_, not configured primary: %+v", m.Param(0), m)
+			}
+		case "002":
+			saw002 = true
+			if m.Param(0) != "primary_" {
+				t.Fatalf("002 target=%q want assigned nick: %+v", m.Param(0), m)
+			}
+		}
+	}
+	if !saw001 || !saw002 {
+		t.Fatalf("attach missing 001/002: %+v", sent)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
