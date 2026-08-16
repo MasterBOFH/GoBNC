@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 const testNetID NetworkID = 1
@@ -99,6 +101,9 @@ func TestListenerLiveModeStreamsRealLines(t *testing.T) {
 	defer client.Close()
 	if client.NegotiatedVersion != ProtocolVersion {
 		t.Fatalf("NegotiatedVersion=%d, want %d", client.NegotiatedVersion, ProtocolVersion)
+	}
+	if client.KeeperVersion != version.KeeperVersion {
+		t.Fatalf("KeeperVersion=%d, want %d", client.KeeperVersion, version.KeeperVersion)
 	}
 	if client.Mode != ModeLive {
 		t.Fatalf("Mode=%v, want live", client.Mode)
@@ -629,5 +634,116 @@ func TestListenerThreeNetworksSimultaneously(t *testing.T) {
 				t.Fatalf("network %d: seq out of order: %v", id, seqs)
 			}
 		}
+	}
+}
+
+func TestCheckBrainCompat(t *testing.T) {
+	hello := HelloMsg{MinKeeperVersion: 2, MinProtocol: 1}
+	ack := HelloAckMsg{KeeperVersion: 1, NegotiatedVersion: 1}
+	if err := checkBrainCompat(ack, hello); err == nil {
+		t.Fatal("want error for keeper 1 vs min 2")
+	}
+	ack.KeeperVersion = 2
+	if err := checkBrainCompat(ack, hello); err != nil {
+		t.Fatalf("keeper 2 vs min 2: %v", err)
+	}
+	hello.MinKeeperVersion = 1
+	ack.KeeperVersion = 0 // unversioned ≡ 1
+	if err := checkBrainCompat(ack, hello); err != nil {
+		t.Fatalf("unversioned keeper vs min 1: %v", err)
+	}
+	hello.MinKeeperVersion = 2
+	if err := checkBrainCompat(ack, hello); err == nil {
+		t.Fatal("want error for unversioned keeper vs min 2")
+	}
+	hello = HelloMsg{MinKeeperVersion: 1, MinProtocol: 2}
+	ack = HelloAckMsg{KeeperVersion: 1, NegotiatedVersion: 1}
+	if err := checkBrainCompat(ack, hello); err == nil {
+		t.Fatal("want error for negotiated protocol 1 vs min 2")
+	}
+}
+
+// TestBreakingMinKeeperRejectedWhileLiveAttached is the load-bearing
+// upgrade property: a brain that requires a newer keeper fails Hello
+// (validate and live) without disturbing an already-attached live brain.
+func TestBreakingMinKeeperRejectedWhileLiveAttached(t *testing.T) {
+	mgr, _, srv, conn := dialedTestManager(t, 4096)
+	sockPath := startTestListener(t, mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	live, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("live Attach: %v", err)
+	}
+	defer live.Close()
+	if err := live.SendLiveReady(); err != nil {
+		t.Fatalf("SendLiveReady: %v", err)
+	}
+
+	_, err = Attach(ctx, sockPath, HelloMsg{Mode: ModeValidate, MinKeeperVersion: 99})
+	if err == nil {
+		t.Fatal("validate Attach with MinKeeperVersion=99 succeeded, want rejection")
+	}
+	_, err = Attach(ctx, sockPath, HelloMsg{Mode: ModeLive, MinKeeperVersion: 99})
+	if err == nil {
+		t.Fatal("live Attach with MinKeeperVersion=99 succeeded, want rejection")
+	}
+
+	srv.send(t, conn, "NOTICE * :still-here")
+	line, err := live.NextLine()
+	if err != nil {
+		t.Fatalf("live client after breaking attach: %v", err)
+	}
+	if string(line.Raw) != "NOTICE * :still-here" {
+		t.Fatalf("live line = %q, want still-here", line.Raw)
+	}
+}
+
+// TestBreakingMinKeeperDoesNotClaimLiveSlot: a breaking ModeLive Hello
+// with no existing live attach must fail, and a subsequent compatible
+// live attach must succeed (the failed Hello must not leave liveAttached set).
+func TestBreakingMinKeeperDoesNotClaimLiveSlot(t *testing.T) {
+	mgr, _, _, _ := dialedTestManager(t, 4096)
+	sockPath := startTestListener(t, mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive, MinKeeperVersion: 99})
+	if err == nil {
+		t.Fatal("breaking live Attach succeeded, want rejection")
+	}
+
+	live, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("compatible live Attach after breaking Hello: %v", err)
+	}
+	live.Close()
+}
+
+func TestProbeWhileLiveAttached(t *testing.T) {
+	mgr, _, _, _ := dialedTestManager(t, 4096)
+	sockPath := startTestListener(t, mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	live, err := Attach(ctx, sockPath, HelloMsg{Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("live Attach: %v", err)
+	}
+	defer live.Close()
+
+	res, err := Probe(ctx, sockPath)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if res.KeeperVersion != version.KeeperVersion {
+		t.Fatalf("Probe KeeperVersion=%d, want %d", res.KeeperVersion, version.KeeperVersion)
+	}
+	if res.NegotiatedVersion != ProtocolVersion {
+		t.Fatalf("Probe NegotiatedVersion=%d, want %d", res.NegotiatedVersion, ProtocolVersion)
+	}
+	if u := version.CanUpgrade(res.KeeperVersion); u != version.UpgradeNone {
+		t.Fatalf("CanUpgrade(%d)=%s, want none", res.KeeperVersion, u)
 	}
 }

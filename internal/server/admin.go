@@ -8,6 +8,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/admin"
 	"github.com/MasterBOFH/GoBNC/internal/session"
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // attachAdmin wires the in-band BNC command handler onto a session.
@@ -41,7 +42,17 @@ func (s *Server) StatusSnapshot(ctx context.Context) (admin.Status, error) {
 	}
 	s.mu.RUnlock()
 
-	st := admin.Status{Running: true, ListenAddr: listen}
+	st := admin.Status{
+		Running:      true,
+		ListenAddr:   listen,
+		Version:      version.Version,
+		BrainVersion: version.BrainVersion,
+	}
+	if s.keeperClient != nil {
+		st.KeeperVersion = version.NormalizeKeeperVersion(s.keeperClient.KeeperVersion)
+		st.KeeperRelease = s.keeperClient.KeeperRelease
+		st.KeeperUpgrade = version.CanUpgrade(s.keeperClient.KeeperVersion).String()
+	}
 	nets, err := s.store.ListNetworks(ctx)
 	if err != nil {
 		return st, err
@@ -100,6 +111,14 @@ func (r serverRuntime) Rehash() error {
 		return errors.New("no config path (SetConfigPath required)")
 	}
 	return r.s.Rehash(path)
+}
+
+func (r serverRuntime) Reload() error {
+	return r.s.RequestReload()
+}
+
+func (r serverRuntime) Die() error {
+	return r.s.RequestDie()
 }
 
 func (r serverRuntime) Status() (admin.Status, bool, error) {

@@ -46,6 +46,28 @@ func (r ControlRuntime) Rehash() error {
 	return nil
 }
 
+func (r ControlRuntime) Reload() error {
+	ok, err := control.TryNotify(r.Socket, control.CmdReload)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("daemon not running (no control socket at %s)", r.Socket)
+	}
+	return nil
+}
+
+func (r ControlRuntime) Die() error {
+	ok, err := control.TryNotify(r.Socket, control.CmdDie)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("daemon not running (no control socket at %s)", r.Socket)
+	}
+	return nil
+}
+
 func (r ControlRuntime) Status() (Status, bool, error) {
 	payload, ok, err := control.TryQuery(r.Socket, control.CmdStatus)
 	if err != nil {

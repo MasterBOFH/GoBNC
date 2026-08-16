@@ -12,9 +12,10 @@ import (
 type memRuntime struct {
 	started, stopped, reloaded []string
 	reconnected                []string
-	rehashN                    int
+	rehashN, reloadN, dieN     int
 	startOK, stopOK, reloadOK  bool
 	reconnectErr, rehashErr    error
+	reloadErr, dieErr          error
 	status                     Status
 	statusOK                   bool
 	statusErr                  error
@@ -39,6 +40,14 @@ func (m *memRuntime) ReconnectNetwork(name string) error {
 func (m *memRuntime) Rehash() error {
 	m.rehashN++
 	return m.rehashErr
+}
+func (m *memRuntime) Reload() error {
+	m.reloadN++
+	return m.reloadErr
+}
+func (m *memRuntime) Die() error {
+	m.dieN++
+	return m.dieErr
 }
 func (m *memRuntime) Status() (Status, bool, error) {
 	return m.status, m.statusOK, m.statusErr
@@ -107,6 +116,9 @@ func TestRunHelpAndRejects(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "BNC commands:") || !strings.Contains(joined, "network list") || !strings.Contains(joined, "status") {
 		t.Fatalf("help: %q", joined)
+	}
+	if !strings.Contains(joined, "reload") || !strings.Contains(joined, "die") {
+		t.Fatalf("help missing reload/die: %q", joined)
 	}
 	if !strings.Contains(joined, "reconnect") || !strings.Contains(joined, "disconnect") {
 		t.Fatalf("help missing reconnect/disconnect: %q", joined)
@@ -293,6 +305,21 @@ func TestNetworkListRehash(t *testing.T) {
 	if rt.rehashN != 1 {
 		t.Fatalf("rehashN=%d", rt.rehashN)
 	}
+
+	lines, err = Run(context.Background(), deps, Options{}, []string{"reload"})
+	if err != nil || len(lines) != 1 || lines[0] != "Reloading brain (keeper stays)." {
+		t.Fatalf("reload: %v %v", lines, err)
+	}
+	if rt.reloadN != 1 {
+		t.Fatalf("reloadN=%d", rt.reloadN)
+	}
+	lines, err = Run(context.Background(), deps, Options{}, []string{"die"})
+	if err != nil || len(lines) != 1 || lines[0] != "Stopping brain and keeper." {
+		t.Fatalf("die: %v %v", lines, err)
+	}
+	if rt.dieN != 1 {
+		t.Fatalf("dieN=%d", rt.dieN)
+	}
 }
 
 func TestStatusLiveAndOffline(t *testing.T) {
@@ -347,9 +374,31 @@ func TestFormatStatusStates(t *testing.T) {
 		},
 	})
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"network a disabled", "network b connecting", "network c connected nick=x"} {
+	for _, want := range []string{"daemon running", "listen 0.0.0.0:1", "clients 0", "network a disabled", "network b connecting", "network c connected nick=x"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in %q", want, joined)
 		}
+	}
+}
+
+func TestFormatStatusVersions(t *testing.T) {
+	lines := FormatStatus(Status{
+		Running: true, Version: "0.1.1", BrainVersion: 1, KeeperVersion: 1, KeeperRelease: "0.1.1", KeeperUpgrade: "none",
+	})
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"version 0.1.1", "brain 1", "keeper 1 (0.1.1)", "keeper-upgrade none"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in %q", want, joined)
+		}
+	}
+	lines = FormatStatus(Status{Running: true, BrainVersion: 2, KeeperVersion: 1, KeeperUpgrade: "should"})
+	joined = strings.Join(lines, "\n")
+	if !strings.Contains(joined, "keeper-upgrade should") {
+		t.Fatalf("should: %q", joined)
+	}
+	lines = FormatStatus(Status{Running: false})
+	joined = strings.Join(lines, "\n")
+	if strings.Contains(joined, "brain") || strings.Contains(joined, "keeper") {
+		t.Fatalf("offline status should omit versions: %q", joined)
 	}
 }

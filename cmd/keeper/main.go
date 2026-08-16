@@ -115,7 +115,12 @@ func main() {
 		}
 	}()
 
-	logger.Info("gobnc-keeper started", "socket", *sockPath, "pid", os.Getpid())
+	logger.Info("gobnc-keeper started",
+		"version", version.Version,
+		"keeper_version", version.KeeperVersion,
+		"socket", *sockPath,
+		"pid", os.Getpid(),
+	)
 
 	select {
 	case <-sigCtx.Done():

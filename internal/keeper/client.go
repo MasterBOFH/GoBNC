@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/version"
 )
 
 // AttachClient is the protocol-level client side of the keeper<->brain
@@ -16,7 +18,12 @@ import (
 type AttachClient struct {
 	conn              net.Conn
 	NegotiatedVersion int
-	Mode              Mode
+	// KeeperVersion is the keeper generation from HelloAck (0 if the
+	// keeper omitted it — pre-versioning). See version.NormalizeKeeperVersion.
+	KeeperVersion int
+	// KeeperRelease is the keeper's release string from HelloAck.
+	KeeperRelease string
+	Mode          Mode
 	// Networks lists every network the keeper held at the moment of this
 	// attach — see HelloAckMsg.Networks.
 	Networks []NetworkStatus
@@ -68,6 +75,100 @@ func (c *AttachClient) logDebug(msg string, args ...any) {
 	}
 }
 
+func applyAttachHelloDefaults(hello HelloMsg) HelloMsg {
+	if hello.ClientVersion == 0 {
+		hello.ClientVersion = ProtocolVersion
+	}
+	if hello.MinProtocol == 0 {
+		hello.MinProtocol = ProtocolMinVersion
+	}
+	if hello.BrainVersion == 0 {
+		hello.BrainVersion = version.BrainVersion
+	}
+	if hello.MinKeeperVersion == 0 {
+		hello.MinKeeperVersion = version.MinKeeperVersion
+	}
+	return hello
+}
+
+// checkBrainCompat is the brain-side half of keeper compatibility: an old
+// keeper ignores min_keeper_version / min_protocol and may still send
+// HelloAck. Attach refuses after that ack so a breaking brain never
+// proceeds to LiveReady. Probe does not call this — it always wants the
+// running version so can-upgrade can report "must" instead of failing.
+func checkBrainCompat(ack HelloAckMsg, hello HelloMsg) error {
+	running := version.NormalizeKeeperVersion(ack.KeeperVersion)
+	minK := hello.MinKeeperVersion
+	if minK > 0 && running < minK {
+		return fmt.Errorf("keeper attach: keeper version %d is below minimum %d (breaking; upgrade the keeper)", running, minK)
+	}
+	minP := hello.MinProtocol
+	if minP <= 0 {
+		minP = ProtocolMinVersion
+	}
+	if ack.NegotiatedVersion < minP {
+		return fmt.Errorf("keeper attach: protocol version %d is below minimum %d", ack.NegotiatedVersion, minP)
+	}
+	return nil
+}
+
+// handshake dials, sends Hello, and reads HelloAck. It does not apply
+// Attach defaults or the brain-side min-version check — Attach and Probe
+// each fill Hello themselves.
+func handshake(ctx context.Context, sockPath string, hello HelloMsg, opts ...AttachOption) (*AttachClient, HelloAckMsg, error) {
+	c := &AttachClient{}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if err := verifySocketOwner(sockPath); err != nil {
+		return nil, HelloAckMsg{}, err
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", sockPath)
+	if err != nil {
+		return nil, HelloAckMsg{}, fmt.Errorf("keeper attach: %w", err)
+	}
+	c.logDebug("keeper attach: sending Hello",
+		"mode", hello.Mode,
+		"client_version", hello.ClientVersion,
+		"min_protocol", hello.MinProtocol,
+		"brain_version", hello.BrainVersion,
+		"min_keeper_version", hello.MinKeeperVersion,
+	)
+	if err := writeFrame(conn, msgHello, hello); err != nil {
+		conn.Close()
+		return nil, HelloAckMsg{}, fmt.Errorf("keeper attach: write Hello: %w", err)
+	}
+	t, body, err := readFrame(conn)
+	if err != nil {
+		conn.Close()
+		return nil, HelloAckMsg{}, fmt.Errorf("keeper attach: read HelloAck: %w", err)
+	}
+	if t == msgError {
+		errMsg, _ := decodeFrame[ErrorMsg](t, msgError, body)
+		conn.Close()
+		return nil, HelloAckMsg{}, fmt.Errorf("keeper attach: rejected: %s", errMsg.Reason)
+	}
+	ack, err := decodeFrame[HelloAckMsg](t, msgHelloAck, body)
+	if err != nil {
+		conn.Close()
+		return nil, HelloAckMsg{}, fmt.Errorf("keeper attach: %w", err)
+	}
+	c.logDebug("keeper attach: received HelloAck",
+		"negotiated_version", ack.NegotiatedVersion,
+		"keeper_version", ack.KeeperVersion,
+		"mode", ack.Mode,
+		"networks", len(ack.Networks),
+	)
+	c.conn = conn
+	c.NegotiatedVersion = ack.NegotiatedVersion
+	c.KeeperVersion = ack.KeeperVersion
+	c.KeeperRelease = ack.KeeperRelease
+	c.Mode = ack.Mode
+	c.Networks = ack.Networks
+	return c, ack, nil
+}
+
 // Attach dials sockPath and performs the Hello/HelloAck handshake. On
 // success the connection is ready for ValidateReady (validate mode) or
 // LiveReady (live mode).
@@ -78,48 +179,52 @@ func (c *AttachClient) logDebug(msg string, args ...any) {
 // keeper's socket-directory permissions should already make connecting to
 // an attacker-controlled socket at this path impossible; this check
 // doesn't depend on trusting that they do.
+//
+// A breaking keeper mismatch fails here: new keepers reject Hello before
+// claiming the live slot; old keepers may still ack, and Attach then
+// closes without LiveReady. Probe is the path that reports the mismatch
+// without treating it as a hard attach failure.
 func Attach(ctx context.Context, sockPath string, hello HelloMsg, opts ...AttachOption) (*AttachClient, error) {
-	c := &AttachClient{}
-	for _, opt := range opts {
-		opt(c)
-	}
-	if err := verifySocketOwner(sockPath); err != nil {
+	hello = applyAttachHelloDefaults(hello)
+	c, ack, err := handshake(ctx, sockPath, hello, opts...)
+	if err != nil {
 		return nil, err
 	}
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", sockPath)
-	if err != nil {
-		return nil, fmt.Errorf("keeper attach: %w", err)
+	if err := checkBrainCompat(ack, hello); err != nil {
+		c.Close()
+		return nil, err
 	}
-	if hello.ClientVersion == 0 {
-		hello.ClientVersion = ProtocolVersion
-	}
-	c.logDebug("keeper attach: sending Hello", "mode", hello.Mode, "client_version", hello.ClientVersion)
-	if err := writeFrame(conn, msgHello, hello); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("keeper attach: write Hello: %w", err)
-	}
-	t, body, err := readFrame(conn)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("keeper attach: read HelloAck: %w", err)
-	}
-	if t == msgError {
-		errMsg, _ := decodeFrame[ErrorMsg](t, msgError, body)
-		conn.Close()
-		return nil, fmt.Errorf("keeper attach: rejected: %s", errMsg.Reason)
-	}
-	ack, err := decodeFrame[HelloAckMsg](t, msgHelloAck, body)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("keeper attach: %w", err)
-	}
-	c.logDebug("keeper attach: received HelloAck", "negotiated_version", ack.NegotiatedVersion, "mode", ack.Mode, "networks", len(ack.Networks))
-	c.conn = conn
-	c.NegotiatedVersion = ack.NegotiatedVersion
-	c.Mode = ack.Mode
-	c.Networks = ack.Networks
 	return c, nil
+}
+
+// ProbeResult is what a validate-mode version poll returns. Probe never
+// asks the keeper to reject (MinKeeperVersion is left 0) so can-upgrade
+// can always read the running generation, including when Attach would fail.
+type ProbeResult struct {
+	KeeperVersion     int
+	NegotiatedVersion int
+}
+
+// Probe attaches in validate mode, reads HelloAck, and disconnects. It
+// does not steal the live slot and does not fail on a keeper that is too
+// old for this binary — callers use version.CanUpgrade on KeeperVersion.
+func Probe(ctx context.Context, sockPath string, opts ...AttachOption) (ProbeResult, error) {
+	hello := HelloMsg{
+		Mode:          ModeValidate,
+		ClientVersion: ProtocolVersion,
+		MinProtocol:   ProtocolMinVersion,
+		BrainVersion:  version.BrainVersion,
+		// MinKeeperVersion left 0: do not trigger keeper-side reject.
+	}
+	c, ack, err := handshake(ctx, sockPath, hello, opts...)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	_ = c.Close()
+	return ProbeResult{
+		KeeperVersion:     ack.KeeperVersion,
+		NegotiatedVersion: ack.NegotiatedVersion,
+	}, nil
 }
 
 // Close closes the underlying connection.

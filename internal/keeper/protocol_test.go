@@ -169,28 +169,30 @@ func TestLineMsgPreservesNonUTF8Bytes(t *testing.T) {
 
 func TestNegotiateVersion(t *testing.T) {
 	cases := []struct {
-		client  int
-		want    int
-		wantErr bool
+		client, min int
+		want        int
+		wantErr     bool
 	}{
 		{client: 1, want: 1},
 		{client: 99, want: keeperMaxVersion}, // newer client, keeper negotiates down
 		{client: 0, wantErr: true},
 		{client: -1, wantErr: true},
+		{client: 1, min: 1, want: 1},
+		{client: 1, min: 2, wantErr: true}, // brain requires a protocol this keeper cannot offer
 	}
 	for _, c := range cases {
-		got, err := negotiateVersion(c.client)
+		got, err := negotiateVersion(c.client, c.min)
 		if c.wantErr {
 			if err == nil {
-				t.Errorf("client=%d: got nil error, want error", c.client)
+				t.Errorf("client=%d min=%d: got nil error, want error", c.client, c.min)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("client=%d: unexpected error: %v", c.client, err)
+			t.Errorf("client=%d min=%d: unexpected error: %v", c.client, c.min, err)
 		}
 		if got != c.want {
-			t.Errorf("client=%d: negotiated=%d, want %d", c.client, got, c.want)
+			t.Errorf("client=%d min=%d: negotiated=%d, want %d", c.client, c.min, got, c.want)
 		}
 	}
 }

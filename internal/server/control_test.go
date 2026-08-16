@@ -226,4 +226,47 @@ func TestControlStatus(t *testing.T) {
 	if !strings.Contains(payload, `"name":"net1"`) || !strings.Contains(payload, `"running":true`) {
 		t.Fatalf("network: %s", payload)
 	}
+	if !strings.Contains(payload, `"brain_version":`) || !strings.Contains(payload, `"keeper_upgrade":"none"`) {
+		t.Fatalf("versions: %s", payload)
+	}
+	if !strings.Contains(payload, `"version":`) {
+		t.Fatalf("release version: %s", payload)
+	}
+}
+
+func TestControlReloadAndDie(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "reload.sock")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "t.db")
+	cfg.ControlSocket = sock
+	cfg.ListenAddr = "127.0.0.1:6697"
+
+	s, err := New(cfg, gobnclog.New("error", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	attachTestKeeper(t, s)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = ctx
+	s.cancel = cancel
+	if err := s.serveControl(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	if resp, err := control.Client(sock, control.CmdReload); err != nil || resp != "OK" {
+		t.Fatalf("reload: %q %v", resp, err)
+	}
+	if !s.WantReload() {
+		t.Fatal("WantReload false after RELOAD")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("RELOAD did not cancel run context")
+	}
 }

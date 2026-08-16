@@ -191,3 +191,52 @@ func checkStalePid(path string) error {
 	_ = os.Remove(path)
 	return nil
 }
+
+// SpawnReplacement starts a new foreground serve process from the on-disk
+// binary (os.Executable) and writes pidFile with the child's PID. Used by
+// brain reload: this process detaches from the keeper first, then the
+// child attaches. EnvChild is set so the child does not daemonize again.
+// stdio goes to /dev/null unless inheritStdio is true (foreground/-debug).
+func SpawnReplacement(cfgPath, pidFile string, debug, inheritStdio bool) (int, error) {
+	if pidFile == "" {
+		return 0, fmt.Errorf("pid_file required")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("executable: %w", err)
+	}
+	args := []string{"serve", "-config", cfgPath, "-foreground"}
+	if debug {
+		args = append(args, "-debug")
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Args[0] = exe
+	cmd.Dir, _ = os.Getwd()
+	cmd.Env = append(os.Environ(), EnvChild+"=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if inheritStdio {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+		if err != nil {
+			return 0, err
+		}
+		defer null.Close()
+		cmd.Stdin = null
+		cmd.Stdout = null
+		cmd.Stderr = null
+	}
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start replacement: %w", err)
+	}
+	if err := WritePidFile(pidFile, cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		return 0, err
+	}
+	_ = cmd.Process.Release()
+	return cmd.Process.Pid, nil
+}

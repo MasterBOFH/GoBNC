@@ -27,10 +27,17 @@ import (
 	"time"
 )
 
-// ProtocolVersion is this build's protocol version. A client advertises the
-// highest version it supports in Hello; the keeper negotiates down to the
-// highest version both sides support, or rejects if there's no overlap.
+// ProtocolVersion is this build's highest wire-protocol version. A client
+// advertises it in Hello; the keeper negotiates down to the highest version
+// both sides support, or rejects if there's no overlap. Additive JSON
+// fields do not bump this — that's KeeperVersion in internal/version.
 const ProtocolVersion = 1
+
+// ProtocolMinVersion is the oldest wire-protocol version this brain will
+// accept. Bump it (with ProtocolVersion) on a breaking wire change. Old
+// keepers ignore the Hello field and may still negotiate down; Attach
+// refuses after HelloAck if the negotiated version is below this.
+const ProtocolMinVersion = 1
 
 // keeperMinVersion/keeperMaxVersion bound what this keeper build accepts.
 // Both equal ProtocolVersion today; they'll diverge once there's a version 2
@@ -91,8 +98,23 @@ const (
 // network; there is one brain, and a brain restart must preserve every
 // uplink simultaneously.
 type HelloMsg struct {
-	ClientVersion int  `json:"client_version"` // highest protocol version the client supports
-	Mode          Mode `json:"mode"`
+	ClientVersion int `json:"client_version"` // highest protocol version the client supports
+	// MinProtocol is the oldest protocol version this client will accept.
+	// 0 (omitted by pre-versioning brains) is treated as 1. A new keeper
+	// rejects Hello when it cannot meet this; an old keeper ignores the
+	// field and the brain refuses after HelloAck — see checkBrainCompat.
+	MinProtocol int `json:"min_protocol,omitempty"`
+	// BrainVersion is this brain's generation (internal/version.BrainVersion).
+	BrainVersion int `json:"brain_version,omitempty"`
+	// MinKeeperVersion is the oldest keeper generation this brain will
+	// attach to. 0 means "do not require a minimum" (the Probe path, so
+	// can-upgrade can always read HelloAck). Attach fills this from
+	// internal/version.MinKeeperVersion. Checked on the keeper before
+	// claiming the live slot, and again on the brain after HelloAck so
+	// an old keeper that ignores the field still cannot serve a breaking
+	// brain.
+	MinKeeperVersion int  `json:"min_keeper_version,omitempty"`
+	Mode             Mode `json:"mode"`
 	// FromSeq is live mode only: per-network resume points, keyed by
 	// NetworkID. A network absent from this map streams from that
 	// Keeper's own tracked resume watermark (Keeper.DeliveredSeq) — the
@@ -132,9 +154,16 @@ type HelloMsg struct {
 // attached (or reattached) brain discover what the keeper already had
 // dialed — most importantly, what survived the brain's own restart.
 type HelloAckMsg struct {
-	NegotiatedVersion int             `json:"negotiated_version"`
-	Mode              Mode            `json:"mode"`
-	Networks          []NetworkStatus `json:"networks"`
+	NegotiatedVersion int `json:"negotiated_version"`
+	// KeeperVersion is this keeper process's generation
+	// (internal/version.KeeperVersion). Omitted (0) by pre-versioning
+	// keepers; NormalizeKeeperVersion treats that as generation 1.
+	KeeperVersion int `json:"keeper_version,omitempty"`
+	// KeeperRelease is this keeper process's release string
+	// (internal/version.Version).
+	KeeperRelease string          `json:"keeper_release,omitempty"`
+	Mode          Mode            `json:"mode"`
+	Networks      []NetworkStatus `json:"networks"`
 }
 
 // ErrorMsg is fatal: the sender closes the connection immediately after.

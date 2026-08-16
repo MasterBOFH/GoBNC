@@ -77,6 +77,9 @@ Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BN
 
 ```bash
 ./bin/gobnc status
+./bin/gobnc can-upgrade
+./bin/gobnc reload
+./bin/gobnc die
 ./bin/gobnc network list
 ./bin/gobnc network add <name> <host> <port> [nick] \
   [--nick=] [--tls=true|false] [--tls-noverify=true|false] \
@@ -110,9 +113,15 @@ BNC disconnect
 BNC network reconnect libera
 BNC network disconnect libera
 BNC rehash
+BNC reload
+BNC die
 ```
 
-`BNC` covers the same management commands as the CLI except `serve`, `auth`, and `stop`. From IRC, `reconnect` / `disconnect` (and `network reconnect` / `network disconnect` without a name) target the network of the current client connection. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
+`BNC` covers the same management commands as the CLI except `serve`, `auth`, `stop`, and `can-upgrade`. From IRC, `reconnect` / `disconnect` (and `network reconnect` / `network disconnect` without a name) target the network of the current client connection. For SASL over `BNC`, use `--sasl-pass=secret` (CLI prompts on a TTY for bare `--sasl-pass`).
+
+`status` (CLI and `BNC`) prints the release `version`, brain and keeper generations, and `keeper-upgrade none|should|must`. After installing a new `gobnc` binary, run `./bin/gobnc can-upgrade` *before* `reload`: it probes the still-running keeper over IPC without replacing the live attach. `none` means the keeper is current; `should` means it is older but compatible (`reload` is fine; `die` then start to spawn a new keeper, which drops uplinks); `must` means a breaking keeper change — `reload` / attach will refuse, so `die` then start this binary (the brain starts a new keeper). Exit status 2 on `must`.
+
+`reload` (CLI and `BNC`) restarts the brain from the on-disk binary; the keeper holds every uplink. `stop` stops only the brain (keeper stays). `die` (CLI and `BNC`) stops the brain and the keeper (QUIT to every IRC server).
 
 Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
