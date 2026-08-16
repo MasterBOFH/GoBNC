@@ -92,7 +92,14 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 			}
 		case e.Key == "account":
 			if len(e.Values) > 0 && s.self != nil {
-				s.self.Account = string(e.Values[0])
+				acct := string(e.Values[0])
+				s.self.Account = acct
+				// The account blob is only ever written from 900/901
+				// (applyAccountFromSASL). rplLoggedInLocked requires
+				// loggedIn as well as Account, so a resumed Session
+				// that restored Account alone would silently omit
+				// RPL_LOGGEDIN from every subsequent attach burst.
+				s.loggedIn = acct != ""
 			}
 		case strings.HasPrefix(e.Key, "channel:"):
 			name := strings.TrimPrefix(e.Key, "channel:")
