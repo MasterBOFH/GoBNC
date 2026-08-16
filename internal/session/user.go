@@ -32,7 +32,7 @@ type User struct {
 // anything has revealed it (a live self-JOIN echo normally does, for free;
 // a resumed session has no such echo — see Session.RefreshSelfUserHost) —
 // ServerName is the same placeholder host already used for this situation
-// elsewhere (e.g. Attach's pending-registration self-NICK notice).
+// elsewhere (e.g. Attach's JOIN/MODE burst before USERHOST fills the cloak).
 func (u *User) Prefix() string {
 	if u == nil {
 		return ""

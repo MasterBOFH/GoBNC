@@ -9,7 +9,7 @@ import (
 
 // applyState updates cached session state from an upstream (IRC server) message.
 //
-// blobIsupport/blobCloak/blobSelfNick collect what the locked dispatch
+// blobWelcome/blobCloak/blobSelfNick collect what the locked dispatch
 // below learned that's worth pushing to the keeper's blob store (see
 // docs/keeper-design.md) — always collected as plain values here and
 // pushed only after s.mu.Unlock(), never while holding it: PushBlob is a
@@ -21,7 +21,8 @@ func (s *Session) applyState(msg irc.Message) {
 	var persist [][2]string // name, key
 	var remove []string
 	var blobOnlyJoins []string
-	var blobIsupport, blobCloak, blobSelfNick []byte
+	var blobWelcomeKey string
+	var blobWelcome, blobCloak, blobSelfNick, blobUplinkServer []byte
 
 	s.mu.Lock()
 	prevSelfHost := ""
@@ -76,8 +77,14 @@ func (s *Session) applyState(msg irc.Message) {
 	case "MODE":
 		persist = append(persist, s.stateMODELocked(msg)...)
 	// Numerics
+	case "001":
+		var nick []byte
+		blobUplinkServer, nick = s.state001Locked(msg)
+		if nick != nil {
+			blobSelfNick = nick
+		}
 	case "002", "003", "004", "005":
-		blobIsupport = s.stateWelcomeNumericLocked(msg)
+		blobWelcomeKey, blobWelcome = s.stateWelcomeNumericLocked(msg)
 	case "221":
 		s.state221Locked(msg)
 	case "301":
@@ -112,8 +119,15 @@ func (s *Session) applyState(msg irc.Message) {
 	for _, name := range remove {
 		s.persistRemoveChannel(name)
 	}
-	if blobIsupport != nil {
-		s.pushBlob("isupport", keeper.BlobModeAppend, blobIsupport)
+	if blobWelcome != nil && blobWelcomeKey != "" {
+		mode := keeper.BlobModeReplace
+		if blobWelcomeKey == "isupport" {
+			mode = keeper.BlobModeAppend
+		}
+		s.pushBlob(blobWelcomeKey, mode, blobWelcome)
+	}
+	if blobUplinkServer != nil {
+		s.pushBlob("uplink-server", keeper.BlobModeReplace, blobUplinkServer)
 	}
 	if blobCloak != nil {
 		s.pushBlob("cloak", keeper.BlobModeReplace, blobCloak)
@@ -123,10 +137,11 @@ func (s *Session) applyState(msg irc.Message) {
 	}
 }
 
-// blobParams JSON-encodes msg.Params for storage as one isupport blob
-// entry — see stateWelcomeNumericLocked's 005 case. Encoding failure is
-// not possible for a []string (json.Marshal on a slice of plain strings
-// never errors), so this deliberately has no error return to check.
+// blobParams JSON-encodes a []string for storage as one blob value —
+// isupport (full 005 params) and rpl002/rpl003/rpl004 (params after nick).
+// Encoding failure is not possible for a []string (json.Marshal on a slice
+// of plain strings never errors), so this deliberately has no error return
+// to check.
 func blobParams(params []string) []byte {
 	b, _ := json.Marshal(params)
 	return b

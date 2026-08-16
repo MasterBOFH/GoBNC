@@ -301,10 +301,11 @@ func TestGapOnlyResumeSeedsStateFromBlobNotReplay(t *testing.T) {
 		t.Fatalf("sess1 nick=%q, want alice", got)
 	}
 
-	// A live nick change (self-nick blob key only ever pushed on an actual
-	// NICK line — see stateNICKLocked) and one PRIVMSG, both processed and
-	// acked before "detaching" below — this is the pre-detach state a
-	// resumed attach must never see again on the wire, only via the blob.
+	// A live nick change (self-nick is also pushed on 001; this NICK is
+	// the post-welcome rename the blob must still carry across resume)
+	// and one PRIVMSG, both processed and acked before "detaching" below
+	// — this is the pre-detach state a resumed attach must never see
+	// again on the wire, only via the blob.
 	conn := fake.lastConn(t)
 	fakeSend(t, conn, "fake.example", ":alice NICK newalice")
 	deadline := time.Now().Add(2 * time.Second)

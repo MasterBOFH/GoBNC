@@ -376,7 +376,7 @@ Each entry carries a brain-chosen key and a mode:
 | mode | semantics | built keys |
 |---|---|---|
 | `append` | accumulate in order under this key | `isupport` |
-| `replace` | latest-wins | `cloak`, `self-nick`, `account`, `channel:#foo`, `caps` |
+| `replace` | latest-wins | `cloak`, `self-nick`, `account`, `channel:#foo`, `caps`, `uplink-server`, `rpl002`, `rpl003`, `rpl004` |
 | `delete` | remove the key | `channel:#foo` (on `PART`/self-`KICK`) |
 
 The keeper matches on the key string and applies the mode
@@ -411,6 +411,12 @@ two separate rules:
   assume that; if a server ever sent it again mid-session, the blob would
   correctly keep accumulating rather than treating registration's `005`
   lines as the final word.
+- **RPL_YOURHOST / RPL_CREATED / RPL_MYINFO** — `replace` mode on
+  `rpl002`/`rpl003`/`rpl004`, plus `uplink-server` for the `001` source
+  prefix. Unlike `005`, these numerics are sent once at registration and
+  cannot be re-queried, so a resumed attach burst has nothing to replay
+  them from unless the blob carried them. Clients use 002/004 to detect
+  which ircd they are on.
 - **CAP** — built (below). `ACK`/`DEL` are not registration-only
   either — a script or the user can `REQ` a capability well after
   connection, and the server can `DEL` one unsolicited at any point in the
@@ -499,9 +505,11 @@ seeds a resumed network's `Session` (`Session.SeedFromBlob`) from the
 delivered snapshot before any gap-only line reaches it, then calls
 `completeRegistration` directly — there is no replayed registration burst
 left for `Session` to self-detect completion from. Known gap, not fixed:
-nick-recovery state and the source-prefix from the uplink's own `001`
-(cosmetic, used for synthetic message sources) have no blob key and are
-not restored on resume.
+nick-recovery state has no blob key and is not restored on resume.
+Registration welcome numerics that cannot be re-queried (`002`/`003`/`004`,
+plus the `001` source prefix) are blob-carried (`rpl002`/`rpl003`/`rpl004`/
+`uplink-server`) so a client attaching after a brain restart still sees
+enough to detect which ircd it is on.
 
 ## Registration state machine (`internal/registration`)
 

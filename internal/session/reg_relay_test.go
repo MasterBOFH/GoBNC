@@ -244,10 +244,10 @@ func TestEarlyAttachRelaysRegistrationE2E(t *testing.T) {
 	if countMsgCmd(sent, "NOTICE") < 1 {
 		t.Fatalf("want NOTICE AUTH relay: %+v", sent)
 	}
-	// stub + real 001
-	if countMsgCmd(sent, "001") < 2 {
-		t.Fatalf("want stub and uplink 001: %+v", sent)
+	if got := welcomeNicks(sent); len(got) < 2 || got[0] != "testnick" || got[1] != "testnick" {
+		t.Fatalf("want stub 001 then uplink 001, both testnick, got %v in %+v", got, sent)
 	}
+	assertNoSelfNICK(t, sent)
 	if countMsgCmd(sent, "002") < 1 {
 		t.Fatalf("want real 002: %+v", sent)
 	}
@@ -722,7 +722,6 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	d.clearSent()
 
 	scriptDone := make(chan error, 1)
 	go func() {
@@ -741,9 +740,10 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	if countMsgCmd(snap, "433") != 0 {
 		t.Fatalf("mid-ladder 433 must not reach client: %+v", snap)
 	}
-	if countMsgCmd(snap, "001") < 1 {
-		t.Fatalf("missing welcome: %+v", snap)
+	if got := welcomeNicks(snap); len(got) != 2 || got[0] != "taken" || got[1] != "alt" {
+		t.Fatalf("want pending 001 taken then real 001 alt, got %v in %+v", got, snap)
 	}
+	assertNoSelfNICK(t, snap)
 	if got := s.Nick(); got != "alt" {
 		t.Fatalf("session nick after ladder: %q want alt", got)
 	}
@@ -752,8 +752,10 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	if err := s.Attach(late); err != nil {
 		t.Fatal(err)
 	}
+	lateSnap := late.snapshot()
+	assertNoSelfNICK(t, lateSnap)
 	var welcome irc.Message
-	for _, m := range late.snapshot() {
+	for _, m := range lateSnap {
 		if m.Command == "001" {
 			welcome = m
 			break
@@ -768,31 +770,50 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	}
 }
 
-func TestAttachPendingThenSelfNickOnCollision(t *testing.T) {
+func TestAttachPendingSeesTwo001sWhenAssignedNickDiffers(t *testing.T) {
+	// Case 1: downlink attached while the uplink is still connecting.
+	// Synthetic 001 uses the configured nick; the real 001 uses the
+	// assigned nick. 001 is the source of truth — no self-NICK.
 	s := New(store.Network{Name: "n", Nick: "MrIron", Username: "u"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
 		t.Fatal(err)
 	}
-	if d.sent[0].Param(0) != "MrIron" {
-		t.Fatalf("pending 001: %+v", d.sent[0])
-	}
-	d.clearSent()
 
 	s.HandleRegistrationLine(irc.Message{
 		Source: "irc.example", Command: "001", Params: []string{"MrIron_", "Welcome"},
 	})
 	snap := d.snapshot()
-	// self-NICK, then real 001.
-	if len(snap) != 2 || snap[0].Command != "NICK" || snap[1].Command != "001" {
-		t.Fatalf("want NICK then 001: %+v", snap)
+	if got := welcomeNicks(snap); len(got) != 2 || got[0] != "MrIron" || got[1] != "MrIron_" {
+		t.Fatalf("want pending 001 MrIron then real 001 MrIron_, got %v in %+v", got, snap)
 	}
-	if !strings.HasPrefix(snap[0].Source, "MrIron!") || snap[0].Param(0) != "MrIron_" {
-		t.Fatalf("self-NICK: %+v", snap[0])
+	if !strings.Contains(snap[0].Trailing(), "pending uplink") {
+		t.Fatalf("first 001 should be the synthetic pending welcome: %+v", snap[0])
 	}
-	if snap[1].Param(0) != "MrIron_" {
-		t.Fatalf("real 001: %+v", snap[1])
+	assertNoSelfNICK(t, snap)
+}
+
+func TestAttachMidRegistrationAssignedNickNoNICK(t *testing.T) {
+	// Case 1 variant: attach after the real 001 is already buffered.
+	// Replay the buffer as-is — no synthetic 001, no self-NICK — even
+	// when the assigned nick differs from the configured one.
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.HandleRegistrationLine(irc.Message{
+		Source: "irc.example", Command: "NOTICE", Params: []string{"AUTH", "*** Looking up your hostname"},
+	})
+	s.HandleRegistrationLine(irc.Message{
+		Source: "irc.example", Command: "001", Params: []string{"me_", "Welcome"},
+	})
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
 	}
+	snap := d.snapshot()
+	if got := welcomeNicks(snap); len(got) != 1 || got[0] != "me_" {
+		t.Fatalf("want only the buffered 001 with assigned nick, got %v in %+v", got, snap)
+	}
+	assertNoSelfNICK(t, snap)
 }
 
 func runNickLadderAcceptServer(server net.Conn, deadline time.Time) error {

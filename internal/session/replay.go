@@ -39,9 +39,10 @@ func (s *Session) serverPrefixLocked() string {
 //
 // If the uplink is not registered yet, send a synthetic 001 with the configured
 // nick so the client can finish local registration, then relay live/buffered
-// uplink traffic. When a later real 001 has a different nick, OnRegistrationLine
-// sends self-NICK then the real 001. Mid-attach with a buffered 001 already
-// present replays the buffer, then self-NICK if the nick differs.
+// uplink traffic. A later real 001 (possibly with a different assigned nick)
+// is the nick source of truth — the client sees two 001s and no self-NICK.
+// Mid-attach with a buffered 001 already present replays the buffer as-is
+// (no synthetic 001, no NICK).
 func (s *Session) Attach(d Downlink) error {
 	s.mu.Lock()
 	s.downlinks[d.ID()] = d
@@ -59,11 +60,9 @@ func (s *Session) Attach(d Downlink) error {
 		s.mu.Unlock()
 
 		has001 := false
-		actualNick := ""
 		for _, m := range buf {
-			if m.Command == "001" && len(m.Params) > 0 {
+			if m.Command == "001" {
 				has001 = true
-				actualNick = m.Params[0]
 				break
 			}
 		}
@@ -76,14 +75,6 @@ func (s *Session) Attach(d Downlink) error {
 		}
 		for _, m := range buf {
 			_ = d.Send(s.rewriteFor(d, m))
-		}
-		// If client/config nick ≠ IRC nick, notify with self-NICK.
-		if has001 && actualNick != "" && !irc.CaseRFC1459.Equal(cfgNick, actualNick) {
-			_ = d.Send(s.rewriteFor(d, irc.Message{
-				Source:  cfgNick + "!" + s.networkIdent() + "@" + ServerName,
-				Command: "NICK",
-				Params:  []string{actualNick},
-			}))
 		}
 		return nil
 	}

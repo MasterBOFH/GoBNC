@@ -292,6 +292,27 @@ func TestRequestTrackerHELPAndADMINAndMAP(t *testing.T) {
 	})
 }
 
+func TestAttachWelcomeUsesLiveNickNotConfigured(t *testing.T) {
+	// Case 2: attach to an already-registered session. The downlink may
+	// have sent NICK "primary" during its own registration; the burst
+	// still addresses 001 at the live uplink nick. 001 is the source of
+	// truth — no self-NICK to "correct" the client.
+	s := New(store.Network{Name: "n", Nick: "primary"}, nil, nil, nil, nil)
+	s.mu.Lock()
+	s.registered = true
+	s.ensureSelfLocked("primary_")
+	s.mu.Unlock()
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) < 1 || d.sent[0].Command != "001" || d.sent[0].Param(0) != "primary_" {
+		t.Fatalf("001 must use live nick, not the configured/requested nick: %+v", d.sent)
+	}
+	assertNoSelfNICK(t, d.sent)
+}
+
 func TestDetectIRCdOnWelcome(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.mu.Lock()
@@ -2186,4 +2207,23 @@ func (f *fakeDL) clearSent() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = nil
+}
+
+func assertNoSelfNICK(t *testing.T, msgs []irc.Message) {
+	t.Helper()
+	for _, m := range msgs {
+		if m.Command == "NICK" {
+			t.Fatalf("must not send NICK; 001 is the nick source of truth: %+v", msgs)
+		}
+	}
+}
+
+func welcomeNicks(msgs []irc.Message) []string {
+	var nicks []string
+	for _, m := range msgs {
+		if m.Command == "001" {
+			nicks = append(nicks, m.Param(0))
+		}
+	}
+	return nicks
 }

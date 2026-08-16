@@ -6,19 +6,41 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 )
 
-// stateWelcomeNumericLocked returns a JSON-encoded copy of msg.Params for
-// the 005 case (the isupport blob entry to push, once s.mu is released —
-// see applyState), nil otherwise.
-func (s *Session) stateWelcomeNumericLocked(msg irc.Message) []byte {
+// state001Locked records the uplink's 001 source prefix and the assigned
+// nick. Returns the uplink-server blob value and the self-nick blob value
+// to push once s.mu is released — see applyState. 001 is never replayed on
+// a resumed attach (gap-only), so without these blob keys every later
+// attach burst would fall back to ServerName and to Network.Nick (the nick
+// we requested at registration, not the one the server assigned).
+func (s *Session) state001Locked(msg irc.Message) (uplinkServer, selfNick []byte) {
+	if src := strings.TrimSpace(msg.Source); src != "" {
+		s.uplinkServer = src
+		uplinkServer = []byte(src)
+	}
+	if len(msg.Params) > 0 && msg.Params[0] != "" {
+		s.ensureSelfLocked(msg.Params[0])
+		selfNick = []byte(msg.Params[0])
+	}
+	return uplinkServer, selfNick
+}
+
+// stateWelcomeNumericLocked returns the blob key and JSON-encoded value to
+// push once s.mu is released (see applyState). 005 appends under "isupport";
+// 002/003/004 replace under "rpl002"/"rpl003"/"rpl004" — those numerics
+// are registration-only and cannot be re-queried, so a resumed Attach has
+// nothing to replay them from unless the blob carried them.
+func (s *Session) stateWelcomeNumericLocked(msg irc.Message) (key string, value []byte) {
 	switch msg.Command {
 	case "002":
 		if len(msg.Params) > 1 {
 			s.rpl002 = append([]string(nil), msg.Params[1:]...)
 			s.detectIRCdLocked()
+			return "rpl002", blobParams(s.rpl002)
 		}
 	case "003":
 		if len(msg.Params) > 1 {
 			s.rpl003 = append([]string(nil), msg.Params[1:]...)
+			return "rpl003", blobParams(s.rpl003)
 		}
 	case "004":
 		if len(msg.Params) > 1 {
@@ -30,12 +52,13 @@ func (s *Session) stateWelcomeNumericLocked(msg irc.Message) []byte {
 					s.tracker.SetIRCd(d)
 				}
 			}
+			return "rpl004", blobParams(s.rpl004)
 		}
 	case "005":
 		s.isupport.Parse005(msg.Params)
-		return blobParams(msg.Params)
+		return "isupport", blobParams(msg.Params)
 	}
-	return nil
+	return "", nil
 }
 
 // detectIRCdLocked sets s.ircd from 002 trailing (preferred) then 004 version.

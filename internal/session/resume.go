@@ -30,12 +30,10 @@ import (
 // resumedAtBoot handling only fires for a network the keeper reports
 // Connected in the first place).
 //
-// Known gap, not fixed here: nick-recovery state and s.uplinkServer (the
-// source prefix from the uplink's own 001, used cosmetically for
-// synthetic message sources) have no blob key and are not restored —
-// matches brain.Driver.RegisterResumedNetwork's own documented
-// nick-recovery gap for the same underlying reason (no snapshot to
-// resume them from).
+// Known gap, not fixed here: nick-recovery state has no blob key and is
+// not restored — matches brain.Driver.RegisterResumedNetwork's own
+// documented nick-recovery gap for the same underlying reason (no
+// snapshot to resume it from).
 //
 // Does NOT write anything to the uplink itself, including the live NAMES
 // refresh a resumed channel needs (see RefreshResumedChannelNames) or the
@@ -87,6 +85,16 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 			if len(e.Values) > 0 && s.self != nil {
 				s.ensureSelfLocked(string(e.Values[0]))
 			}
+		case e.Key == "uplink-server":
+			if len(e.Values) > 0 {
+				s.uplinkServer = string(e.Values[0])
+			}
+		case e.Key == "rpl002":
+			s.rpl002 = seedStringSlice(e.Values)
+		case e.Key == "rpl003":
+			s.rpl003 = seedStringSlice(e.Values)
+		case e.Key == "rpl004":
+			s.rpl004 = seedStringSlice(e.Values)
 		case e.Key == "cloak":
 			if len(e.Values) > 0 && s.self != nil {
 				s.self.Host = string(e.Values[0])
@@ -109,6 +117,7 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 		}
 	}
 	s.gotWelcome = true
+	s.detectIRCdLocked()
 	s.pendingNamesRefresh = resumedChannels
 	// Known only when a "cloak" blob entry existed (see the case above) —
 	// that key is only ever pushed from CHGHOST/396 (state.go's applyState),
@@ -234,6 +243,20 @@ func (s *Session) RefreshSelfUModes() {
 		return
 	}
 	_ = s.WriteMessage(irc.Message{Command: "MODE", Params: []string{nick}})
+}
+
+// seedStringSlice unmarshals the first blob value as a JSON []string —
+// the encoding blobParams uses for rpl002/rpl003/rpl004. Empty or
+// unparseable input returns nil rather than a half-restored slice.
+func seedStringSlice(values [][]byte) []string {
+	if len(values) == 0 || len(values[0]) == 0 {
+		return nil
+	}
+	var params []string
+	if json.Unmarshal(values[0], &params) != nil {
+		return nil
+	}
+	return params
 }
 
 // seedChannelLocked installs one resumed channel — mirrors
