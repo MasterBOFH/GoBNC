@@ -42,13 +42,16 @@ func WithNickRecoveryInterval(d time.Duration) DriverOption {
 // cares about — called from handleLine for every parsed line on a tracked
 // network, regardless of registration phase (recovery only ever acts once
 // a loop is actually running, which only happens post-registration).
-func (d *Driver) handleNickRecoveryTraffic(id keeper.NetworkID, msg irc.Message) {
+// Returns true when the line was a recovery ISON reply that must not be
+// republished to Session (mirrors internal/uplink.handleRecoveryNumeric).
+func (d *Driver) handleNickRecoveryTraffic(id keeper.NetworkID, msg irc.Message) bool {
 	switch msg.Command {
 	case "303":
-		d.handleRecoveryISON(id, msg)
+		return d.handleRecoveryISON(id, msg)
 	case "NICK":
 		d.handleSelfNickChange(id, msg)
 	}
+	return false
 }
 
 // startNickRecoveryIfNeeded is called once a network reaches
@@ -168,7 +171,7 @@ func isonTargets(cur, primary, alt string, cm irc.CaseMapping) []string {
 // handleRecoveryISON reacts to 303 (RPL_ISON) — only meaningful while
 // this network has a pending ISON from nickRecoveryTick; otherwise it's
 // ordinary traffic this package doesn't interpret and leaves alone.
-func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) {
+func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) bool {
 	d.nickRecMu.Lock()
 	pending := d.isonPending[id]
 	if pending {
@@ -176,7 +179,7 @@ func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) {
 	}
 	d.nickRecMu.Unlock()
 	if !pending {
-		return
+		return false
 	}
 
 	d.mu.Lock()
@@ -184,7 +187,7 @@ func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) {
 	state := d.states[id]
 	d.mu.Unlock()
 	if !ok {
-		return
+		return true
 	}
 	cm := caseMappingOf(state)
 	online := map[string]bool{}
@@ -205,6 +208,7 @@ func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) {
 	if want != "" {
 		_ = d.sendLine(id, "NICK "+want)
 	}
+	return true
 }
 
 // handleSelfNickChange reacts to a NICK line whose source is our own

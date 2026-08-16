@@ -38,6 +38,7 @@ func WithBackoff(min, max time.Duration) DriverOption {
 // behavior for a network the caller previously stopped.
 func (d *Driver) StopNetwork(id keeper.NetworkID) error {
 	d.stopNickRecovery(id)
+	d.stopKeepalive(id)
 	d.reconnMu.Lock()
 	d.stopped[id] = true
 	if t, ok := d.reconnectTimers[id]; ok {
