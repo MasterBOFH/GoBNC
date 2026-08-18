@@ -12,7 +12,7 @@ type Status struct {
 	Running    bool   `json:"running"`
 	ListenAddr string `json:"listen_addr"`
 	Clients    int    `json:"clients"`
-	// Version is the running brain's release string (internal/version.Version).
+	// Version is the running brain's display version (version.DisplayVersion).
 	Version string `json:"version,omitempty"`
 	// BrainVersion is this process's brain generation (0 when unknown).
 	BrainVersion int `json:"brain_version,omitempty"`

@@ -45,7 +45,7 @@ func (s *Server) StatusSnapshot(ctx context.Context) (admin.Status, error) {
 	st := admin.Status{
 		Running:      true,
 		ListenAddr:   listen,
-		Version:      version.Version,
+		Version:      version.DisplayVersion(),
 		BrainVersion: version.BrainVersion,
 	}
 	if s.keeperClient != nil {

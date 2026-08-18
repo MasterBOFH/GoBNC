@@ -204,7 +204,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	ack := HelloAckMsg{
 		NegotiatedVersion: negotiated,
 		KeeperVersion:     version.KeeperVersion,
-		KeeperRelease:     version.Version,
+		KeeperRelease:     version.DisplayVersion(),
 		Mode:              hello.Mode,
 		Networks:          statusOf(networks),
 	}

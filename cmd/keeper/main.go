@@ -116,7 +116,7 @@ func main() {
 	}()
 
 	logger.Info("gobnc-keeper started",
-		"version", version.Version,
+		"version", version.DisplayVersion(),
 		"keeper_version", version.KeeperVersion,
 		"socket", *sockPath,
 		"pid", os.Getpid(),

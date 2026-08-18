@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           ver="${VERSION#v}"
           mkdir -p dist
-          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver}"
+          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver} -X github.com/MasterBOFH/GoBNC/internal/version.stamp=${ver}"
           for os in linux freebsd; do
             for arch in amd64 arm64; do
               out="dist/gobnc_${ver}_${os}_${arch}"
@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           ver="${VERSION#v}"
           mkdir -p dist
-          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver}"
+          ldflags="-s -w -X github.com/MasterBOFH/GoBNC/internal/version.Version=${ver} -X github.com/MasterBOFH/GoBNC/internal/version.stamp=${ver}"
           for arch in amd64 arm64; do
             out="dist/gobnc_${ver}_darwin_${arch}"
             echo "building $out"

@@ -174,7 +174,7 @@ func runStatus(ctx context.Context, deps Deps) ([]string, error) {
 	st := Status{
 		Running:      false,
 		ListenAddr:   deps.ListenAddr,
-		Version:      version.Version,
+		Version:      version.DisplayVersion(),
 		BrainVersion: version.BrainVersion,
 	}
 	if deps.Store != nil {

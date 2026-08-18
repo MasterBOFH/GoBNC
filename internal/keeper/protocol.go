@@ -159,8 +159,8 @@ type HelloAckMsg struct {
 	// (internal/version.KeeperVersion). Omitted (0) by pre-versioning
 	// keepers; NormalizeKeeperVersion treats that as generation 1.
 	KeeperVersion int `json:"keeper_version,omitempty"`
-	// KeeperRelease is this keeper process's release string
-	// (internal/version.Version).
+	// KeeperRelease is this keeper process's display version
+	// (internal/version.DisplayVersion).
 	KeeperRelease string          `json:"keeper_release,omitempty"`
 	Mode          Mode            `json:"mode"`
 	Networks      []NetworkStatus `json:"networks"`
