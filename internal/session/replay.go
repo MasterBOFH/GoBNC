@@ -10,8 +10,13 @@ import (
 )
 
 // ServerName is the fallback source prefix on bouncer-generated numerics and notices
-// when the uplink's 001 server name is not yet known.
-const ServerName = "gobnc"
+// when the uplink's 001 server name is not yet known. Deliberately dotted
+// (not bare "gobnc"): clients commonly tell a server source from a user
+// source by shape alone — no "!user@host" and no dot reads as a nick, not
+// a server — so a bare "gobnc" NOTICE was landing in a PM/query buffer
+// instead of the server/status window on at least one real client.
+// TODO: temporary hostname; replace once the project has a real one.
+const ServerName = "gobnc.masterbofh.org"
 
 // DebugSource is the pseudo-nick /bnc debug relay messages are sent from
 // (see sessionDebugTarget.deliver in debug.go) — exported so

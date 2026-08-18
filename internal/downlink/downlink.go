@@ -32,8 +32,10 @@ import (
 // Prefer Session.OfferedCaps() for the currently available list.
 var AdvertisedCaps = caps.AllOffer()
 
-// CapServerName is the source prefix on CAP replies to clients (same as session.ServerName).
-const CapServerName = "gobnc"
+// CapServerName is the source prefix on CAP replies to clients (same as
+// session.ServerName, including why it's a dotted hostname and not bare
+// "gobnc" — see that constant's doc comment).
+const CapServerName = "gobnc.masterbofh.org"
 
 // Manager looks up sessions by network name.
 type Manager interface {
