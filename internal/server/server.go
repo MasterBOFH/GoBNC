@@ -701,9 +701,14 @@ func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error
 		// RefreshSelfUModes — usermodes have no blob key, and without a
 		// live MODE nick poll a resumed Attach would omit the own-MODE
 		// line connecting clients need to learn their modes.
-		sess.RefreshResumedChannelNames()
-		sess.RefreshSelfUserHost()
+		// Self first, channels last — mirrors a normal live registration's
+		// own ordering (welcome, self MODE, only then anything
+		// channel-shaped), and means a downlink attaching mid-refresh is
+		// more likely to already have real umodes/host by the time it
+		// sees any channel traffic, rather than the reverse.
 		sess.RefreshSelfUModes()
+		sess.RefreshSelfUserHost()
+		sess.RefreshResumedChannelNames()
 		return nil
 	}
 	if err := s.driver.Dial(netID, s.dialConfigForLocked(n), 0); err != nil {
