@@ -194,14 +194,22 @@ func (s *Session) applyAccountFromSASL(msg irc.Message) {
 		}
 		s.mu.Lock()
 		s.loggedIn = acct != ""
+		var blobCloak []byte
 		if s.self != nil {
 			s.self.Account = acct
 			if len(msg.Params) > 1 {
+				prevHost := s.self.Host
 				s.self.UpdateFromPrefix(msg.Params[1])
+				if s.self.Host != "" && s.self.Host != prevHost {
+					blobCloak = []byte(s.self.Host)
+				}
 			}
 		}
 		s.mu.Unlock()
 		s.pushBlob("account", keeper.BlobModeReplace, []byte(acct))
+		if blobCloak != nil {
+			s.pushBlob("cloak", keeper.BlobModeReplace, blobCloak)
+		}
 	case "901":
 		s.mu.Lock()
 		s.loggedIn = false
