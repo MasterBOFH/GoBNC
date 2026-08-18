@@ -551,6 +551,69 @@ func (s *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string,
 	return out, rows.Err()
 }
 
+// TargetActivity pairs a history target with the time of its most recent
+// stored message — see Store.TargetsBetween.
+type TargetActivity struct {
+	Target string
+	Time   time.Time
+}
+
+// TargetsBetween returns, for networkID, each target (restricted to
+// commands, if non-empty) whose *latest* stored message falls within
+// [lo, hi] inclusive — CHATHISTORY TARGETS excludes a target if its latest
+// message is outside the selection, even when it has other messages inside
+// it, so this only ever looks at MAX(time) per target, never individual
+// rows. Ordered by that latest time, descending if desc else ascending.
+// limit <= 0 means unlimited.
+func (s *Store) TargetsBetween(ctx context.Context, networkID int64, lo, hi time.Time, commands []string, limit int, desc bool) ([]TargetActivity, error) {
+	where := "network_id=?"
+	args := []any{networkID}
+	if len(commands) > 0 {
+		where += " AND command IN ("
+		for i, c := range commands {
+			if i > 0 {
+				where += ","
+			}
+			where += "?"
+			args = append(args, c)
+		}
+		where += ")"
+	}
+	args = append(args, formatTime(lo), formatTime(hi))
+	order := "ASC"
+	if desc {
+		order = "DESC"
+	}
+	query := `
+		SELECT target, MAX(time) AS latest
+		FROM messages WHERE ` + where + `
+		GROUP BY target
+		HAVING MAX(time) >= ? AND MAX(time) <= ?
+		ORDER BY MAX(time) ` + order
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TargetActivity
+	for rows.Next() {
+		var target, ts string
+		if err := rows.Scan(&target, &ts); err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			t, _ = time.Parse(time.RFC3339, ts)
+		}
+		out = append(out, TargetActivity{Target: target, Time: t})
+	}
+	return out, rows.Err()
+}
+
 // SetMessageMsgID sets msgid for a row when it was previously empty (playback backfill).
 func (s *Store) SetMessageMsgID(ctx context.Context, id int64, msgid string) error {
 	if msgid == "" {

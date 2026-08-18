@@ -306,6 +306,125 @@ func TestCHATHISTORYAfterAroundBetween(t *testing.T) {
 	}
 }
 
+// TestCHATHISTORYTargets covers CHATHISTORY TARGETS
+// (ircv3.net/specs/extensions/chathistory#chathistory-targets): mixed
+// channel/PM targets ordered and limited by latest-activity time in either
+// direction, the "excluded unless its *latest* message is in range, even
+// with other messages inside it" rule, the draft/chathistory-targets batch
+// shape, and msgid selectors being rejected (spec requires timestamps).
+func TestCHATHISTORYTargets(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	netID, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db)
+	t0 := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	storeAt := func(target string, offset time.Duration) {
+		ts := t0.Add(offset)
+		msg := irc.Message{
+			Tags:    map[string]string{"time": ts.Format("2006-01-02T15:04:05.000Z")},
+			Source:  "a!b@c",
+			Command: "PRIVMSG",
+			Params:  []string{target, "hi"},
+		}
+		if err := h.Store(ctx, Record{
+			NetworkID: netID, Target: target, Time: ts, Command: "PRIVMSG",
+			Source: msg.Source, Raw: msg.Encode(), Text: "hi",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	storeAt("#a", time.Minute)    // latest #a = t0+1m
+	storeAt("bob", 3*time.Minute) // latest bob = t0+3m
+	storeAt("#b", 5*time.Minute)  // latest #b = t0+5m
+	// "mixed" has a message inside the query window below, but its LATEST
+	// message is outside it — must still be excluded entirely.
+	storeAt("mixed", time.Minute)
+	storeAt("mixed", 15*time.Minute)
+
+	targetsOf := func(sent []irc.Message) []string {
+		var out []string
+		for _, m := range sent {
+			if m.Command == "CHATHISTORY" && len(m.Params) >= 2 && m.Params[0] == "TARGETS" {
+				out = append(out, m.Params[1])
+			}
+		}
+		return out
+	}
+
+	// Ascending: start param before end param.
+	s := &fakeSender{caps: map[string]bool{"chathistory": true}}
+	if err := h.HandleCHATHISTORY(s, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params: []string{"TARGETS",
+			t0.Format(time.RFC3339Nano),
+			t0.Add(10 * time.Minute).Format(time.RFC3339Nano),
+			"10"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := targetsOf(s.sent)
+	if len(got) != 3 || got[0] != "#a" || got[1] != "bob" || got[2] != "#b" {
+		t.Fatalf("ascending TARGETS=%v, want [#a bob #b]", got)
+	}
+	for _, tgt := range got {
+		if tgt == "mixed" {
+			t.Fatalf("mixed's latest message is outside the window, must be excluded: %v", got)
+		}
+	}
+	var sawBatch bool
+	for _, m := range s.sent {
+		if m.Command == "BATCH" && len(m.Params) >= 1 && strings.HasPrefix(m.Params[0], "+") {
+			if len(m.Params) != 2 || m.Params[1] != "draft/chathistory-targets" {
+				t.Fatalf("TARGETS BATCH start=%v, want [+id draft/chathistory-targets]", m.Params)
+			}
+			sawBatch = true
+		}
+	}
+	if !sawBatch {
+		t.Fatal("no BATCH start line seen")
+	}
+
+	// Descending: start param after end param -> newest first, and limit
+	// keeps the most-recently-active targets, not the least.
+	s2 := &fakeSender{caps: map[string]bool{"chathistory": true}}
+	_ = h.HandleCHATHISTORY(s2, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params: []string{"TARGETS",
+			t0.Add(10 * time.Minute).Format(time.RFC3339Nano),
+			t0.Format(time.RFC3339Nano),
+			"2"},
+	})
+	got2 := targetsOf(s2.sent)
+	if len(got2) != 2 || got2[0] != "#b" || got2[1] != "bob" {
+		t.Fatalf("descending limited TARGETS=%v, want [#b bob]", got2)
+	}
+
+	// TARGETS selectors must be timestamps, not msgids.
+	s3 := &fakeSender{caps: map[string]bool{"chathistory": true}}
+	_ = h.HandleCHATHISTORY(s3, netID, irc.Message{
+		Command: "CHATHISTORY",
+		Params:  []string{"TARGETS", "msgid=abc", t0.Format(time.RFC3339Nano), "10"},
+	})
+	found := false
+	for _, m := range s3.sent {
+		if m.Command == "FAIL" && m.Param(1) == "INVALID_PARAMS" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want FAIL INVALID_PARAMS for msgid selector, got %+v", s3.sent)
+	}
+}
+
 func TestCHATHISTORYBeforeMsgID(t *testing.T) {
 	h, netID := seedMsgIDHistory(t)
 
