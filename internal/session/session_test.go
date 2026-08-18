@@ -2009,6 +2009,43 @@ func TestHistoryTargetsQUITNICK(t *testing.T) {
 	}
 }
 
+// TestHistoryTargetsPrivmsgKeysByOtherParty is the regression test for the
+// reported "PMs never replay" bug: an inbound PRIVMSG's wire destination
+// (Param(0)) is our own nick, not the sender, so historyTargets must key
+// it by the sender instead of blindly folding Param(0) the way it can for
+// channels (where Param(0) is the same string regardless of direction).
+func TestHistoryTargetsPrivmsgKeysByOtherParty(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+
+	// Inbound: bob -> me. Must be keyed by "bob", not "me".
+	got := s.historyTargets(irc.Message{Source: "bob!u@h", Command: "PRIVMSG", Params: []string{"me", "hi"}})
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("inbound PM targets=%v, want [bob]", got)
+	}
+
+	// Outbound self-echo: me -> bob. Still keyed by "bob".
+	got = s.historyTargets(irc.Message{Source: "me!u@h", Command: "PRIVMSG", Params: []string{"bob", "hi"}})
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("outbound PM targets=%v, want [bob]", got)
+	}
+
+	// Channel messages are unaffected by direction.
+	got = s.historyTargets(irc.Message{Source: "bob!u@h", Command: "PRIVMSG", Params: []string{"#chan", "hi"}})
+	if len(got) != 1 || got[0] != "#chan" {
+		t.Fatalf("channel PM targets=%v, want [#chan]", got)
+	}
+
+	// NOTICE and TAGMSG follow the same rule as PRIVMSG.
+	got = s.historyTargets(irc.Message{Source: "bob!u@h", Command: "NOTICE", Params: []string{"me", "hi"}})
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("inbound NOTICE targets=%v, want [bob]", got)
+	}
+	got = s.historyTargets(irc.Message{Source: "bob!u@h", Command: "TAGMSG", Params: []string{"me"}})
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("inbound TAGMSG targets=%v, want [bob]", got)
+	}
+}
+
 func TestMaybeStoreHistoryEvents(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

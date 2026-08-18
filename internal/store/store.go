@@ -532,6 +532,25 @@ func (s *Store) InsertMessage(ctx context.Context, m Message) error {
 	return err
 }
 
+// DistinctTargets returns every distinct target with stored history on networkID.
+// Includes both channel and query targets; callers filter as needed.
+func (s *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT target FROM messages WHERE network_id=?`, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // SetMessageMsgID sets msgid for a row when it was previously empty (playback backfill).
 func (s *Store) SetMessageMsgID(ctx context.Context, id int64, msgid string) error {
 	if msgid == "" {

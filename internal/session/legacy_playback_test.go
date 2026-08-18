@@ -92,6 +92,36 @@ func TestLegacyPlaybackOnAttach(t *testing.T) {
 	}
 }
 
+// TestLegacyPlaybackOnAttachIncludesQueryTargets is the regression test for
+// the reported "PMs never replay for legacy clients" bug: unlike channels,
+// query (PM) targets have no in-memory JOIN/PART-tracked list for Attach to
+// loop over, so playLegacyHistory was never even called for them. "bob" here
+// is a PM target with stored history but no corresponding s.channels entry.
+func TestLegacyPlaybackOnAttachIncludesQueryTargets(t *testing.T) {
+	db, hist, id := openLegacyFixture(t)
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	storeLine(t, hist, id, t0, "PRIVMSG", "bob", "hi there")
+	storeLine(t, hist, id, t0.Add(time.Minute), "PRIVMSG", "#c", "channel line")
+
+	s := sessionWithChan(t, db, hist, id)
+	legacy := &fakeDL{id: "legacy", caps: map[string]bool{}}
+	if err := s.Attach(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if got := countCmds(legacy.sent, "PRIVMSG"); got != 2 {
+		t.Fatalf("legacy attach expected 2 PRIVMSG (query + channel), got %d in %#v", got, cmdsOf(legacy.sent))
+	}
+	found := false
+	for _, m := range legacy.sent {
+		if m.Command == "PRIVMSG" && len(m.Params) > 0 && m.Params[0] == "bob" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a PRIVMSG targeted at bob in %#v", cmdsOf(legacy.sent))
+	}
+}
+
 func TestLegacyPlaybackOnlyPRIVMSGandNOTICE(t *testing.T) {
 	db, hist, id := openLegacyFixture(t)
 	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)

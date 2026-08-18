@@ -961,6 +961,18 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 		if t == "" {
 			return nil
 		}
+		if !isChannelName(t) && s.isSelfNick(t) {
+			// Inbound private message: Param(0) is our own nick, not the
+			// other party. Key by the sender instead, so replies from a
+			// query partner land under the same target as what we sent
+			// them (see historyTargets' self-echo caller, which already
+			// keys outgoing PMs by Param(0) == the peer).
+			nick := msg.Nick()
+			if nick == "" {
+				return nil
+			}
+			return []string{cm.Canonical(nick)}
+		}
 		return []string{cm.Canonical(t)}
 	case "JOIN":
 		t := msg.Param(0)

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
@@ -166,6 +167,19 @@ func (s *Session) Attach(d Downlink) error {
 		}
 		if !hasChathistory(d) {
 			s.playLegacyHistory(d, ch.Name)
+		}
+	}
+	// Query (PM) targets aren't tracked in memory the way joined channels
+	// are (there's no JOIN/PART to hang membership off), so legacy replay
+	// has to discover them from stored history instead of a session list.
+	if !hasChathistory(d) && s.hist != nil {
+		if targets, err := s.hist.DistinctTargets(context.Background(), s.Network.ID); err == nil {
+			for _, t := range targets {
+				if isChannelName(t) {
+					continue
+				}
+				s.playLegacyHistory(d, t)
+			}
 		}
 	}
 	s.notifyAttachCaps(d)
