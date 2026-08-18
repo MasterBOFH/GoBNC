@@ -106,6 +106,11 @@ func (h *Store) Store(ctx context.Context, r Record) error {
 	})
 }
 
+// DistinctTargets returns every distinct target with stored history on networkID.
+func (h *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string, error) {
+	return h.db.DistinctTargets(ctx, networkID)
+}
+
 // HandleCHATHISTORY serves LATEST, BEFORE, AFTER, AROUND, BETWEEN.
 func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) error {
 	if !s.HasCap("chathistory") && !s.HasCap("draft/chathistory") {
