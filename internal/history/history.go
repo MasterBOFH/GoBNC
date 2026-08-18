@@ -111,7 +111,7 @@ func (h *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string,
 	return h.db.DistinctTargets(ctx, networkID)
 }
 
-// HandleCHATHISTORY serves LATEST, BEFORE, AFTER, AROUND, BETWEEN.
+// HandleCHATHISTORY serves LATEST, BEFORE, AFTER, AROUND, BETWEEN, TARGETS.
 func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) error {
 	if !s.HasCap("chathistory") && !s.HasCap("draft/chathistory") {
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "capability not enabled"}})
@@ -276,6 +276,13 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 				limit = n
 			}
 		}
+	case "TARGETS":
+		// CHATHISTORY TARGETS <timestamp=..> <timestamp=..> <limit> — lists
+		// targets (channels and PM peers), not messages; see handleTargets.
+		if len(msg.Params) < 4 {
+			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "TARGETS needs two timestamps and a limit"}})
+		}
+		return h.handleTargets(s, networkID, msg.Params[1], msg.Params[2], msg.Params[3])
 	default:
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "unsupported subcommand " + sub}})
 	}
@@ -362,6 +369,65 @@ func historyCommandsFor(s Sender) []string {
 		cmds = append(cmds, "TAGMSG")
 	}
 	return cmds
+}
+
+// handleTargets serves CHATHISTORY TARGETS. Unlike the other subcommands it
+// lists targets (channels and PM peers) with history, not messages — see
+// https://ircv3.net/specs/extensions/chathistory#chathistory-targets. A
+// target is excluded unless its *latest* message falls within [aRaw, bRaw],
+// even if it has other messages inside that range.
+func (h *Store) handleTargets(s Sender, networkID int64, aRaw, bRaw, limitRaw string) error {
+	selA, errA := parseSelector(aRaw)
+	selB, errB := parseSelector(bRaw)
+	if errA != nil || errB != nil || selA.kind != selTimestamp || selB.kind != selTimestamp {
+		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "TARGETS needs two timestamps, not msgids"}})
+	}
+	limit := 50
+	if n, err := strconv.Atoi(limitRaw); err == nil {
+		limit = n
+	}
+	if limit > h.maxLimit {
+		limit = h.maxLimit
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	// Spec: "This may be forwards or backwards in time" — which of the two
+	// params is later sets result order, matching the real bootstrap use
+	// case (client sends now, long-ago, limit and wants its N most
+	// recently active conversations, newest first).
+	desc := selA.time.After(selB.time)
+	lo, hi := selA.time, selB.time
+	if lo.After(hi) {
+		lo, hi = hi, lo
+	}
+	targets, err := h.db.TargetsBetween(context.Background(), networkID, lo, hi, historyCommandsFor(s), limit, desc)
+	if err != nil {
+		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
+	}
+	return h.sendTargetsBatch(s, targets)
+}
+
+// sendTargetsBatch sends the draft/chathistory-targets batch handleTargets
+// resolved to. Spec: this batch type takes no target parameter (unlike the
+// "chathistory" batch other subcommands use), and each line is
+// "CHATHISTORY TARGETS <name> <timestamp>", not a replayed message.
+func (h *Store) sendTargetsBatch(s Sender, targets []store.TargetActivity) error {
+	id := fmt.Sprintf("h%d", atomic.AddUint64(&h.batchSeq, 1))
+	if err := s.Send(irc.Message{Command: "BATCH", Params: []string{"+" + id, "draft/chathistory-targets"}}); err != nil {
+		return err
+	}
+	for _, t := range targets {
+		line := irc.Message{
+			Command: "CHATHISTORY",
+			Params:  []string{"TARGETS", t.Target, t.Time.UTC().Format("2006-01-02T15:04:05.000Z")},
+			Tags:    map[string]string{"batch": id},
+		}
+		if err := s.Send(line); err != nil {
+			return err
+		}
+	}
+	return s.Send(irc.Message{Command: "BATCH", Params: []string{"-" + id}})
 }
 
 func (h *Store) sendBatch(s Sender, target string, msgs []store.Message) error {
