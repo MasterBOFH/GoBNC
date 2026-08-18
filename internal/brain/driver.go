@@ -140,14 +140,15 @@ type Driver struct {
 	closeWaiters    map[keeper.NetworkID]chan keeper.CloseResultMsg    // see Reconnect
 	blobPushWaiters map[keeper.NetworkID]chan keeper.BlobPushResultMsg // see PushBlob
 
-	// nickRecMu guards the three maps below, separately from mu — matches
+	// nickRecMu guards the maps below, separately from mu — matches
 	// internal/uplink's own separate nickRecMu, since nick-recovery state
-	// transitions (start/stop/isonPending) are logically independent of
+	// transitions (start/stop/isonPending/hold) are logically independent of
 	// registration/config state and giving them their own lock avoids
 	// nick-recovery bookkeeping contending with the hot registration path.
 	nickRecMu    sync.Mutex
 	nickRecStops map[keeper.NetworkID]chan struct{}
 	isonPending  map[keeper.NetworkID]bool
+	nickRecHeld  map[keeper.NetworkID]bool // client NICK; see StopNickRecovery
 
 	// reconnMu guards auto-reconnect bookkeeping, separately from mu for the
 	// same reason nickRecMu is separate — see reconnect.go.
@@ -201,6 +202,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		blobPushWaiters:      make(map[keeper.NetworkID]chan keeper.BlobPushResultMsg),
 		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
 		isonPending:          make(map[keeper.NetworkID]bool),
+		nickRecHeld:          make(map[keeper.NetworkID]bool),
 		keepStops:            make(map[keeper.NetworkID]chan struct{}),
 		lastRX:               make(map[keeper.NetworkID]int64),
 		backoff:              make(map[keeper.NetworkID]time.Duration),
@@ -450,6 +452,7 @@ func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
 	// only touch their own mutexes, safe to call while d.mu (the
 	// caller's lock) is held.
 	d.stopNickRecovery(id)
+	d.clearNickRecoveryHold(id)
 	d.stopKeepalive(id)
 }
 
@@ -952,6 +955,7 @@ func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
 	// still be running at that point and needs tearing down here, not
 	// just on the next fresh registration attempt).
 	d.stopNickRecovery(ev.Network)
+	d.clearNickRecoveryHold(ev.Network)
 	d.stopKeepalive(ev.Network)
 	msg := "uplink disconnected during registration"
 	if ev.Error != "" {
