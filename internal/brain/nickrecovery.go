@@ -57,8 +57,9 @@ func (d *Driver) handleNickRecoveryTraffic(id keeper.NetworkID, msg irc.Message)
 // startNickRecoveryIfNeeded is called once a network reaches
 // PhaseComplete (see handleLine) and again on every self-NICK-change
 // (see handleSelfNickChange) — mirrors internal/uplink's
-// maybeStartNickRecovery exactly: a no-op if recovery isn't configured,
-// already on the primary nick, or already running.
+// maybeStartNickRecovery: a no-op if recovery isn't configured,
+// already on the primary nick, already running, or held after a
+// client-driven NICK (see StopNickRecovery).
 func (d *Driver) startNickRecoveryIfNeeded(id keeper.NetworkID) {
 	d.mu.Lock()
 	cfg, ok := d.configs[id]
@@ -73,7 +74,7 @@ func (d *Driver) startNickRecoveryIfNeeded(id keeper.NetworkID) {
 	}
 
 	d.nickRecMu.Lock()
-	if d.nickRecStops[id] != nil {
+	if d.nickRecHeld[id] || d.nickRecStops[id] != nil {
 		d.nickRecMu.Unlock()
 		return
 	}
@@ -90,22 +91,48 @@ func (d *Driver) startNickRecoveryIfNeeded(id keeper.NetworkID) {
 // manually should suppress automatic reclaim the same way
 // internal/uplink.Uplink.StopNickRecovery did, so the two don't fight over
 // what nick to hold.
-func (d *Driver) StopNickRecovery(id keeper.NetworkID) { d.stopNickRecovery(id) }
+//
+// Stopping the loop is not enough on its own. The uplink echoes that
+// NICK back, handleSelfNickChange sees the new nick is not primary, and
+// would otherwise call startNickRecoveryIfNeeded, which would start a
+// fresh loop that immediately ISONs and reclaims the alt. The hold
+// makes that restart a no-op until a reconnect (resetStateLocked /
+// disconnect) or until we land back on the primary nick.
+func (d *Driver) StopNickRecovery(id keeper.NetworkID) {
+	d.nickRecMu.Lock()
+	defer d.nickRecMu.Unlock()
+	d.stopNickRecoveryLocked(id)
+	d.nickRecHeld[id] = true
+}
 
 // stopNickRecovery cancels id's recovery loop, if one is running —
 // synchronous (the stop channel close happens before returning, same
 // contract internal/uplink.StopNickRecovery had), called on a fresh
 // registration attempt starting (resetStateLocked), a genuine disconnect
 // (handleNetworkEvent), and reaching the primary nick again
-// (handleSelfNickChange).
+// (handleSelfNickChange). Does not set the client-NICK hold; only
+// StopNickRecovery does that.
 func (d *Driver) stopNickRecovery(id keeper.NetworkID) {
 	d.nickRecMu.Lock()
 	defer d.nickRecMu.Unlock()
+	d.stopNickRecoveryLocked(id)
+}
+
+func (d *Driver) stopNickRecoveryLocked(id keeper.NetworkID) {
 	if stop, ok := d.nickRecStops[id]; ok {
 		close(stop)
 		delete(d.nickRecStops, id)
 	}
 	delete(d.isonPending, id)
+}
+
+// clearNickRecoveryHold drops a client-NICK hold so a later reconnect
+// (or landing back on the primary nick) can recover again. Safe to call
+// when no hold is set.
+func (d *Driver) clearNickRecoveryHold(id keeper.NetworkID) {
+	d.nickRecMu.Lock()
+	delete(d.nickRecHeld, id)
+	d.nickRecMu.Unlock()
 }
 
 func (d *Driver) nickRecoveryLoop(id keeper.NetworkID, stop <-chan struct{}) {
@@ -213,8 +240,10 @@ func (d *Driver) handleRecoveryISON(id keeper.NetworkID, msg irc.Message) bool {
 
 // handleSelfNickChange reacts to a NICK line whose source is our own
 // current nick — mirrors internal/uplink.onSelfNickChange: stop recovery
-// on reaching the primary nick, otherwise (re)start it (a no-op if
-// recovery isn't configured or is already running).
+// on reaching the primary nick (and drop any client-NICK hold, so a
+// later involuntary bump can recover again), otherwise (re)start it (a
+// no-op if recovery isn't configured, is already running, or is held
+// after StopNickRecovery).
 func (d *Driver) handleSelfNickChange(id keeper.NetworkID, msg irc.Message) {
 	if !irc.CaseRFC1459.Equal(msg.Nick(), d.getCurrentNick(id)) {
 		return
@@ -235,6 +264,7 @@ func (d *Driver) handleSelfNickChange(id keeper.NetworkID, msg irc.Message) {
 	cm := caseMappingOf(state)
 	if cm.Equal(newNick, cfg.PrimaryNick) {
 		d.stopNickRecovery(id)
+		d.clearNickRecoveryHold(id)
 		return
 	}
 	d.startNickRecoveryIfNeeded(id)
