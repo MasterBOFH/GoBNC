@@ -362,11 +362,19 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	}()
 
 	received := 1
-	// 15s, not 5s: 499 individual srv.send calls (real syscalls, real
-	// t.Helper() overhead) confirmed flaking on a contended CI runner —
-	// this is a throughput margin, not a change to what's being proven;
-	// a genuinely blocked fast subscriber still times out, just later.
-	deadline := time.Now().Add(15 * time.Second)
+	// A rolling no-progress deadline, not a fixed total-time budget: a
+	// contended CI runner's absolute throughput for 499 individual
+	// srv.send calls (real syscalls) is unpredictable and confirmed far
+	// slower than local (observed as low as ~25 lines/sec on a loaded
+	// GitHub Actions runner, vs. sub-millisecond total locally) — a fixed
+	// budget just means picking a number that's still wrong on the next
+	// noisy run. What's actually under test is that the fast subscriber
+	// never stalls waiting on the slow one; resetting the deadline on
+	// every line received proves exactly that regardless of overall
+	// throughput, while a genuinely blocked fast subscriber still times
+	// out quickly.
+	const noProgressTimeout = 8 * time.Second
+	deadline := time.Now().Add(noProgressTimeout)
 	for received < n {
 		select {
 		case _, ok := <-fast.Lines:
@@ -374,8 +382,9 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 				t.Fatalf("fast subscriber channel closed early at %d/%d", received, n)
 			}
 			received++
+			deadline = time.Now().Add(noProgressTimeout)
 		case <-time.After(time.Until(deadline)):
-			t.Fatalf("fast subscriber only received %d/%d before timing out — a slow subscriber blocked it", received, n)
+			t.Fatalf("fast subscriber only received %d/%d before stalling for %s — a slow subscriber blocked it", received, n, noProgressTimeout)
 		}
 	}
 
