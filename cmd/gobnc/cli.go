@@ -199,7 +199,15 @@ func cmdReload(cfg config.Config, cfgPath string) error {
 			fmt.Fprintf(os.Stderr, "brain stop: %v\n", err)
 		}
 	}
-	pid, err := daemon.SpawnReplacement(cfgPath, cfg.ResolvedPidFile(), false, false)
+	// No staleness risk here (unlike cmd/gobnc/main.go's long-lived
+	// runServe): this CLI process just started, so os.Executable() is
+	// resolving the binary it's running from right now, not one that
+	// might have been replaced hours or days ago.
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("executable: %w", err)
+	}
+	pid, err := daemon.SpawnReplacement(exe, cfgPath, cfg.ResolvedPidFile(), false, false)
 	if err != nil {
 		return err
 	}

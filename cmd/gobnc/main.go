@@ -38,6 +38,21 @@ func main() {
 }
 
 func runServe() {
+	// Resolved once, now, rather than at reload time: os.Executable() asks
+	// the OS to resolve the file *this process* exec'd from, and on
+	// FreeBSD that resolution can fail outright (ENOENT) once the on-disk
+	// binary has since been replaced by a rebuild — confirmed live
+	// ("reload spawn failed","err":"executable: no such file or
+	// directory"). The path string itself stays valid for exec.Command
+	// regardless of what's since been rebuilt at that path; it's only the
+	// OS-level lookup of "what did I start from" that degrades over a long
+	// process lifetime, so do that lookup once, early, while it's certain
+	// to still succeed, and reuse the string later.
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "executable: %v\n", err)
+		os.Exit(1)
+	}
 	cfgPath := flag.String("config", "gobnc.json", "path to bootstrap JSON config")
 	foreground := flag.Bool("foreground", false, "run in the foreground (no fork; for systemd/rc.d)")
 	flag.BoolVar(foreground, "f", false, "short for -foreground")
@@ -143,7 +158,7 @@ func runServe() {
 			path = *cfgPath
 		}
 		inherit := !isChild || srv.DebugConsole()
-		pid, err := daemon.SpawnReplacement(path, pidPath, srv.DebugConsole(), inherit)
+		pid, err := daemon.SpawnReplacement(exe, path, pidPath, srv.DebugConsole(), inherit)
 		if err != nil {
 			logger.Error("reload spawn failed", "err", err)
 			os.Exit(1)

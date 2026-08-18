@@ -192,18 +192,19 @@ func checkStalePid(path string) error {
 	return nil
 }
 
-// SpawnReplacement starts a new foreground serve process from the on-disk
-// binary (os.Executable) and writes pidFile with the child's PID. Used by
-// brain reload: this process detaches from the keeper first, then the
-// child attaches. EnvChild is set so the child does not daemonize again.
-// stdio goes to /dev/null unless inheritStdio is true (foreground/-debug).
-func SpawnReplacement(cfgPath, pidFile string, debug, inheritStdio bool) (int, error) {
+// SpawnReplacement starts a new foreground serve process from exe (the
+// on-disk binary path — see its callers' own comments on why that must be
+// resolved once at process startup, not freshly via os.Executable() here)
+// and writes pidFile with the child's PID. Used by brain reload: this
+// process detaches from the keeper first, then the child attaches.
+// EnvChild is set so the child does not daemonize again. stdio goes to
+// /dev/null unless inheritStdio is true (foreground/-debug).
+func SpawnReplacement(exe, cfgPath, pidFile string, debug, inheritStdio bool) (int, error) {
 	if pidFile == "" {
 		return 0, fmt.Errorf("pid_file required")
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return 0, fmt.Errorf("executable: %w", err)
+	if exe == "" {
+		return 0, fmt.Errorf("exe required")
 	}
 	args := []string{"serve", "-config", cfgPath, "-foreground"}
 	if debug {
@@ -233,10 +234,18 @@ func SpawnReplacement(cfgPath, pidFile string, debug, inheritStdio bool) (int, e
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start replacement: %w", err)
 	}
-	if err := WritePidFile(pidFile, cmd.Process.Pid); err != nil {
+	pid := cmd.Process.Pid
+	if err := WritePidFile(pidFile, pid); err != nil {
 		_ = cmd.Process.Kill()
 		return 0, err
 	}
+	// Release, not Wait: the child is meant to outlive this process.
+	// Must read Pid before this call, not after — for historical reasons
+	// or Process.Release's own doc comment, Release sets Pid to -1 on
+	// every non-Windows platform, so returning cmd.Process.Pid here
+	// instead of the pid captured above always returned -1 (caught by
+	// this fix's own test asserting the returned pid matches the pid
+	// file's).
 	_ = cmd.Process.Release()
-	return cmd.Process.Pid, nil
+	return pid, nil
 }
