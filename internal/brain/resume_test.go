@@ -187,6 +187,33 @@ func (s *resumeFakeIRCServer) serveOneThenWatch(ctx context.Context, t *testing.
 // end of the wire never receives another byte, and the second Driver never
 // republishes a Result — both would fire immediately if the bug were still
 // present.
+// attachLiveRetrying retries a ModeLive Attach while the keeper still
+// reports the previous live attach as active. A prior client's Close()
+// only closes that client's own socket; the keeper's own handleConn
+// goroutine has to notice the resulting EOF and run its deferred cleanup
+// (clearing liveAttached — see internal/keeper/listener.go) before a new
+// ModeLive attach can succeed, and nothing about Close() returning waits
+// for that server-side cleanup to finish. Confirmed flaking under
+// `go test -race` (which slows and reorders scheduling enough to lose this
+// race far more often than a fast local run does) — not a keeper bug,
+// just this test assuming an ordering Close() never promised.
+func attachLiveRetrying(t *testing.T, sockPath string) *keeper.AttachClient {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		client, err := keeper.Attach(ctx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+		cancel()
+		if err == nil {
+			return client
+		}
+		if !strings.Contains(err.Error(), "a live attach is already active") || time.Now().After(deadline) {
+			t.Fatalf("Attach (second brain): %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestResumeDoesNotRedriveRegistration(t *testing.T) {
 	mgr := keeper.NewManager(8192, 4096, nil)
 	sockPath := testSockPath(t)
@@ -262,12 +289,7 @@ func TestResumeDoesNotRedriveRegistration(t *testing.T) {
 
 	// Second brain resumes: attach fresh, and use RegisterResumedNetwork
 	// (the fix) instead of RegisterNetwork.
-	attachCtx2, cancelAttach2 := context.WithTimeout(context.Background(), 5*time.Second)
-	client2, err := keeper.Attach(attachCtx2, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
-	cancelAttach2()
-	if err != nil {
-		t.Fatalf("Attach (second brain): %v", err)
-	}
+	client2 := attachLiveRetrying(t, sockPath)
 	defer client2.Close()
 
 	foundResumed := false

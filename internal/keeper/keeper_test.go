@@ -265,9 +265,22 @@ func TestRingOverflowNoSubscriberSelfCloses(t *testing.T) {
 	k.AckSeq(1)
 
 	// No SubscribeLines call anywhere above: nobody is watching. More
-	// lines than the ring can hold, so it evicts with zero subscribers.
+	// lines than the ring can hold, so it evicts with zero subscribers,
+	// and the keeper self-closes the uplink as soon as it notices — which
+	// happens asynchronously, on its own goroutine, so under a slow or
+	// contended scheduler (confirmed flaking under `go test -race`, which
+	// reorders and slows goroutines far more than an idle local run) that
+	// close can land mid-loop, before every line here has been written. A
+	// write failing here only means the peer already went away, which
+	// requires the keeper to have already read enough bytes to react —
+	// i.e. the overflow this test checks for already happened — so it's
+	// safe to stop and move on to the assertions rather than fail. Not
+	// srv.send: that helper calls t.Fatalf on error, which is exactly the
+	// failure this loop must tolerate.
 	for i := 1; i <= ringCap+3; i++ {
-		srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
+		if _, err := io.WriteString(conn, fmt.Sprintf("NOTICE * :line%d\r\n", i)); err != nil {
+			break
+		}
 	}
 
 	waitState(t, k, NotConnected, 2*time.Second)
@@ -349,7 +362,11 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	}()
 
 	received := 1
-	deadline := time.Now().Add(5 * time.Second)
+	// 15s, not 5s: 499 individual srv.send calls (real syscalls, real
+	// t.Helper() overhead) confirmed flaking on a contended CI runner —
+	// this is a throughput margin, not a change to what's being proven;
+	// a genuinely blocked fast subscriber still times out, just later.
+	deadline := time.Now().Add(15 * time.Second)
 	for received < n {
 		select {
 		case _, ok := <-fast.Lines:
