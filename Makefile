@@ -1,12 +1,5 @@
 .PHONY: test test-race test-integration test-ircd build cert
 
-# Last tag plus commits (v0.1.1-5-gabcdef1) or the tag itself on a
-# release commit. Empty when git describe is unavailable; DisplayVersion
-# then falls back to embedded VCS info or Version.
-VERSION_PKG := github.com/MasterBOFH/GoBNC/internal/version
-VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null))
-LDFLAGS := -X $(VERSION_PKG).stamp=$(VERSION)
-
 test:
 	go test ./...
 
@@ -25,9 +18,18 @@ test-ircd:
 	go test -tags=ircd -count=1 -timeout 180s -parallel 4 ./internal/ircdtest/
 	docker compose -f docker/ircd/docker-compose.yml down
 
+# No -X version.stamp here: leaving it unset makes DisplayVersion fall
+# back to its own composition (Version, currently "0.2.0-dev", plus the
+# commit Go's toolchain already embeds automatically) — exactly
+# "0.2.0-dev+<commit>[-dirty]", the same on every platform's make with no
+# git-describe shell-out needed at all. Only the release workflow
+# (.github/workflows/release.yml, entirely separate from this Makefile)
+# sets Version and stamp to the bare tag, e.g. "0.2.0" with nothing
+# appended — that's what makes a real release look clean and this look
+# unmistakably like a dev build.
 build:
-	go build -ldflags "$(LDFLAGS)" -o bin/gobnc ./cmd/gobnc
-	go build -ldflags "$(LDFLAGS)" -o bin/gobnc-keeper ./cmd/keeper
+	go build -o bin/gobnc ./cmd/gobnc
+	go build -o bin/gobnc-keeper ./cmd/keeper
 
 # Self-signed server + client leaf certs under certs/ (see scripts/gen-certs.sh).
 #   make cert                         # prompt for hostname (TTY) or localhost
