@@ -145,7 +145,11 @@ func CanUpgrade(runningKeeper int) Upgrade {
 	return ClassifyUpgrade(NormalizeKeeperVersion(runningKeeper), KeeperVersion, MinKeeperVersion)
 }
 
-// QuitMessage is the default uplink QUIT reason on process shutdown.
+// QuitMessage is the default uplink QUIT reason on process shutdown —
+// deliberately the bare semver (Version), not DisplayVersion's
+// commit/dirty detail: that belongs on status surfaces (logs, `BNC
+// status`, the keeper handshake's KeeperRelease), not broadcast to every
+// IRC network's server (and everyone on it) on every reconnect.
 func QuitMessage() string {
-	return "GoBNC " + DisplayVersion()
+	return "GoBNC " + Version
 }

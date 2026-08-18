@@ -77,7 +77,7 @@ func TestValidateFailClosed(t *testing.T) {
 
 func TestDefaultQuitMessage(t *testing.T) {
 	want := version.QuitMessage()
-	if want != "GoBNC "+version.DisplayVersion() {
+	if want != "GoBNC "+version.Version {
 		t.Fatalf("version.QuitMessage=%q", want)
 	}
 	cfg := Default()
