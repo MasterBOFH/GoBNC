@@ -2,6 +2,45 @@ package version
 
 import "testing"
 
+func TestFormatVersion(t *testing.T) {
+	cases := []struct {
+		base, stamp, rev string
+		dirty            bool
+		want             string
+	}{
+		{base: "0.1.1", want: "0.1.1"},
+		{base: "0.1.1", stamp: "0.1.1", rev: "abcdef1234deadbeef", want: "0.1.1"},
+		{base: "0.1.1", stamp: "0.1.1-5-gabcdef1", want: "0.1.1-5-gabcdef1"},
+		{base: "0.1.1", rev: "abcdef1234deadbeef", want: "0.1.1+abcdef1"},
+		{base: "0.1.1", rev: "abc", want: "0.1.1+abc"},
+		{base: "0.1.1", rev: "abcdef1234deadbeef", dirty: true, want: "0.1.1+abcdef1-dirty"},
+		{base: "0.1.1", stamp: "0.1.1", rev: "abcdef1234deadbeef", dirty: true, want: "0.1.1"},
+	}
+	for _, c := range cases {
+		got := formatVersion(c.base, c.stamp, c.rev, c.dirty)
+		if got != c.want {
+			t.Errorf("formatVersion(%q, %q, %q, %v)=%q, want %q",
+				c.base, c.stamp, c.rev, c.dirty, got, c.want)
+		}
+	}
+}
+
+func TestDisplayVersionStampWinsOverVCS(t *testing.T) {
+	origStamp, origVersion := stamp, Version
+	t.Cleanup(func() {
+		stamp, Version = origStamp, origVersion
+	})
+	Version = "0.1.1"
+	stamp = "0.1.1-5-gabcdef1"
+	if got := DisplayVersion(); got != stamp {
+		t.Fatalf("DisplayVersion()=%q, want stamp %q (VCS must not be appended)", got, stamp)
+	}
+	stamp = "0.1.1"
+	if got := DisplayVersion(); got != "0.1.1" {
+		t.Fatalf("DisplayVersion()=%q, want 0.1.1 for a stamped release", got)
+	}
+}
+
 func TestClassifyUpgrade(t *testing.T) {
 	cases := []struct {
 		running, current, min int

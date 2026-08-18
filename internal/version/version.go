@@ -5,10 +5,65 @@
 // this brain can attach.
 package version
 
-// Version is the application version (semver). Override at link time with:
+import "runtime/debug"
+
+// Version is the last released semver, committed on main by the release
+// workflow. Tagged builds override it with ldflags; non-release builds
+// leave it alone and let DisplayVersion append VCS identity.
 //
 //	go build -ldflags "-X github.com/MasterBOFH/GoBNC/internal/version.Version=1.2.3"
 var Version = "0.1.1"
+
+// stamp is a link-time full display version. Release and `make build`
+// set this so DisplayVersion does not also append embedded VCS info
+// (a tagged release's Version is the same 0.1.1 as the source default,
+// so VCS presence alone cannot tell them apart).
+//
+//	go build -ldflags "-X github.com/MasterBOFH/GoBNC/internal/version.stamp=1.2.3"
+var stamp = ""
+
+// DisplayVersion is the version string shown in logs, status, and the
+// default QUIT reason. A stamped build (release tag or `git describe`
+// via Makefile/CI) returns stamp as-is. A bare `go build` returns
+// Version plus a short commit (and -dirty if the tree was dirty).
+func DisplayVersion() string {
+	rev, dirty := vcsInfo()
+	return formatVersion(Version, stamp, rev, dirty)
+}
+
+func formatVersion(base, stamped, revision string, dirty bool) string {
+	if stamped != "" {
+		return stamped
+	}
+	if revision == "" {
+		return base
+	}
+	short := revision
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	out := base + "+" + short
+	if dirty {
+		out += "-dirty"
+	}
+	return out
+}
+
+func vcsInfo() (revision string, dirty bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	return revision, dirty
+}
 
 // BrainVersion is this binary's brain generation. Bump when the brain's
 // attach identity should show as newer (brain-only changes that operators
@@ -88,5 +143,5 @@ func CanUpgrade(runningKeeper int) Upgrade {
 
 // QuitMessage is the default uplink QUIT reason on process shutdown.
 func QuitMessage() string {
-	return "GoBNC " + Version
+	return "GoBNC " + DisplayVersion()
 }

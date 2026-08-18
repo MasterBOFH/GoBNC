@@ -124,7 +124,7 @@ func runServe() {
 	}()
 
 	logger.Info("gobnc starting",
-		"version", version.Version,
+		"version", version.DisplayVersion(),
 		"brain_version", version.BrainVersion,
 		"keeper_version", version.KeeperVersion,
 		"listen", cfg.ListenAddr,
