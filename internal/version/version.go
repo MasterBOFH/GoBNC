@@ -7,17 +7,21 @@ package version
 
 import "runtime/debug"
 
-// Version is the last released semver, committed on main by the release
-// workflow. Tagged builds override it with ldflags; non-release builds
-// leave it alone and let DisplayVersion append VCS identity.
+// Version is the last released semver, or the upcoming one suffixed
+// "-dev" while main is ahead of that release — committed either way by
+// the release workflow. Tagged builds override it with ldflags;
+// non-release builds leave it alone and let DisplayVersion append VCS
+// identity, e.g. "0.2.0-dev+abcdef1" (valid semver: core 0.2.0,
+// pre-release "dev", build metadata the commit).
 //
 //	go build -ldflags "-X github.com/MasterBOFH/GoBNC/internal/version.Version=1.2.3"
-var Version = "0.1.1"
+var Version = "0.2.0-dev"
 
 // stamp is a link-time full display version. Release and `make build`
-// set this so DisplayVersion does not also append embedded VCS info
-// (a tagged release's Version is the same 0.1.1 as the source default,
-// so VCS presence alone cannot tell them apart).
+// set this from `git describe` so DisplayVersion does not also append
+// embedded VCS info on top of it — this is what actually distinguishes
+// an unreleased build from a real one; Version's own "-dev" suffix only
+// ever surfaces on a bare `go build` with no ldflags at all.
 //
 //	go build -ldflags "-X github.com/MasterBOFH/GoBNC/internal/version.stamp=1.2.3"
 var stamp = ""
