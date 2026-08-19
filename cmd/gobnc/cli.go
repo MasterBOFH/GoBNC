@@ -182,12 +182,34 @@ func cmdStop(cfg config.Config) error {
 	return nil
 }
 
+// reloadShouldFallBack reports whether rt.Reload()'s error means "this
+// brain has no RELOAD support, or isn't running at all" — the only two
+// cases where cmdReload's degraded fallback (stop the old brain, spawn a
+// fresh one, keeper left alone) is actually appropriate. Every other
+// error (spawn failed, handoff timeout, a reload already in progress,
+// incompatible keeper) means the old brain is still running and already
+// declined the reload safely on its own (see internal/server's
+// runReloadHandoff) — falling back in that case would force-kill a
+// healthy brain over a reload that correctly aborted.
+func reloadShouldFallBack(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "unknown command") || strings.Contains(msg, "daemon not running")
+}
+
 func cmdReload(cfg config.Config, cfgPath string) error {
 	rt := admin.ControlRuntime{Socket: cfg.ResolvedControlSocket()}
-	if err := rt.Reload(); err == nil {
-		fmt.Fprintln(os.Stderr, "Reload requested.")
+	err := rt.Reload()
+	if err == nil {
+		// By the time Reload() returns nil, the handoff has already fully
+		// completed (its STATUS lines streamed to stderr as it happened,
+		// see ControlRuntime.Reload) — nothing left pending to report.
+		fmt.Fprintln(os.Stderr, "Reload complete.")
 		return nil
-	} else if err != nil && strings.Contains(err.Error(), "must be upgraded") {
+	}
+	if strings.Contains(err.Error(), "must be upgraded") {
+		return err
+	}
+	if !reloadShouldFallBack(err) {
 		return err
 	}
 	// Old brain (no RELOAD command) or not running: stop the brain if it

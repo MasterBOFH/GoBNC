@@ -3,6 +3,8 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/control"
 )
@@ -46,8 +48,21 @@ func (r ControlRuntime) Rehash() error {
 	return nil
 }
 
+// reloadStreamTimeout bounds the whole CmdReload exchange. Comfortably
+// longer than the server's own handoff timeout (internal/server's
+// reloadHandoffTimeout, 15s) so that timeout — not this one — is what
+// actually fires and produces a real ERR line on a stuck handoff.
+const reloadStreamTimeout = 25 * time.Second
+
+// Reload streams progress to os.Stderr as the server's handleReloadRequest
+// reports it (see control.NotifyStream) — CmdReload's handler doesn't reply
+// at all until the reload either succeeds or fails, unlike every other
+// control command, since it's spawning and waiting on a replacement
+// process in between.
 func (r ControlRuntime) Reload() error {
-	ok, err := control.TryNotify(r.Socket, control.CmdReload)
+	ok, err := control.NotifyStream(r.Socket, control.CmdReload, reloadStreamTimeout, func(line string) {
+		fmt.Fprintf(os.Stderr, "reload: %s\n", line)
+	})
 	if err != nil {
 		return err
 	}

@@ -20,8 +20,10 @@ import (
 // Needed because these tests construct *Server directly via New and drive
 // it through serveControl/StartNetworkByName without ever calling Run —
 // startNetworkLocked (and friends) now unconditionally use s.driver, which
-// is nil until something does what this does.
-func attachTestKeeper(t *testing.T, s *Server) {
+// is nil until something does what this does. Returns the keeper's socket
+// path, for tests that need to attempt a second attach against the same
+// keeper (e.g. proving a live attach is still held, or no longer is).
+func attachTestKeeper(t *testing.T, s *Server) string {
 	t.Helper()
 	mgr := keeper.NewManager(1<<20, 4096, nil)
 	// keeper.Listener.Serve requires its socket directory to be mode 0700
@@ -48,9 +50,24 @@ func attachTestKeeper(t *testing.T, s *Server) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	attachCtx, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
-	client, err := keeper.Attach(attachCtx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
-	cancelAttach()
+	// A single dial attempt can still see ECONNREFUSED even once the socket
+	// file exists (Accept's goroutine not yet scheduled under CPU pressure
+	// from other tests in this package running real subprocesses, e.g.
+	// reload_handoff_test.go's go-build calls) — DialContext doesn't retry
+	// on its own, so wrap the whole attach in a short retry loop rather
+	// than trusting the os.Stat check above to mean "definitely ready".
+	var client *keeper.AttachClient
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		attachCtx, cancelAttach := context.WithTimeout(context.Background(), time.Second)
+		client, err = keeper.Attach(attachCtx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+		cancelAttach()
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		cancelListener()
 		t.Fatalf("keeper.Attach: %v", err)
@@ -70,4 +87,5 @@ func attachTestKeeper(t *testing.T, s *Server) {
 	})
 	go func() { _ = s.driver.Run(runCtx) }()
 	go s.runDemux(runCtx)
+	return sockPath
 }

@@ -249,3 +249,51 @@ func SpawnReplacement(exe, cfgPath, pidFile string, debug, inheritStdio bool) (i
 	_ = cmd.Process.Release()
 	return pid, nil
 }
+
+// SpawnReplacementForHandoff is SpawnReplacement's sibling for a reload that
+// must not be treated as committed just because the child process started.
+// Differences: it appends -reload-handoff <handoffSock> so the child runs
+// the probe-then-confirm sequence instead of attaching live right away
+// (and, correspondingly, takes no pidFile — unlike a normal reload, the
+// pidfile must keep naming the still-running old brain until the child
+// itself confirms the handoff succeeded, at which point the child writes
+// its own pidfile from its own -config, the same as any ordinary `serve`
+// start does); and it does not Release the child — the caller
+// (Server.runReloadHandoff) only knows the handoff actually succeeded once
+// the child says so. The caller retains cmd.Process via the returned
+// exited channel (fed by cmd.Wait in a goroutine) so it can detect the
+// child dying before ever confirming, and SIGTERM it if a handoff attempt
+// times out instead of leaving it running unsupervised.
+func SpawnReplacementForHandoff(exe, cfgPath, handoffSock string, debug bool) (pid int, proc *os.Process, exited <-chan error, err error) {
+	if exe == "" {
+		return 0, nil, nil, fmt.Errorf("exe required")
+	}
+	if handoffSock == "" {
+		return 0, nil, nil, fmt.Errorf("handoff socket required")
+	}
+	args := []string{"serve", "-config", cfgPath, "-foreground", "-reload-handoff", handoffSock}
+	if debug {
+		args = append(args, "-debug")
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Args[0] = exe
+	cmd.Dir, _ = os.Getwd()
+	cmd.Env = append(os.Environ(), EnvChild+"=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	null, oerr := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if oerr != nil {
+		return 0, nil, nil, oerr
+	}
+	defer null.Close()
+	cmd.Stdin = null
+	cmd.Stdout = null
+	cmd.Stderr = null
+
+	if err := cmd.Start(); err != nil {
+		return 0, nil, nil, fmt.Errorf("start replacement: %w", err)
+	}
+	ch := make(chan error, 1)
+	go func() { ch <- cmd.Wait() }()
+	return cmd.Process.Pid, cmd.Process, ch, nil
+}

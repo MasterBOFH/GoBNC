@@ -206,3 +206,79 @@ func TestEnsureRunningLockPreventsDoubleSpawn(t *testing.T) {
 		t.Fatalf("spawn called %d times across two concurrent callers, want exactly 1", got)
 	}
 }
+
+// TestAttachAfterHandoffRetriesPastRejection is the regression test for the
+// reload-handoff teardown race: AttachClient.Close only closes the old
+// brain's local socket, it does not wait for the keeper to finish that
+// connection's own teardown and clear the single-live-attach flag, so a
+// fresh live Attach right after can be transiently rejected. Proves
+// AttachAfterHandoff retries past that rejection instead of giving up or
+// falling through to "spawn a second keeper" (opts.KeeperBinary points at
+// a path that doesn't exist, so any attempt to spawn would surface as a
+// clearly different error).
+func TestAttachAfterHandoffRetriesPastRejection(t *testing.T) {
+	dir := testDir(t)
+	sockPath := filepath.Join(dir, "keeper.sock")
+	startTestKeeper(t, sockPath)
+
+	holder, err := keeper.Attach(context.Background(), sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+	if err != nil {
+		t.Fatalf("holder attach: %v", err)
+	}
+
+	release := make(chan struct{})
+	go func() {
+		<-release
+		time.Sleep(150 * time.Millisecond)
+		_ = holder.Close()
+	}()
+
+	opts := Options{
+		SocketPath:       sockPath,
+		PidFile:          filepath.Join(dir, "keeper.pid"),
+		LockFile:         filepath.Join(dir, "keeper.lock"),
+		Hello:            keeper.HelloMsg{Mode: keeper.ModeLive},
+		KeeperBinary:     filepath.Join(dir, "does-not-exist"),
+		SpawnWaitTimeout: 5 * time.Second,
+	}
+
+	close(release)
+	client, err := AttachAfterHandoff(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("AttachAfterHandoff: %v", err)
+	}
+	defer client.Close()
+}
+
+// TestAttachAfterHandoffGivesUpWithoutSpawning proves the bound: if the
+// live slot is never released, AttachAfterHandoff must eventually give up
+// (rather than retry forever) and must never fall through to spawning a
+// second keeper.
+func TestAttachAfterHandoffGivesUpWithoutSpawning(t *testing.T) {
+	dir := testDir(t)
+	sockPath := filepath.Join(dir, "keeper.sock")
+	startTestKeeper(t, sockPath)
+
+	holder, err := keeper.Attach(context.Background(), sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+	if err != nil {
+		t.Fatalf("holder attach: %v", err)
+	}
+	defer holder.Close()
+
+	opts := Options{
+		SocketPath:       sockPath,
+		PidFile:          filepath.Join(dir, "keeper.pid"),
+		LockFile:         filepath.Join(dir, "keeper.lock"),
+		Hello:            keeper.HelloMsg{Mode: keeper.ModeLive},
+		KeeperBinary:     filepath.Join(dir, "does-not-exist"),
+		SpawnWaitTimeout: 300 * time.Millisecond,
+	}
+
+	_, err = AttachAfterHandoff(context.Background(), opts)
+	if err == nil {
+		t.Fatal("AttachAfterHandoff succeeded, want a timeout error — the live slot was never released")
+	}
+	if !strings.Contains(err.Error(), "no attachable keeper within") {
+		t.Fatalf("err=%v, want a retry-timeout error, not something implying a spawn was attempted", err)
+	}
+}

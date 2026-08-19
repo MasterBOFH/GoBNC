@@ -13,11 +13,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/control"
+	"github.com/MasterBOFH/GoBNC/internal/daemon"
 	"github.com/MasterBOFH/GoBNC/internal/downlink"
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
@@ -66,10 +68,31 @@ type Server struct {
 	certs *certHolder
 	dl    *downlink.Listener
 
-	// shutdownKind is set by RequestReload/RequestDie before canceling
-	// runCtx so cmd/gobnc can spawn a replacement brain or stop the keeper
-	// after Run returns. Zero means an ordinary stop (keeper stays).
+	// shutdownKind is set by runReloadHandoff/RequestDie before canceling
+	// runCtx so cmd/gobnc knows whether to stop the keeper after Run
+	// returns. Zero means an ordinary stop (keeper stays). Reload no longer
+	// needs cmd/gobnc to spawn anything post-Run — runReloadHandoff already
+	// did that, and only cancels once the handoff is confirmed.
 	shutdownKind shutdownKind
+
+	// reloadExe backs runReloadHandoff's spawn of a replacement brain — set
+	// once via SetReloadConfig, from runServe, mirroring
+	// SetConfigPath/SetLogSink. Must be the exe path resolved once at this
+	// process's own startup, not re-resolved via os.Executable() here (see
+	// daemon.SpawnReplacement's doc comment on why: that resolution can
+	// fail on FreeBSD once the on-disk binary has since been rebuilt).
+	reloadExe string
+
+	// pendingHandoff is non-nil only while a runReloadHandoff call is in
+	// flight, bridging it to the replacement's later CmdReloadHandoff
+	// request on a different connection. See reloadHandoff's own doc
+	// comment.
+	pendingHandoff *reloadHandoff
+
+	// isReloadHandoffChild is set (via SetReloadHandoffChild) only on a
+	// process that was itself spawned by another brain's runReloadHandoff
+	// and already confirmed the handoff — see bootstrapKeeper's use of it.
+	isReloadHandoffChild bool
 }
 
 type shutdownKind int
@@ -114,10 +137,32 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 func (s *Server) bootstrapKeeper(ctx context.Context) error {
 	bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	res, err := keeperboot.EnsureRunning(bootCtx, keeperboot.Options{
+	opts := keeperboot.Options{
 		Hello:  keeper.HelloMsg{Mode: keeper.ModeLive},
 		Logger: s.log,
-	})
+	}
+
+	var res keeperboot.Result
+	var err error
+	s.mu.RLock()
+	handoffChild := s.isReloadHandoffChild
+	s.mu.RUnlock()
+	if handoffChild {
+		// This process already confirmed, via its own -reload-handoff
+		// sequence in cmd/gobnc, that its predecessor detached before
+		// telling this process to go ahead — see SetReloadHandoffChild's
+		// doc comment for why that means AttachAfterHandoff, not
+		// EnsureRunning: this process already knows for certain a keeper
+		// is alive, so EnsureRunning's "maybe spawn a second keeper"
+		// fallback would be actively wrong here, not just unnecessary.
+		var client *keeper.AttachClient
+		client, err = keeperboot.AttachAfterHandoff(bootCtx, opts)
+		if err == nil {
+			res = keeperboot.Result{Client: client}
+		}
+	} else {
+		res, err = keeperboot.EnsureRunning(bootCtx, opts)
+	}
 	if err != nil {
 		return fmt.Errorf("keeperboot: %w", err)
 	}
@@ -143,6 +188,31 @@ func (s *Server) bootstrapKeeper(ctx context.Context) error {
 func (s *Server) SetConfigPath(path string) {
 	s.mu.Lock()
 	s.cfgPath = path
+	s.mu.Unlock()
+}
+
+// SetReloadConfig records exe (this process's own on-disk binary path,
+// resolved once by the caller at startup) so runReloadHandoff can spawn a
+// replacement brain later. Called once from runServe, alongside
+// SetConfigPath/SetLogSink. Reload requests before this is called fail
+// with a clear error rather than a nil-pointer/empty-exec surprise.
+func (s *Server) SetReloadConfig(exe string) {
+	s.mu.Lock()
+	s.reloadExe = exe
+	s.mu.Unlock()
+}
+
+// SetReloadHandoffChild marks this process as a reload-spawned replacement
+// that already confirmed, via its own -reload-handoff sequence in
+// cmd/gobnc, that its predecessor detached before telling it to go ahead.
+// Must be called (with true) before Run, and only after that confirmation
+// has actually succeeded — see bootstrapKeeper's use of it and
+// keeperboot.AttachAfterHandoff's own doc comment for why this process
+// must never fall back to EnsureRunning's "maybe spawn a second keeper"
+// path once it already knows for certain a keeper is alive.
+func (s *Server) SetReloadHandoffChild(v bool) {
+	s.mu.Lock()
+	s.isReloadHandoffChild = v
 	s.mu.Unlock()
 }
 
@@ -476,11 +546,11 @@ func (s *Server) handleControl(c net.Conn) {
 			reply = "OK"
 			go s.RequestShutdown()
 		case control.CmdReload:
-			if err := s.RequestReload(); err != nil {
-				reply = "ERR " + err.Error()
-			} else {
-				reply = "OK"
-			}
+			s.handleReloadRequest(c)
+			return
+		case control.CmdReloadHandoff:
+			s.handleReloadHandoff(c)
+			return
 		case control.CmdDie:
 			reply = "OK"
 			go func() { _ = s.RequestDie() }()
@@ -503,12 +573,67 @@ func (s *Server) RequestShutdown() {
 }
 
 // RequestReload asks the brain process to exit and be replaced by a fresh
-// exec of the on-disk binary. The keeper is not touched. Fails without
-// canceling if the running keeper is below this binary's MinKeeperVersion
-// (the old brain stays attached). On that failure the operator runs
-// gobnc die then starts this binary, which spawns a new keeper.
+// exec of the on-disk binary. See runReloadHandoff for the actual
+// sequence — this is the in-IRC BNC RELOAD admin command's entry point
+// (internal/server/admin.go's serverRuntime.Reload), which has no
+// connection to stream progress to, unlike the control socket's CmdReload
+// handler (handleReloadRequest).
 func (s *Server) RequestReload() error {
+	return s.runReloadHandoff(nil)
+}
+
+// reloadHandoffTimeout bounds how long runReloadHandoff waits for a freshly
+// spawned replacement to confirm it's ready to take over the live keeper
+// attach — from either its own probe-then-confirm sequence succeeding, or
+// it dying, or timing out. Generous margin over what a healthy replacement
+// needs (process start + config load + one validate-mode round trip to the
+// keeper is normally well under a second) without leaving an operator
+// staring at a hung reload for too long on a real failure.
+var reloadHandoffTimeout = 15 * time.Second // overridable in tests
+
+// reloadHandoff bridges the two control-socket connections a single reload
+// spans: the CLI's CmdReload connection, waiting inside runReloadHandoff,
+// and the freshly spawned child's later CmdReloadHandoff connection
+// (handleReloadHandoff), possibly arriving on a completely different
+// accepted net.Conn served by a different handleControl goroutine. Only
+// one reload is ever in flight at a time (Server.pendingHandoff, guarded
+// by s.mu), matching the single-flight assumption shutdownKind already
+// makes elsewhere.
+type reloadHandoff struct {
+	readyOnce sync.Once
+	ready     chan struct{} // closed once by handleReloadHandoff when the child calls in
+	reply     chan error    // buffered(1); runReloadHandoff sends nil once detached, for handleReloadHandoff to relay to the child as OK
+}
+
+// runReloadHandoff is the reload orchestration shared by the control
+// socket's streaming CmdReload handler (handleReloadRequest) and the
+// in-IRC BNC RELOAD admin command (RequestReload). statusf, if non-nil,
+// receives each progress message in addition to the s.log.Info call every
+// step also makes unconditionally — a disconnected CLI, or the admin
+// command's no-op caller, must never be the only record of what happened.
+//
+// The old brain (this process) is never detached from the keeper until a
+// replacement has actually started AND told this process, over its own
+// RELOAD_HANDOFF control request, that it's ready to take over. Every
+// failure path here — spawn failure, the child dying first, or a timeout —
+// leaves this brain fully attached and serving, exactly as it was before
+// the reload was requested. That inversion (confirm before releasing,
+// instead of releasing then hoping the replacement works out) is the
+// actual fix for the incident this exists to prevent: see
+// docs/keeper-design.md and this change's own commit message.
+func (s *Server) runReloadHandoff(statusf func(string)) error {
+	status := func(msg string) {
+		s.log.Info("reload: " + msg)
+		if statusf != nil {
+			statusf(msg)
+		}
+	}
+
 	s.mu.Lock()
+	if s.cancel == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("server not running")
+	}
 	running := 0
 	if s.keeperClient != nil {
 		running = s.keeperClient.KeeperVersion
@@ -517,14 +642,104 @@ func (s *Server) RequestReload() error {
 		s.mu.Unlock()
 		return fmt.Errorf("keeper is incompatible; gobnc die then start this binary")
 	}
+	if s.pendingHandoff != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("a reload is already in progress")
+	}
+	if s.reloadExe == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("reload not available (SetReloadConfig was never called)")
+	}
+	exe := s.reloadExe
+	cfgPath := s.cfgPath
+	handoffSock := s.cfg.ResolvedControlSocket()
+	state := &reloadHandoff{ready: make(chan struct{}), reply: make(chan error, 1)}
+	s.pendingHandoff = state
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.pendingHandoff == state {
+			s.pendingHandoff = nil
+		}
+		s.mu.Unlock()
+	}()
+
+	status("spawning replacement")
+	pid, proc, exited, err := daemon.SpawnReplacementForHandoff(exe, cfgPath, handoffSock, s.DebugConsole())
+	if err != nil {
+		status(fmt.Sprintf("spawn failed: %v", err))
+		return fmt.Errorf("spawn failed: %w", err)
+	}
+	status(fmt.Sprintf("spawned pid %d, waiting for handoff", pid))
+
+	select {
+	case <-state.ready:
+	case werr := <-exited:
+		status(fmt.Sprintf("replacement exited before confirming readiness: %v", werr))
+		return fmt.Errorf("replacement exited before confirming readiness: %w", werr)
+	case <-time.After(reloadHandoffTimeout):
+		_ = proc.Signal(syscall.SIGTERM)
+		status(fmt.Sprintf("replacement did not confirm readiness within %s, terminated it", reloadHandoffTimeout))
+		return fmt.Errorf("replacement did not confirm readiness within %s", reloadHandoffTimeout)
+	}
+
+	status("replacement ready, handing off")
+	s.detachFromKeeper()
+	status("detached, replacement is taking over")
+	state.reply <- nil // unblocks handleReloadHandoff to reply OK to the child
+
+	s.mu.Lock()
 	s.shutdownKind = shutdownReload
 	cancel := s.cancel
 	s.mu.Unlock()
-	if cancel == nil {
-		return fmt.Errorf("server not running")
+	if cancel != nil {
+		cancel()
 	}
-	cancel()
 	return nil
+}
+
+// handleReloadRequest owns c for the lifetime of one CmdReload connection —
+// unlike every other control command, it does not fall into handleControl's
+// generic single-write-then-close path, since it needs to stream progress
+// as runReloadHandoff's orchestration proceeds.
+func (s *Server) handleReloadRequest(c net.Conn) {
+	writeLine := func(msg string) {
+		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = c.Write([]byte(msg + "\n"))
+	}
+	err := s.runReloadHandoff(func(status string) {
+		writeLine("STATUS " + status)
+	})
+	if err != nil {
+		writeLine("ERR " + err.Error())
+		return
+	}
+	writeLine("OK")
+}
+
+// handleReloadHandoff serves a freshly spawned replacement's
+// CmdReloadHandoff request — a completely separate connection from the
+// CLI's CmdReload one, arriving on its own handleControl goroutine. It
+// blocks the child until runReloadHandoff has actually detached from the
+// keeper (see reloadHandoff's own doc comment), so the child never
+// attempts its own live attach before that's true. A request with no
+// reload in progress (s.pendingHandoff nil — a stray call, or one that
+// arrived after runReloadHandoff already gave up and cleared it) is
+// rejected rather than left hanging.
+func (s *Server) handleReloadHandoff(c net.Conn) {
+	s.mu.Lock()
+	state := s.pendingHandoff
+	s.mu.Unlock()
+	if state == nil {
+		_, _ = c.Write([]byte("ERR no reload in progress\n"))
+		return
+	}
+	state.readyOnce.Do(func() { close(state.ready) })
+	if err := <-state.reply; err != nil {
+		_, _ = c.Write([]byte("ERR " + err.Error() + "\n"))
+		return
+	}
+	_, _ = c.Write([]byte("OK\n"))
 }
 
 // RequestDie asks this brain to exit and, after Run returns, for cmd/gobnc

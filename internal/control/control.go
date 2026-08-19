@@ -19,6 +19,7 @@ const (
 	CmdReconnectNetwork = "RECONNECT_NETWORK" // reload config and drop uplink to force reconnect
 	CmdRehash           = "REHASH"            // reload gobnc.json + refresh networks (same as SIGHUP)
 	CmdReload           = "RELOAD"            // restart the brain process; keeper and uplinks stay
+	CmdReloadHandoff    = "RELOAD_HANDOFF"    // sent by a freshly spawned replacement brain to confirm it's ready to take the live keeper attach
 	CmdDie              = "DIE"               // stop brain and keeper (QUIT every uplink)
 	CmdShutdown         = "SHUTDOWN"          // graceful brain stop (same as SIGTERM); keeper stays
 	CmdStatus           = "STATUS"            // live daemon/network status (OK <json>)
@@ -76,6 +77,64 @@ func TryQuery(socketPath, line string) (payload string, ok bool, err error) {
 		return strings.TrimPrefix(resp, "OK "), true, nil
 	}
 	return "", true, fmt.Errorf("unexpected reply: %s", resp)
+}
+
+// NotifyStream is TryQuery's counterpart for a command whose handler needs
+// to report progress before it can know the outcome — currently only
+// CmdReload, whose handler (Server.handleReloadRequest) spawns a
+// replacement process and waits for it to confirm readiness before
+// replying at all. The wire shape stays plain newline-delimited text (no
+// framing change): every line up to the final one is a progress line
+// (passed to onLine verbatim, without the "STATUS " prefix); the final
+// line is "OK", "OK <payload>", or "ERR <reason>", exactly like TryQuery's
+// single-line replies. deadline bounds the whole exchange, not each read,
+// since the caller is waiting on a multi-step server-side operation with
+// its own internal timeout — this should be set comfortably longer than
+// that so the server's own timeout fires first and produces a real ERR
+// line instead of the client giving up first.
+func NotifyStream(socketPath, line string, deadline time.Duration, onLine func(string)) (ok bool, err error) {
+	c, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		if os.IsNotExist(err) || isConnRefused(err) {
+			return false, nil
+		}
+		if _, ok := err.(*net.OpError); ok {
+			return false, nil
+		}
+		return false, err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(deadline))
+	if !strings.HasSuffix(line, "\n") {
+		line += "\n"
+	}
+	if _, err := c.Write([]byte(line)); err != nil {
+		return false, err
+	}
+	r := bufio.NewReader(c)
+	for {
+		resp, err := r.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		resp = strings.TrimRight(resp, "\r\n")
+		if strings.HasPrefix(resp, "STATUS ") {
+			if onLine != nil {
+				onLine(strings.TrimPrefix(resp, "STATUS "))
+			}
+			continue
+		}
+		if strings.HasPrefix(resp, "ERR ") {
+			return true, fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR "))
+		}
+		if resp == "OK" {
+			return true, nil
+		}
+		if strings.HasPrefix(resp, "OK ") {
+			return true, nil
+		}
+		return true, fmt.Errorf("unexpected reply: %s", resp)
+	}
 }
 
 func isConnRefused(err error) bool {

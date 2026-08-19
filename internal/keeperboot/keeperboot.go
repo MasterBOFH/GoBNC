@@ -195,6 +195,30 @@ func attachOnce(ctx context.Context, opts Options) (*keeper.AttachClient, error)
 	return keeper.Attach(actx, opts.SocketPath, opts.Hello, keeper.WithAttachLogger(opts.Logger))
 }
 
+// AttachAfterHandoff attaches live to a keeper this caller already knows is
+// running — used only by a brain that was just told by its predecessor "OK,
+// go ahead" during a reload handoff (see internal/server's
+// handleReloadRequest). Unlike EnsureRunning, it never falls through to
+// "maybe spawn a keeper": doing so here would be actively wrong, since the
+// keeper is known to be alive, and spawning a second one would orphan it
+// (see EnsureRunning's own doc comment on why the spawn lock exists in the
+// first place). Instead it retries the live Attach with backoff, because
+// AttachClient.Close (called by the predecessor right before it said "go
+// ahead") only closes that connection's local socket — it does not wait
+// for the keeper to finish that connection's own teardown (canceling its
+// per-connection context, winding down every per-network fan-in goroutine,
+// then clearing the single-live-attach flag) before returning. A fresh
+// live Attach can therefore be legitimately, transiently rejected with "a
+// live attach is already active" for a short window after the predecessor
+// reports it has detached — attachWithRetry's existing polling shape
+// already absorbs exactly this kind of "give it a moment" gap for a
+// different case (a freshly spawned keeper's socket not listening yet), so
+// it's reused here rather than duplicated.
+func AttachAfterHandoff(ctx context.Context, opts Options) (*keeper.AttachClient, error) {
+	opts = withDefaults(opts)
+	return attachWithRetry(ctx, opts)
+}
+
 // attachWithRetry polls attachOnce until it succeeds or
 // opts.SpawnWaitTimeout elapses — a freshly spawned keeper needs a moment
 // to create its socket dir and start listening.
