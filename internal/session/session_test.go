@@ -917,6 +917,7 @@ func TestRequestTrackerWHOX(t *testing.T) {
 
 func TestRequestTrackerWHOXFallbackSingle(t *testing.T) {
 	rt := NewRequestTracker()
+	rt.SetIRCd(irc.IRCdIrcu)
 	cm := irc.CaseRFC1459
 	_, tok, _ := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO", PreferWHOX: true, WHOMask: "#c"})
 	rt.SetWHOXClientFix(tok, true, "")
@@ -924,6 +925,39 @@ func TestRequestTrackerWHOXFallbackSingle(t *testing.T) {
 	c, only, _, strip, restore := rt.RouteMessage(msg, cm)
 	if !only || c != "c1" || !strip || restore != "" {
 		t.Fatal(c, only, strip, restore)
+	}
+}
+
+// TestRequestTrackerWHOXDisconnectDropsStaleToken: a client disconnects
+// while a WHOX request is outstanding, then the server's 354/315 for that
+// exchange arrives with the real (properly echoed, non-"0") token. It must
+// be dropped — never misrouted to an unrelated pending WHOX, and never
+// broadcast (RouteMessage returning only=false with an empty client tells
+// HandleMessage's caller there was no destination; upstream.go additionally
+// refuses to broadcast unmatched 354/315 for exactly this reason).
+func TestRequestTrackerWHOXDisconnectDropsStaleToken(t *testing.T) {
+	rt := NewRequestTracker()
+	cm := irc.CaseRFC1459
+	_, tok1, _ := rt.Begin(BeginOpts{Client: "c1", Cmd: "WHO", PreferWHOX: true, WHOMask: cm.Canonical("#c")})
+	rt.SetWHOXClientFix(tok1, true, "")
+	_, tok2, _ := rt.Begin(BeginOpts{Client: "c2", Cmd: "WHO", PreferWHOX: true, WHOMask: cm.Canonical("#d")})
+	rt.SetWHOXClientFix(tok2, true, "")
+
+	// c1 disconnects before its reply arrives.
+	rt.DropClient("c1")
+
+	// c1's WHOX reply arrives late, still carrying its real token.
+	msg := irc.Message{Command: "354", Params: []string{"me", tok1, "#c", "nick"}}
+	c, only, _, _, _ := rt.RouteMessage(msg, cm)
+	if only {
+		t.Fatalf("stale WHOX 354 must not be routed anywhere, got client=%q", c)
+	}
+
+	// c2's still-pending request must be untouched.
+	msg2 := irc.Message{Command: "354", Params: []string{"me", tok2, "#d", "nick"}}
+	c, only, _, _, _ = rt.RouteMessage(msg2, cm)
+	if !only || c != "c2" {
+		t.Fatalf("c2's WHOX got misrouted: client=%q only=%v", c, only)
 	}
 }
 

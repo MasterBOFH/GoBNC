@@ -763,6 +763,12 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.broadcastSelfUMode()
 		return
 	}
+	// 354 (WHOX reply) and 315 (RPL_ENDOFWHO) only ever mean something
+	// correlated to a client-issued WHO/WHOX; an unmatched one (e.g. the
+	// requester disconnected before the reply arrived) is never broadcast.
+	if msg.Command == "354" || msg.Command == "315" {
+		return
+	}
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {

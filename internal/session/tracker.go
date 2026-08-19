@@ -598,10 +598,20 @@ func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []Rou
 	}
 
 	// WHOX: token is params[1] when 't' was requested (fixed field order).
+	// A real (non-"0") token that doesn't match any pending request is not
+	// a server quirk to guess around — it means the original requester is
+	// already gone (e.g. disconnected before the reply arrived). Only
+	// ircds known to default/mangle the token (ircu/snircd, which send
+	// literal "0") get the leniency below; a genuinely echoed-but-unknown
+	// token is dropped unconditionally rather than misrouted or broadcast.
+	whoxQuirkyIRCd := rt.ircd == irc.IRCdIrcu || rt.ircd == irc.IRCdSnircd
 	if msg.Command == "354" && len(msg.Params) > 1 {
 		tok := msg.Params[1]
 		if req, ok := rt.whox[tok]; ok {
 			return destsOf(req)
+		}
+		if tok != "0" {
+			return nil
 		}
 	}
 	if msg.Command == "315" {
@@ -613,26 +623,30 @@ func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []Rou
 			delete(rt.whox, tok)
 			return destsOf(req)
 		}
-		// Fallback: oldest pending WHOX.
-		var best *pendingRequest
-		var bestTok string
-		for tok, req := range rt.whox {
-			if req.Command != "WHO" && req.Command != "WHOX" {
-				continue
+		// Fallback: oldest pending WHOX, ircu/snircd only — those ircds can
+		// normalize the mask on RPL_ENDOFWHO so the exact match above misses.
+		if whoxQuirkyIRCd {
+			var best *pendingRequest
+			var bestTok string
+			for tok, req := range rt.whox {
+				if req.Command != "WHO" && req.Command != "WHOX" {
+					continue
+				}
+				if best == nil || req.Created.Before(best.Created) {
+					best = req
+					bestTok = tok
+				}
 			}
-			if best == nil || req.Created.Before(best.Created) {
-				best = req
-				bestTok = tok
+			if best != nil {
+				delete(rt.whox, bestTok)
+				return destsOf(best)
 			}
-		}
-		if best != nil {
-			delete(rt.whox, bestTok)
-			return destsOf(best)
 		}
 	}
 
-	// Fallback: single pending WHOX request (token mismatch / server defaulted querytype).
-	if (msg.Command == "354" || msg.Command == "315") && len(rt.whox) == 1 {
+	// Fallback: single pending WHOX request (token mismatch / server
+	// defaulted querytype to "0") — ircu/snircd only.
+	if whoxQuirkyIRCd && (msg.Command == "354" || msg.Command == "315") && len(rt.whox) == 1 {
 		for tok, req := range rt.whox {
 			if msg.Command == "315" {
 				delete(rt.whox, tok)
