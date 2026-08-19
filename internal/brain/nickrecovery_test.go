@@ -419,6 +419,213 @@ func TestDriverClientNICKHoldsRecoveryFromReclaiming(t *testing.T) {
 	}
 }
 
+// plainRegistrationThenRecoveryServer registers without any nick collision
+// (the requested nick is accepted outright), then drives the same
+// ISON-then-reclaim exchange nickCollisionThenRecoveryServer does — used to
+// prove recovery can be *started* by a config change alone (UpdateNetworkConfig,
+// standing in for a live "network mod" changing the configured nick), not
+// only by a registration-time collision or a client-driven NICK.
+func plainRegistrationThenRecoveryServer(t *testing.T, ln net.Listener, isonSeen chan<- string, nickSeen chan<- string) {
+	t.Helper()
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	send := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+	buf := make([]byte, 4096)
+	var pending string
+	readLine := func() (string, bool) {
+		for {
+			if i := indexCRLF(pending); i >= 0 {
+				line := pending[:i]
+				pending = pending[i+2:]
+				return line, true
+			}
+			n, err := conn.Read(buf)
+			if err != nil {
+				return "", false
+			}
+			pending += string(buf[:n])
+		}
+	}
+
+	nick := ""
+	gotUser := false
+	for {
+		line, ok := readLine()
+		if !ok {
+			return
+		}
+		switch {
+		case hasPrefix(line, "CAP LS"):
+			send(":fake.example CAP * LS :")
+		case hasPrefix(line, "NICK "):
+			nick = line[len("NICK "):]
+		case hasPrefix(line, "USER "):
+			gotUser = true
+		}
+		if nick != "" && gotUser {
+			break
+		}
+	}
+	send(":fake.example 001 " + nick + " :Welcome")
+	send(":fake.example 002 " + nick + " :Your host is fake.example")
+	send(":fake.example 003 " + nick + " :This server was created today")
+	send(":fake.example 004 " + nick + " fake.example test-1.0 a a")
+	send(":fake.example 005 " + nick + " NICKLEN=30 :are supported by this server")
+	send(":fake.example 376 " + nick + " :End of MOTD")
+
+	freedOnNextISON := false
+	for {
+		line, ok := readLine()
+		if !ok {
+			return
+		}
+		switch {
+		case hasPrefix(line, "ISON "):
+			isonSeen <- line
+			if !freedOnNextISON {
+				send(":fake.example 303 " + nick + " :wanted")
+				freedOnNextISON = true
+			} else {
+				send(":fake.example 303 " + nick + " :")
+			}
+		case hasPrefix(line, "NICK "):
+			newNick := line[len("NICK "):]
+			nickSeen <- newNick
+			send(":" + nick + "!u@h NICK :" + newNick)
+			nick = newNick
+		}
+	}
+}
+
+// TestDriverNetworkModNickChangeStartsReclaim is the live proof for the
+// "nick changed via network mod, not currently available" case: the
+// network registers cleanly on its original primary nick (no collision, no
+// client-driven NICK — recovery has never run), UpdateNetworkConfig then
+// changes the configured primary nick to one someone else holds (standing
+// in for a live "network mod --nick=" while connected), and Driver must
+// start ISON-based recovery for the *new* nick on its own, the same way it
+// already does for a registration-time collision — see
+// UpdateNetworkConfig's own doc comment on why startNickRecoveryIfNeeded is
+// called unconditionally there.
+func TestDriverNetworkModNickChangeStartsReclaim(t *testing.T) {
+	mgr := keeper.NewManager(8192, 4096, nil)
+	sockPath := testSockPath(t)
+
+	listenerCtx, cancelListener := context.WithCancel(context.Background())
+	defer cancelListener()
+	l := keeper.NewListener(mgr, nil)
+	ready := make(chan struct{})
+	go func() {
+		close(ready)
+		_ = l.Serve(listenerCtx, sockPath)
+	}()
+	<-ready
+	waitForSocket(t, sockPath)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	isonSeen := make(chan string, 8)
+	nickSeen := make(chan string, 8)
+	go plainRegistrationThenRecoveryServer(t, ln, isonSeen, nickSeen)
+	host, portStr := hostPortSplit(t, ln.Addr().String())
+
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelAttach()
+	client, err := keeper.Attach(attachCtx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer client.Close()
+
+	const netID keeper.NetworkID = 1
+	driver := NewDriver(client, WithNickRecoveryInterval(600*time.Millisecond))
+	driver.RegisterNetwork(netID, NetworkConfig{PrimaryNick: "orig", NickRecovery: true})
+
+	if err := client.SendLiveReady(); err != nil {
+		t.Fatalf("SendLiveReady: %v", err)
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	go func() { _ = driver.Run(runCtx) }()
+
+	if err := driver.Dial(netID, keeper.DialConfig{Host: host, Port: portStr}, 0); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	select {
+	case dr := <-driver.DialResults():
+		if !dr.OK {
+			t.Fatalf("DialResult.OK=false: %+v", dr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no DialResult within timeout")
+	}
+	if err := driver.StartRegistration(netID); err != nil {
+		t.Fatalf("StartRegistration: %v", err)
+	}
+	select {
+	case res := <-driver.Results():
+		if res.State.Phase != registration.PhaseComplete {
+			t.Fatalf("Result.State.Phase=%v, want complete (err=%v)", res.State.Phase, res.State.Err)
+		}
+		if res.State.Nick != "orig" {
+			t.Fatalf("registered nick=%q, want %q (no collision configured)", res.State.Nick, "orig")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("registration did not complete within timeout")
+	}
+
+	// Already on the (only) primary nick, with no collision and no
+	// client-driven NICK ever having run — recovery must not be running.
+	select {
+	case line := <-isonSeen:
+		t.Fatalf("got unexpected ISON (%q) before any config change requested a different nick", line)
+	case <-time.After(900 * time.Millisecond):
+	}
+
+	// The network-mod stand-in: configured primary nick changes to one
+	// this connection doesn't hold. No AltNick here deliberately: with one
+	// set, isonTargets ISONs both, and since the fake server below only
+	// ever reports "wanted" as online, an unset alt would read as free on
+	// the very first ISON and get reclaimed immediately — a real and
+	// correct behavior, just not what this test is isolating.
+	driver.UpdateNetworkConfig(netID, NetworkConfig{PrimaryNick: "wanted", NickRecovery: true})
+
+	// First ISON: "wanted" still reads as online. No reclaim yet.
+	select {
+	case <-isonSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("no ISON within timeout after config change")
+	}
+	select {
+	case nick := <-nickSeen:
+		t.Fatalf("reclaimed %q before the new primary nick ever read as free", nick)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Second ISON: "wanted" now reads as free. Must reclaim.
+	select {
+	case <-isonSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no second ISON within timeout")
+	}
+	select {
+	case nick := <-nickSeen:
+		if nick != "wanted" {
+			t.Fatalf("reclaimed %q, want %q", nick, "wanted")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("new primary nick was never reclaimed after reading as free")
+	}
+}
+
 func hostPortSplit(t *testing.T, addr string) (string, int) {
 	t.Helper()
 	host, portStr, err := net.SplitHostPort(addr)
