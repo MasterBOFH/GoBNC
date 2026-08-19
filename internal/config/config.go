@@ -49,6 +49,15 @@ type Config struct {
 	// MaxClients caps concurrent TLS client connections (0 = DefaultMaxClients).
 	MaxClients int `json:"max_clients,omitempty"`
 
+	// PingIdleSeconds / PingGraceSeconds control the downlink client keepalive
+	// probe: after this many seconds of silence from a client, gobnc sends it
+	// a PING; if it doesn't answer within the grace period, gobnc closes the
+	// connection. 0 uses the package defaults (downlink.KeepaliveIdle/Grace,
+	// 300s/120s). Raise these if a client's own periodic ping runs on a
+	// longer interval than that.
+	PingIdleSeconds  int `json:"ping_idle_seconds,omitempty"`
+	PingGraceSeconds int `json:"ping_grace_seconds,omitempty"`
+
 	// MaxFloodQueue caps paced uplink send queue depth (0 = unlimited).
 	MaxFloodQueue int `json:"max_flood_queue"`
 

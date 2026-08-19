@@ -30,6 +30,14 @@
   // Max concurrent TLS client connections (0 uses default 32).
   "max_clients": 32,
 
+  // Downlink client keepalive probe: after this many seconds of silence
+  // from a client, gobnc sends it a PING; if it doesn't reply within the
+  // grace period, gobnc closes the connection. 0 uses the built-in
+  // defaults (300s / 120s). Raise these if a client's own periodic ping
+  // (e.g. mIRC's timeout check) runs on a longer interval than that.
+  "ping_idle_seconds": 0,
+  "ping_grace_seconds": 0,
+
   // Max lines waiting in the paced uplink send queue (0 = unlimited).
   // Raised high by default so reconnect/catch-up bursts are not rejected early.
   "max_flood_queue": 16384,

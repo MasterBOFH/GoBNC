@@ -136,7 +136,8 @@ Release tags build `.deb` / macOS `.pkg` / FreeBSD `.tar.gz` — see `packaging/
 - Network passwords, SASL credentials, and channel keys are stored **plaintext** in SQLite (mode `0600`). Keep `db_path`, `log_file`, and any explicit `control_socket` under a private directory.
 - Control socket defaults under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc` (dir `0700`, socket `0600`, same-UID only).
 - Line limits: client 4608 bytes (`417` if longer); uplink 8703 (dropped). Default `max_clients` 32.
-- Tunables in `gobnc.json.example`: `max_flood_queue`, `legacy_playback_max`, `chathistory_max`, `history_retention_days`. Legacy attach playback uses a **shared** per-network/per-target cursor.
+- Tunables in `gobnc.json.example`: `max_flood_queue`, `legacy_playback_max`, `chathistory_max`, `history_retention_days`, `ping_idle_seconds`, `ping_grace_seconds`. Legacy attach playback uses a **shared** per-network/per-target cursor.
+- Downlink client keepalive: after `ping_idle_seconds` (default 300) of silence from a client, gobnc PINGs it; no reply within `ping_grace_seconds` (default 120) closes the connection. Raise these if a client's own periodic keepalive ping runs on a longer interval — otherwise it can get closed between two of its own pings even though every one was answered.
 
 ## Debug
 

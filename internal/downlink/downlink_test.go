@@ -929,6 +929,73 @@ func TestDownlinkLineTooLongSends417(t *testing.T) {
 	}
 }
 
+// TestRuntimeDisconnectLogged guards against a mid-session client drop (a
+// broken pipe, not a clean QUIT or a keepalive timeout) leaving no trace at
+// all — the runtime read loop used to swallow every readLine error other
+// than ErrLineTooLong silently.
+func TestRuntimeDisconnectLogged(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_ = db.SetPasswordHash(ctx, mustHash(t, "s3cret"))
+	_, err = db.UpsertNetwork(ctx, store.Network{Name: "libera", Host: "x", Port: 1, Nick: "n", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	netw, _ := db.NetworkByName(ctx, "libera")
+	sess := session.New(netw, db, nil, nil, nil)
+	mgr := &memMgr{s: sess}
+
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	l := NewListener(cfg, db, mgr, fx.ServerTLS, slog.New(cap))
+	sctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(sctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(s string) { _, _ = c.Write([]byte(s + "\r\n")) }
+	write("PASS libera/s3cret")
+	write("NICK me")
+	write("USER me 0 * :me")
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(buf[:n]), "001") {
+		t.Fatalf("got %q", buf[:n])
+	}
+
+	_ = c.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("downlink client disconnected") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing disconnect log: %#v", cap.records)
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || stringIndex(s, sub) >= 0)
 }

@@ -97,6 +97,22 @@ func (l *Listener) maxClients() int {
 	return cfg.MaxClients
 }
 
+func (l *Listener) keepaliveIdle() time.Duration {
+	cfg := l.config()
+	if cfg.PingIdleSeconds > 0 {
+		return time.Duration(cfg.PingIdleSeconds) * time.Second
+	}
+	return KeepaliveIdle
+}
+
+func (l *Listener) keepaliveGrace() time.Duration {
+	cfg := l.config()
+	if cfg.PingGraceSeconds > 0 {
+		return time.Duration(cfg.PingGraceSeconds) * time.Second
+	}
+	return KeepaliveGrace
+}
+
 // TLSConfig returns the shared listener TLS config (GetCertificate is hot-swappable).
 func (l *Listener) TLSConfig() *tls.Config {
 	return l.tlsCfg
@@ -259,10 +275,12 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	}
 	defer sess.Detach(cl.ID())
 
+	idle := l.keepaliveIdle()
+	grace := l.keepaliveGrace()
 	kaCtx, kaCancel := context.WithCancel(ctx)
 	defer kaCancel()
 	cl.touch()
-	go cl.keepaliveLoop(kaCtx)
+	go cl.keepaliveLoop(kaCtx, idle, grace)
 
 	for {
 		select {
@@ -270,13 +288,14 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 			return
 		default:
 		}
-		line, err := cl.readLine(5 * time.Minute)
+		line, err := cl.readLine(runtimeReadTimeout(idle, grace))
 		if err != nil {
 			if errors.Is(err, irc.ErrLineTooLong) {
 				l.log.Warn("downlink line too long", "client", cl.id, "phase", "runtime")
 				_ = cl.Send(irc.InputTooLong(cl.inputNick()))
 				continue
 			}
+			l.log.Debug("downlink client disconnected", "client", cl.id, "err", err, "idle", time.Since(cl.lastRX()))
 			return
 		}
 		cl.touch()
@@ -620,6 +639,16 @@ var (
 	KeepaliveGrace = 120 * time.Second
 )
 
+// runtimeReadTimeout bounds how long the post-attach loop blocks waiting for
+// a client line. It must stay comfortably above KeepaliveIdle+KeepaliveGrace
+// so keepaliveLoop — which pings an idle client and grants it a grace period,
+// logging why it gave up — is always the one to close a genuinely idle
+// connection. A shorter value here would silently race and preempt that
+// grace period with a bare, unlogged read timeout.
+func runtimeReadTimeout(idle, grace time.Duration) time.Duration {
+	return idle + grace + 30*time.Second
+}
+
 func (c *Client) touch() {
 	atomic.StoreInt64(&c.lastRXUnix, time.Now().UnixNano())
 }
@@ -632,9 +661,7 @@ func (c *Client) lastRX() time.Time {
 	return time.Unix(0, ns)
 }
 
-func (c *Client) keepaliveLoop(ctx context.Context) {
-	idle := KeepaliveIdle
-	grace := KeepaliveGrace
+func (c *Client) keepaliveLoop(ctx context.Context, idle, grace time.Duration) {
 	if idle <= 0 {
 		return
 	}
@@ -850,6 +877,7 @@ func (c *Client) writeLoop() {
 		}
 		_ = c.conn.SetWriteDeadline(time.Now().Add(downlinkWriteTimeout))
 		if _, err := io.WriteString(c.conn, raw+"\r\n"); err != nil {
+			c.log.Debug("downlink write failed; closing", "client", c.id, "err", err)
 			break
 		}
 	}
