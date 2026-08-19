@@ -315,7 +315,6 @@ func TestRingOverflowNoSubscriberSelfCloses(t *testing.T) {
 // state.
 func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	old := lineSubBuffer
-	lineSubBuffer = 256
 	t.Cleanup(func() { lineSubBuffer = old })
 
 	srv := newFakeServer(t)
@@ -335,17 +334,35 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	defer k.Close()
 	conn := <-acceptedCh
 
+	const n = 500 // total lines sent, including the priming one below
+
+	// slow and fast deliberately get different buffer depths, not the one
+	// shared lineSubBuffer override the original version of this test
+	// used for both: slow's small buffer is what forces its overflow
+	// deterministically without an 8192-line send, but reusing that same
+	// small size for fast made this test genuinely unable to pass under
+	// real contention, not just slow to pass. fast's buffer must hold the
+	// *entire* burst on its own — every non-blocking send that finds it
+	// full silently drops that one line (see publishLine), and since the
+	// loop below only exits once received==n, one single dropped line
+	// makes that unreachable forever, for a reason that has nothing to do
+	// with the property under test: if the goroutine running the receive
+	// loop below merely gets a delayed timeslice (confirmed for real in
+	// CI: go test ./... runs every package as a separate concurrent
+	// process on a commonly 2-vCPU runner), a small buffer can fill and
+	// drop before that goroutine gets a chance to drain even once. A
+	// buffer sized past the whole burst means delivery to fast can never
+	// fail for that reason — only a genuine downstream block can stall it.
+	lineSubBuffer = 256
 	slow, unsubSlow := k.SubscribeLines() // never read from
 	defer unsubSlow()
+	lineSubBuffer = n + 10
 	fast, unsubFast := k.SubscribeLines()
 	defer unsubFast()
 
-	const n = 500 // well past the 256-entry buffer, so slow overflows partway through
-
-	// Prime the fast subscriber so the drain loop is running before the
-	// burst; otherwise a tight send of 500 can fill the 256-entry buffer
-	// before this goroutine enters the receive select, and fast overflows
-	// too — a flake, not a blocked-by-slow failure.
+	// Prime the fast subscriber so the drain loop is confirmed running
+	// before the burst — belt-and-suspenders on top of fast's
+	// whole-burst-sized buffer above, not load-bearing on its own.
 	srv.send(t, conn, "NOTICE * :line0")
 	select {
 	case _, ok := <-fast.Lines:
@@ -365,26 +382,29 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	}()
 
 	received := 1
-	// A no-progress deadline, not a fixed total-time budget: a contended
-	// CI runner's absolute throughput for 499 individual srv.send calls
-	// (real syscalls) is unpredictable — a fixed budget just means
-	// picking a number that's still wrong on the next noisy run.
+	// Two real CI failures (258/500 and 428/500, each stalled for the
+	// full no-progress budget with sent already caught up to 499) turned
+	// out to be the *same* root cause: fast used to get the same small
+	// lineSubBuffer override as slow, so if the goroutine running this
+	// receive loop merely got a delayed timeslice for a moment — real and
+	// confirmed under go test ./... running every package as a separate
+	// concurrent process on a commonly 2-vCPU runner — fast's own buffer
+	// could fill and silently drop a line (see publishLine) before this
+	// loop ever got a chance to drain it. Since the loop only exits once
+	// received==n, one single dropped line made that unreachable forever,
+	// for a reason with nothing to do with the property under test. Fast
+	// is now sized to hold the entire burst on its own (n+10 above), so
+	// delivery to it can no longer fail for that reason — only a genuine
+	// downstream block can stall it.
 	//
-	// What actually matters here is distinguishing two very different
-	// "no line arrived" causes, since a fixed timeout alone can't tell
-	// them apart: (a) the fast subscriber is genuinely blocked despite
-	// lines being available — the real bug this test exists to catch —
-	// versus (b) the sender goroutine itself hasn't produced a next line
-	// yet, which happened for real in CI (stalled at 428/500 for a full
-	// 8s with a prior, more lenient budget): go test ./... runs every
-	// package's tests as separate concurrent processes on a commonly
-	// 2-vCPU runner, and the sender here is just a goroutine doing real
-	// io.WriteString syscalls in a tight loop with nothing to make it
-	// preemption-safe — entirely capable of going unscheduled for
-	// several seconds under that contention, independent of anything the
-	// code under test is doing. Comparing against sent (updated by the
-	// sender after every successful write) tells them apart directly:
-	// only extend the deadline for (b); (a) still fails promptly.
+	// The sent-vs-received comparison below is the remaining, much
+	// narrower belt-and-suspenders case: the receiving goroutine itself
+	// (this one) never getting scheduled at all for a stretch, which a
+	// bigger buffer can't help with by definition. A fixed no-progress
+	// budget still isn't the right test for that on its own — resetting
+	// the deadline only when sent has actually outrun received tells a
+	// real block (received stuck while lines are known to be waiting)
+	// apart from this goroutine simply not having run yet.
 	const noProgressTimeout = 8 * time.Second
 	const hardCap = 2 * time.Minute // backstop against a real infinite hang
 	start := time.Now()
