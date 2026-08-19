@@ -705,6 +705,10 @@ func (c *Client) keepaliveLoop(ctx context.Context, idle, grace time.Duration) {
 
 func (c *Client) ID() session.ClientID { return c.id }
 
+// RemoteAddr returns the client's peer IP (no port), for connect-notice
+// broadcasts. Empty if conn is nil (bare struct literal in tests).
+func (c *Client) RemoteAddr() string { return peerIP(c.conn) }
+
 func (c *Client) Caps() map[string]bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

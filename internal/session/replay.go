@@ -51,6 +51,10 @@ func (s *Session) serverPrefixLocked() string {
 // (no synthetic 001, no NICK).
 func (s *Session) Attach(d Downlink) error {
 	s.mu.Lock()
+	peers := make([]Downlink, 0, len(s.downlinks))
+	for _, dl := range s.downlinks {
+		peers = append(peers, dl)
+	}
 	s.downlinks[d.ID()] = d
 	registered := s.registered
 	if !registered {
@@ -82,6 +86,7 @@ func (s *Session) Attach(d Downlink) error {
 		for _, m := range buf {
 			_ = d.Send(s.rewriteFor(d, m))
 		}
+		s.notifyPeersOfAttach(peers, d)
 		return nil
 	}
 
@@ -188,7 +193,36 @@ func (s *Session) Attach(d Downlink) error {
 		}
 	}
 	s.notifyAttachCaps(d)
+	s.notifyPeersOfAttach(peers, d)
 	return nil
+}
+
+// notifyPeersOfAttach tells every downlink already attached to this network
+// (peers, snapshotted before d joined) that a client just connected,
+// including its peer IP — deliberately never sent to d itself, since a
+// client isn't notified about its own connection.
+func (s *Session) notifyPeersOfAttach(peers []Downlink, d Downlink) {
+	if len(peers) == 0 {
+		return
+	}
+	ip := d.RemoteAddr()
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.mu.RLock()
+	nick := s.liveNickLocked()
+	s.mu.RUnlock()
+	if nick == "" {
+		nick = "*"
+	}
+	msg := irc.Message{
+		Source:  ServerName,
+		Command: "NOTICE",
+		Params:  []string{nick, "Client connected from " + ip},
+	}
+	for _, p := range peers {
+		_ = p.Send(s.rewriteFor(p, msg))
+	}
 }
 
 // selfUModeMessageLocked is the `:own-prefix MODE own-nick +modes` line

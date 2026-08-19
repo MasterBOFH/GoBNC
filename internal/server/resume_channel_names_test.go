@@ -54,7 +54,8 @@ func (f *fakeServerDL) Send(msg irc.Message) error {
 	f.sent = append(f.sent, msg)
 	return nil
 }
-func (f *fakeServerDL) Close() error { return nil }
+func (f *fakeServerDL) Close() error       { return nil }
+func (f *fakeServerDL) RemoteAddr() string { return "127.0.0.1" }
 func (f *fakeServerDL) snapshot() []irc.Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()

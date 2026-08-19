@@ -1138,8 +1138,25 @@ func (s *Server) Rehash(cfgPath string) error {
 		s.log.Info("rehash listen_addr updated", "old", old.ListenAddr, "new", newCfg.ListenAddr)
 	}
 
+	s.BroadcastAll("Bouncer configuration reloaded (rehash)")
 	s.log.Info("rehash complete", "tls_cert", newCfg.TLSCert, "networks", len(names))
 	return nil
+}
+
+// BroadcastAll sends a bouncer-sourced NOTICE to every client attached to
+// every configured network — used by Rehash so every connected client
+// learns a config reload just happened, regardless of which network(s)
+// it's attached to.
+func (s *Server) BroadcastAll(text string) {
+	s.mu.RLock()
+	sessions := make([]*session.Session, 0, len(s.sess))
+	for _, sess := range s.sess {
+		sessions = append(sessions, sess)
+	}
+	s.mu.RUnlock()
+	for _, sess := range sessions {
+		sess.Broadcast(text)
+	}
 }
 
 // ListenTLS is a helper for tests.

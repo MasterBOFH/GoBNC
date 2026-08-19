@@ -108,6 +108,9 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 		return
 	case "900", "901", "903", "904", "905", "906", "907", "908":
 		s.applyAccountFromSASL(msg)
+		if s.Network.SASL {
+			s.broadcastBouncerSASLFailure(msg)
+		}
 		return
 	case "432", "433", "437":
 		// Not relayed here unconditionally: whether a given nick error is
@@ -292,6 +295,20 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		s.mu.Unlock()
 		if len(added) > 0 {
 			s.pushBlob("caps", keeper.BlobModeReplace, s.blobCapsValue())
+		}
+		// Bouncer-owned SASL: a CAP ACK granting sasl is exactly what
+		// registration.startSASL waits for before sending AUTHENTICATE
+		// (internal/registration/sasl.go) — the moment the bouncer is
+		// about to authenticate, worth a NOTICE to this network's clients.
+		// Client-driven passthrough SASL is deliberately excluded (that's
+		// the client's own CAP REQ, not the bouncer's).
+		if s.Network.SASL {
+			for _, name := range added {
+				if name == "sasl" {
+					s.Broadcast("SASL authentication starting")
+					break
+				}
+			}
 		}
 		if !registered {
 			return

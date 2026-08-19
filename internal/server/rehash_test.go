@@ -342,6 +342,72 @@ func TestRehashReloadsNetworkConfig(t *testing.T) {
 	}
 }
 
+// TestRehashBroadcastsNoticeToAttachedClients is the live proof for
+// Server.BroadcastAll's rehash hook: a client attached to a running
+// network's session must see a bouncer-sourced NOTICE about the reload
+// once Rehash completes.
+func TestRehashBroadcastsNoticeToAttachedClients(t *testing.T) {
+	dir := t.TempDir()
+	fx := testutil.NewTLSFixture(t)
+	cfgPath := filepath.Join(dir, "gobnc.json")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "t.db")
+	cfg.ControlSocket = filepath.Join(dir, "c.sock")
+	cfg.TLSCert = filepath.Join(fx.Dir, "server.crt")
+	cfg.TLSKey = filepath.Join(fx.Dir, "server.key")
+	cfg.ListenAddr = "127.0.0.1:0"
+	writeConfig(t, cfgPath, cfg)
+
+	s, err := New(cfg, gobnclog.New("error", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	attachTestKeeper(t, s)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = ctx
+	s.cancel = cancel
+	if err := s.certs.Load(cfg.TLSCert, cfg.TLSKey); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Store().UpsertNetwork(ctx, store.Network{
+		Name: "net1", Host: "127.0.0.1", Port: 6697, Nick: "n", TLS: true, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartNetworkByName("net1"); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.Session("net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.SetRegisteredForTest(true)
+
+	d := newFakeServerDL("c1")
+	if err := sess.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rehash(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, m := range d.snapshot() {
+		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "rehash") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("client got no rehash NOTICE, sent=%#v", d.snapshot())
+	}
+}
+
 func writeConfig(t *testing.T, path string, cfg config.Config) {
 	t.Helper()
 	data, err := json.MarshalIndent(cfg, "", "  ")

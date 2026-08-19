@@ -1624,6 +1624,48 @@ func TestAttachWelcomeBurst(t *testing.T) {
 	}
 }
 
+// TestAttachNotifiesPeersOfConnectingClientIP is the live proof for the
+// per-network connect-notice broadcast: an already-attached client learns
+// a second client just connected, including its IP, but the connecting
+// client itself never receives a notice about its own connection.
+func TestAttachNotifiesPeersOfConnectingClientIP(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.mu.Lock()
+	s.registered = true
+	s.mu.Unlock()
+
+	peer := &fakeDL{id: "peer", caps: map[string]bool{}}
+	if err := s.Attach(peer); err != nil {
+		t.Fatal(err)
+	}
+	peer.clearSent()
+
+	newcomer := &fakeDL{id: "newcomer", ip: "203.0.113.5", caps: map[string]bool{}}
+	if err := s.Attach(newcomer); err != nil {
+		t.Fatal(err)
+	}
+
+	var noticeToPeer *irc.Message
+	for i, m := range peer.snapshot() {
+		if m.Command == "NOTICE" {
+			noticeToPeer = &peer.snapshot()[i]
+			break
+		}
+	}
+	if noticeToPeer == nil {
+		t.Fatalf("peer got no NOTICE, sent=%#v", peer.snapshot())
+	}
+	if !strings.Contains(noticeToPeer.Trailing(), "203.0.113.5") {
+		t.Fatalf("peer NOTICE=%q, want it to mention the connecting client's IP", noticeToPeer.Trailing())
+	}
+
+	for _, m := range newcomer.snapshot() {
+		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "Client connected") {
+			t.Fatalf("newcomer must not be notified about its own connection: %+v", m)
+		}
+	}
+}
+
 func TestLive221PreservesUplinkColonation(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	s.mu.Lock()
@@ -2206,6 +2248,7 @@ func TestRequestClientSASLAlreadyEnabled(t *testing.T) {
 
 type fakeDL struct {
 	id   ClientID
+	ip   string // RemoteAddr override; defaults to "127.0.0.1" when empty
 	mu   sync.Mutex
 	caps map[string]bool
 	seen map[string]bool
@@ -2265,6 +2308,13 @@ func (f *fakeDL) Send(m irc.Message) error {
 }
 
 func (f *fakeDL) Close() error { return nil }
+
+func (f *fakeDL) RemoteAddr() string {
+	if f.ip != "" {
+		return f.ip
+	}
+	return "127.0.0.1"
+}
 
 func (f *fakeDL) snapshot() []irc.Message {
 	f.mu.Lock()

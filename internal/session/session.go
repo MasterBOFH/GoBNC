@@ -31,6 +31,9 @@ type Downlink interface {
 	MarkSeenCap(name string)
 	Send(msg irc.Message) error
 	Close() error
+	// RemoteAddr returns the client's peer IP (no port), used only for the
+	// connect-notice broadcast (see Session.Attach). Empty if unknown.
+	RemoteAddr() string
 }
 
 // ChannelState is per-channel cached state.

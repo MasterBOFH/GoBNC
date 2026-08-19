@@ -159,7 +159,10 @@ func (s *Session) routeSASLTraffic(msg irc.Message) {
 	}
 
 	if s.Network.SASL {
-		// AUTHENTICATE and 903–908 stay uplink-only.
+		// AUTHENTICATE stays uplink-only; the outcome numerics are
+		// swallowed too, except that a failure is worth a NOTICE — success
+		// is already covered by the 900 broadcast above.
+		s.broadcastBouncerSASLFailure(msg)
 		return
 	}
 
@@ -180,6 +183,26 @@ func (s *Session) routeSASLTraffic(msg irc.Message) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// broadcastBouncerSASLFailure sends a NOTICE for a bouncer-owned SASL
+// failure numeric (904/905/906) — called from both routeSASLTraffic
+// (post-registration re-auth) and HandleRegistrationLine (the common case:
+// the bouncer's own SASL attempt failing during initial registration,
+// which never reaches routeSASLTraffic since registration.Step owns that
+// traffic until PhaseComplete). Success needs no equivalent call: 900
+// (RPL_LOGGEDIN) already broadcasts unconditionally above.
+func (s *Session) broadcastBouncerSASLFailure(msg irc.Message) {
+	switch msg.Command {
+	case "904", "905", "906":
+	default:
+		return
+	}
+	reason := msg.Trailing()
+	if reason == "" {
+		reason = "SASL authentication failed"
+	}
+	s.Broadcast(reason)
 }
 
 func (s *Session) applyAccountFromSASL(msg irc.Message) {
@@ -219,6 +242,24 @@ func (s *Session) applyAccountFromSASL(msg irc.Message) {
 		s.mu.Unlock()
 		s.pushBlob("account", keeper.BlobModeReplace, nil)
 	}
+}
+
+// Broadcast sends a bouncer-sourced NOTICE to every client currently
+// attached to this network — used for the bouncer-initiated-SASL
+// initiated/failed notices (see handleCAPLine's ACK case and
+// routeSASLTraffic) and by Server.BroadcastAll for a rehash notice.
+func (s *Session) Broadcast(text string) {
+	s.mu.RLock()
+	nick := s.liveNickLocked()
+	s.mu.RUnlock()
+	if nick == "" {
+		nick = "*"
+	}
+	s.broadcastToDownlinks(irc.Message{
+		Source:  ServerName,
+		Command: "NOTICE",
+		Params:  []string{nick, text},
+	})
 }
 
 func (s *Session) broadcastToDownlinks(msg irc.Message) {
