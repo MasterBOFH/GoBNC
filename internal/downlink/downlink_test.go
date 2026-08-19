@@ -573,6 +573,99 @@ func TestPeerIP(t *testing.T) {
 	}
 }
 
+// TestIPAllowlistRejectsDisallowedIP is the live proof that an IP outside
+// AllowedIPs never gets a TLS handshake at all: the gate in handle runs
+// before tc.Handshake(), so a client dialing in with tls.Dial — which
+// performs the handshake as part of Dial — must see Dial itself fail, not
+// merely a later IRC-level rejection. The refusal is also logged at Info
+// with the source IP, which is the whole point: something like fail2ban
+// can watch for exactly this line.
+func TestIPAllowlistRejectsDisallowedIP(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowedIPs = []string{"10.0.0.0/8"} // excludes 127.0.0.1
+
+	cap := &logCapture{}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, slog.New(cap))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost"}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err == nil {
+		c.Close()
+		t.Fatal("TLS handshake should never complete for a disallowed IP")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cap.has("connection refused: ip not allowed") && cap.has("ip=127.0.0.1") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("missing ip-not-allowed log: %#v", cap.records)
+}
+
+// TestIPAllowlistAllowsMatchingIP is TestIPAllowlistRejectsDisallowedIP's
+// counterpart: a bare-IP AllowedIPs entry (no "/", exercising
+// config.ParseAllowedIPs' implicit /32) matching the connecting IP must
+// let the handshake and ordinary auth proceed exactly as with no
+// allowlist configured at all.
+func TestIPAllowlistAllowsMatchingIP(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Default()
+	cfg.AllowPasswordAuth = true
+	cfg.AllowCertAuth = false
+	cfg.AllowedIPs = []string{"127.0.0.1"}
+	_ = db.SetPasswordHash(context.Background(), mustHash(t, "s3cret"))
+	if _, err := db.UpsertNetwork(context.Background(), store.Network{Name: "n", Nick: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sess := session.New(store.Network{Name: "n", Nick: "x"}, db, nil, nil, nil)
+	l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Serve(ctx, ln) }()
+
+	clientTLS := &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost"}
+	c, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatalf("TLS handshake should succeed for an allowed IP: %v", err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("PASS n/s3cret\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	n, _ := c.Read(buf)
+	if !contains(string(buf[:n]), "001") {
+		t.Fatalf("expected successful registration, got %q", string(buf[:n]))
+	}
+}
+
 func TestPlainTCPRejected(t *testing.T) {
 	fx := testutil.NewTLSFixture(t)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)

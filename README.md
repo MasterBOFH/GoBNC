@@ -125,7 +125,9 @@ BNC die
 
 Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
-`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now (or starts the network if it was disconnected). `network disconnect` stops the uplink without deleting the network. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, and `listen_addr`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
+`network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now (or starts the network if it was disconnected). `network disconnect` stops the uplink without deleting the network. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, `listen_addr`, and `allowed_ips`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
+
+`allowed_ips` restricts which source IPs may connect at all — a list of CIDRs or bare IPs, empty (default) means unrestricted. Checked before the TLS handshake, so a rejected IP never gets far enough to do any cryptographic or IRC protocol work; logged at info level with the source IP (`connection refused: ip not allowed`) for wiring into fail2ban or similar.
 
 ## Packaging
 

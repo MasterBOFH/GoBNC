@@ -75,6 +75,63 @@ func TestValidateFailClosed(t *testing.T) {
 	}
 }
 
+func TestParseAllowedIPsCIDRAndBareIP(t *testing.T) {
+	nets, err := ParseAllowedIPs([]string{"10.0.0.0/8", "192.168.1.5", "::1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nets) != 3 {
+		t.Fatalf("got %d nets, want 3: %+v", len(nets), nets)
+	}
+	if !nets[0].Contains(mustParseIP(t, "10.1.2.3")) {
+		t.Fatal("10.0.0.0/8 should contain 10.1.2.3")
+	}
+	if !nets[1].Contains(mustParseIP(t, "192.168.1.5")) {
+		t.Fatal("bare IPv4 should compile to an exact /32")
+	}
+	if nets[1].Contains(mustParseIP(t, "192.168.1.6")) {
+		t.Fatal("bare IPv4 /32 must not match a different host")
+	}
+	if !nets[2].Contains(mustParseIP(t, "::1")) {
+		t.Fatal("bare IPv6 should compile to an exact /128")
+	}
+}
+
+func TestParseAllowedIPsEmptyMeansUnrestricted(t *testing.T) {
+	nets, err := ParseAllowedIPs(nil)
+	if err != nil || nets != nil {
+		t.Fatalf("nets=%v err=%v, want nil, nil", nets, err)
+	}
+}
+
+func TestParseAllowedIPsRejectsGarbage(t *testing.T) {
+	for _, bad := range []string{"not-an-ip", "10.0.0.0/99", "", "1.2.3.4/"} {
+		if _, err := ParseAllowedIPs([]string{bad}); err == nil {
+			t.Fatalf("entry %q: expected error, got nil", bad)
+		}
+	}
+}
+
+// TestValidateRejectsBadAllowedIPs proves Validate fails config load/rehash
+// outright on a malformed entry, rather than silently ignoring it and
+// leaving the bouncer either wide open or wrongly locked down at runtime.
+func TestValidateRejectsBadAllowedIPs(t *testing.T) {
+	cfg := Default()
+	cfg.AllowedIPs = []string{"not-an-ip"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for malformed allowed_ips entry")
+	}
+}
+
+func mustParseIP(t *testing.T, s string) net.IP {
+	t.Helper()
+	ip := net.ParseIP(s)
+	if ip == nil {
+		t.Fatalf("net.ParseIP(%q) failed", s)
+	}
+	return ip
+}
+
 func TestDefaultQuitMessage(t *testing.T) {
 	want := version.QuitMessage()
 	if want != "GoBNC "+version.Version {

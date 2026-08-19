@@ -63,5 +63,12 @@
 
   // At least one auth mode must be true.
   "allow_password_auth": true,
-  "allow_cert_auth": true
+  "allow_cert_auth": true,
+
+  // Source IPs allowed to connect at all (CIDR, e.g. "10.0.0.0/8", or a
+  // bare IP for a single host). Empty = unrestricted (default). Enforced
+  // before the TLS handshake, let alone PASS/NICK/USER; a rejected IP is
+  // logged at info level ("connection refused: ip not allowed") for
+  // wiring into fail2ban or similar.
+  "allowed_ips": []
 }

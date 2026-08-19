@@ -44,18 +44,19 @@ type Manager interface {
 
 // Listener is the TLS client listener.
 type Listener struct {
-	cfgMu   sync.RWMutex
-	cfg     config.Config
-	store   *store.Store
-	mgr     Manager
-	log     *slog.Logger
-	tlsCfg  *tls.Config
-	lnMu    sync.Mutex
-	ln      net.Listener
-	lnGen   uint64 // incremented on ReplaceListener
-	idSeq   uint64
-	active  atomic.Int64
-	authSem chan struct{} // limits concurrent argon2 verifies
+	cfgMu       sync.RWMutex
+	cfg         config.Config
+	allowedNets []*net.IPNet // compiled cfg.AllowedIPs; nil/empty = unrestricted
+	store       *store.Store
+	mgr         Manager
+	log         *slog.Logger
+	tlsCfg      *tls.Config
+	lnMu        sync.Mutex
+	ln          net.Listener
+	lnGen       uint64 // incremented on ReplaceListener
+	idSeq       uint64
+	active      atomic.Int64
+	authSem     chan struct{} // limits concurrent argon2 verifies
 }
 
 // maxAuthVerify is the max concurrent password hash checks.
@@ -66,21 +67,57 @@ func NewListener(cfg config.Config, st *store.Store, mgr Manager, tlsCfg *tls.Co
 	if log == nil {
 		log = slog.Default()
 	}
+	// cfg.AllowedIPs is already validated (Config.Validate, called before
+	// this ever runs) — an error here would mean that guarantee broke, and
+	// unrestricted is the safe direction to fail in over accidentally
+	// blocking every client.
+	nets, _ := config.ParseAllowedIPs(cfg.AllowedIPs)
 	return &Listener{
-		cfg:     cfg,
-		store:   st,
-		mgr:     mgr,
-		log:     log,
-		tlsCfg:  tlsCfg,
-		authSem: make(chan struct{}, maxAuthVerify),
+		cfg:         cfg,
+		allowedNets: nets,
+		store:       st,
+		mgr:         mgr,
+		log:         log,
+		tlsCfg:      tlsCfg,
+		authSem:     make(chan struct{}, maxAuthVerify),
 	}
 }
 
 // SetConfig updates runtime auth/limit settings (e.g. after SIGHUP rehash).
 func (l *Listener) SetConfig(cfg config.Config) {
+	nets, err := config.ParseAllowedIPs(cfg.AllowedIPs)
 	l.cfgMu.Lock()
 	l.cfg = cfg
+	if err == nil {
+		l.allowedNets = nets
+	}
 	l.cfgMu.Unlock()
+	if err != nil {
+		l.log.Warn("rehash: allowed_ips unchanged (parse failed after Validate should have caught this)", "err", err)
+	}
+}
+
+// ipAllowed reports whether ipStr may proceed past the handshake gate. No
+// AllowedIPs configured means unrestricted (the default). An IP that
+// cannot be parsed is rejected whenever a restriction is configured —
+// fail closed, never fail open.
+func (l *Listener) ipAllowed(ipStr string) bool {
+	l.cfgMu.RLock()
+	nets := l.allowedNets
+	l.cfgMu.RUnlock()
+	if len(nets) == 0 {
+		return true
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Listener) config() config.Config {
@@ -211,6 +248,19 @@ func (l *Listener) tryAcquireClient() bool {
 
 func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	defer l.active.Add(-1)
+
+	// IP allowlist gate: before the TLS handshake, let alone any IRC line
+	// (CAP/PASS/…) — a rejected IP never gets far enough to make the
+	// bouncer do any cryptographic or protocol work at all. Logged at Info
+	// with the source IP specifically so this is fail2ban-wireable (tail
+	// the log for this message and the ip= field).
+	ip := peerIP(c)
+	if !l.ipAllowed(ip) {
+		l.log.Info("connection refused: ip not allowed", "ip", ip)
+		_ = c.Close()
+		return
+	}
+
 	_ = c.SetDeadline(time.Now().Add(60 * time.Second))
 
 	tc, ok := c.(*tls.Conn)

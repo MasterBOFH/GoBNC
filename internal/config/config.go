@@ -85,6 +85,13 @@ type Config struct {
 	// Auth modes: either or both may be enabled. If neither, fail closed.
 	AllowPasswordAuth bool `json:"allow_password_auth"`
 	AllowCertAuth     bool `json:"allow_cert_auth"`
+
+	// AllowedIPs restricts which source addresses may complete a downlink
+	// connection at all. Each entry is a CIDR ("10.0.0.0/8") or a bare IP
+	// (treated as a /32 or /128). Empty means unrestricted — the default,
+	// for backward compatibility with existing configs. Enforced by
+	// internal/downlink before the TLS handshake, let alone any IRC line.
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 }
 
 // DefaultUsername / DefaultRealnameFallback are used when config defaults are empty.
@@ -376,5 +383,43 @@ func (c Config) Validate() error {
 	if !c.AllowPasswordAuth && !c.AllowCertAuth {
 		return fmt.Errorf("at least one of allow_password_auth or allow_cert_auth must be true")
 	}
+	if _, err := ParseAllowedIPs(c.AllowedIPs); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ParseAllowedIPs compiles AllowedIPs entries (CIDR or bare IP) into
+// *net.IPNet for fast membership checks. A bare IP is treated as an
+// exact-host CIDR (/32 for IPv4, /128 for IPv6). Called from Validate (so a
+// malformed entry fails config load/rehash outright, matching this field's
+// fail-closed intent) and by internal/downlink to build its runtime filter.
+func ParseAllowedIPs(entries []string) ([]*net.IPNet, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make([]*net.IPNet, 0, len(entries))
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			return nil, fmt.Errorf("allowed_ips: empty entry")
+		}
+		if !strings.Contains(entry, "/") {
+			ip := net.ParseIP(entry)
+			if ip == nil {
+				return nil, fmt.Errorf("allowed_ips: invalid IP %q", entry)
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			entry = fmt.Sprintf("%s/%d", entry, bits)
+		}
+		_, ipnet, err := net.ParseCIDR(entry)
+		if err != nil {
+			return nil, fmt.Errorf("allowed_ips: invalid CIDR %q: %w", raw, err)
+		}
+		out = append(out, ipnet)
+	}
+	return out, nil
 }
