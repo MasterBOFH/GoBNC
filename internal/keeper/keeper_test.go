@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -351,29 +352,42 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 		if !ok {
 			t.Fatal("fast subscriber closed on the priming line")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("fast subscriber got nothing")
 	}
 
+	var sent atomic.Int64
 	go func() {
 		for i := 1; i < n; i++ {
 			srv.send(t, conn, fmt.Sprintf("NOTICE * :line%d", i))
+			sent.Add(1)
 		}
 	}()
 
 	received := 1
-	// A rolling no-progress deadline, not a fixed total-time budget: a
-	// contended CI runner's absolute throughput for 499 individual
-	// srv.send calls (real syscalls) is unpredictable and confirmed far
-	// slower than local (observed as low as ~25 lines/sec on a loaded
-	// GitHub Actions runner, vs. sub-millisecond total locally) — a fixed
-	// budget just means picking a number that's still wrong on the next
-	// noisy run. What's actually under test is that the fast subscriber
-	// never stalls waiting on the slow one; resetting the deadline on
-	// every line received proves exactly that regardless of overall
-	// throughput, while a genuinely blocked fast subscriber still times
-	// out quickly.
+	// A no-progress deadline, not a fixed total-time budget: a contended
+	// CI runner's absolute throughput for 499 individual srv.send calls
+	// (real syscalls) is unpredictable — a fixed budget just means
+	// picking a number that's still wrong on the next noisy run.
+	//
+	// What actually matters here is distinguishing two very different
+	// "no line arrived" causes, since a fixed timeout alone can't tell
+	// them apart: (a) the fast subscriber is genuinely blocked despite
+	// lines being available — the real bug this test exists to catch —
+	// versus (b) the sender goroutine itself hasn't produced a next line
+	// yet, which happened for real in CI (stalled at 428/500 for a full
+	// 8s with a prior, more lenient budget): go test ./... runs every
+	// package's tests as separate concurrent processes on a commonly
+	// 2-vCPU runner, and the sender here is just a goroutine doing real
+	// io.WriteString syscalls in a tight loop with nothing to make it
+	// preemption-safe — entirely capable of going unscheduled for
+	// several seconds under that contention, independent of anything the
+	// code under test is doing. Comparing against sent (updated by the
+	// sender after every successful write) tells them apart directly:
+	// only extend the deadline for (b); (a) still fails promptly.
 	const noProgressTimeout = 8 * time.Second
+	const hardCap = 2 * time.Minute // backstop against a real infinite hang
+	start := time.Now()
 	deadline := time.Now().Add(noProgressTimeout)
 	for received < n {
 		select {
@@ -384,14 +398,25 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 			received++
 			deadline = time.Now().Add(noProgressTimeout)
 		case <-time.After(time.Until(deadline)):
-			t.Fatalf("fast subscriber only received %d/%d before stalling for %s — a slow subscriber blocked it", received, n, noProgressTimeout)
+			if time.Since(start) > hardCap {
+				t.Fatalf("fast subscriber only received %d/%d after %s total — giving up", received, n, hardCap)
+			}
+			if int64(received) >= sent.Load() {
+				// Nothing new for the sender to have delivered yet — the
+				// sender itself is the bottleneck, not the subscriber
+				// fan-out under test. Keep waiting.
+				deadline = time.Now().Add(noProgressTimeout)
+				continue
+			}
+			t.Fatalf("fast subscriber only received %d/%d (sender has produced %d) before stalling for %s — a slow subscriber blocked it",
+				received, n, sent.Load(), noProgressTimeout)
 		}
 	}
 
 	select {
 	case <-slow.Overflow:
 		// Expected: slow never drained, so it should have overflowed.
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("slow subscriber never signaled overflow despite never being drained")
 	}
 }
