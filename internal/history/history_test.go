@@ -92,6 +92,7 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 	storeLine(2, "PRIVMSG", ":a!b@c PRIVMSG #c :there")
 	storeLine(3, "PART", ":bob!u@h PART #c :bye")
 	storeLine(4, "MODE", ":chan!serv@h MODE #c +o a")
+	storeLine(5, "QUIT", ":bob!u@h QUIT :Ping timeout")
 
 	// Without event-playback: only PRIVMSG/NOTICE.
 	plain := &fakeSender{caps: map[string]bool{"chathistory": true}}
@@ -105,12 +106,12 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 		t.Fatalf("plain privmsgs=%d sent=%v", countPRIVMSG(plain.sent), cmds(plain.sent))
 	}
 	for _, m := range plain.sent {
-		if m.Command == "JOIN" || m.Command == "PART" || m.Command == "MODE" {
+		if m.Command == "JOIN" || m.Command == "PART" || m.Command == "MODE" || m.Command == "QUIT" {
 			t.Fatalf("plain client got event %s", m.Command)
 		}
 	}
 
-	// With draft/event-playback: include JOIN/PART/MODE.
+	// With draft/event-playback: include JOIN/PART/MODE/QUIT.
 	full := &fakeSender{caps: map[string]bool{
 		"chathistory": true, "draft/event-playback": true,
 	}}
@@ -124,8 +125,16 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 	if countPRIVMSG(full.sent) != 2 {
 		t.Fatalf("full privmsgs=%d got=%v", countPRIVMSG(full.sent), got)
 	}
-	if !containsCmd(got, "JOIN") || !containsCmd(got, "PART") || !containsCmd(got, "MODE") {
+	if !containsCmd(got, "JOIN") || !containsCmd(got, "PART") || !containsCmd(got, "MODE") || !containsCmd(got, "QUIT") {
 		t.Fatalf("expected events in batch: %v", got)
+	}
+	for _, m := range full.sent {
+		if m.Command != "QUIT" {
+			continue
+		}
+		if m.Source != "bob!u@h" || m.Trailing() != "Ping timeout" {
+			t.Fatalf("QUIT not reconstructed correctly: %+v", m)
+		}
 	}
 }
 
