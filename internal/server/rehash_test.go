@@ -18,6 +18,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/downlink"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/testutil"
 )
@@ -153,6 +154,9 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	cfg.ChatHistoryMax = 250
 	cfg.HistoryRetentionDays = 3
 	cfg.QuitMessage = "rehashed"
+	cfg.CTCPPing = "edge"
+	cfg.CTCPVersion = "disable"
+	cfg.CTCPOther = "disable"
 	cfg.ListenAddr = newAddr
 	cfg.DBPath = filepath.Join(dir, "other.db") // restart-only; ignored
 	cfg.LogLevel = "debug"
@@ -192,6 +196,10 @@ func TestRehashTLSAndConfig(t *testing.T) {
 	}
 	if got.QuitMessage != "rehashed" {
 		t.Fatalf("QuitMessage=%q", got.QuitMessage)
+	}
+	if s.ctcpCfg.Ping() != session.CTCPModeEdge || s.ctcpCfg.Version() != session.CTCPModeDisable || s.ctcpCfg.Other() != session.CTCPModeDisable {
+		t.Fatalf("ctcp modes not applied: ping=%v version=%v other=%v",
+			s.ctcpCfg.Ping(), s.ctcpCfg.Version(), s.ctcpCfg.Other())
 	}
 
 	fpAfter := peerFingerprint(t, newAddr, fxB)

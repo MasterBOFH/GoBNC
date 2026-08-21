@@ -123,6 +123,65 @@ func TestValidateRejectsBadAllowedIPs(t *testing.T) {
 	}
 }
 
+func TestDefaultCTCPModes(t *testing.T) {
+	cfg := Default()
+	if cfg.CTCPPing != "relay" || cfg.CTCPVersion != "relay" || cfg.CTCPOther != "relay" {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+func TestLoadJSONCTCPEmptyFallsBackToRelay(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cfg.json")
+	if err := os.WriteFile(p, []byte(`{"listen_addr":"0.0.0.0:7000","ctcp_ping":""}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadJSON(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CTCPPing != "relay" {
+		t.Fatalf("ctcp_ping = %q, want relay", cfg.CTCPPing)
+	}
+}
+
+func TestLoadJSONCTCPExplicitValues(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cfg.json")
+	content := `{"listen_addr":"0.0.0.0:7000","ctcp_ping":"edge","ctcp_version":"disable","ctcp_other":"disable"}`
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadJSON(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CTCPPing != "edge" || cfg.CTCPVersion != "disable" || cfg.CTCPOther != "disable" {
+		t.Fatalf("%+v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected Validate error: %v", err)
+	}
+}
+
+func TestValidateRejectsBadCTCPMode(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"ctcp_ping garbage", func(c *Config) { c.CTCPPing = "sometimes" }},
+		{"ctcp_version garbage", func(c *Config) { c.CTCPVersion = "sometimes" }},
+		{"ctcp_other garbage", func(c *Config) { c.CTCPOther = "sometimes" }},
+		{"ctcp_other edge not allowed", func(c *Config) { c.CTCPOther = "edge" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mut(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
 func mustParseIP(t *testing.T, s string) net.IP {
 	t.Helper()
 	ip := net.ParseIP(s)

@@ -41,6 +41,7 @@ type Server struct {
 	daemonLog   bool      // resolve empty log_file to state-dir default
 	store       *store.Store
 	hist        *history.Store
+	ctcpCfg     *session.CTCPConfig
 	mu          sync.RWMutex
 	sess        map[string]*session.Session
 	sessByNetID map[keeper.NetworkID]*session.Session
@@ -111,11 +112,17 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	}
 	hist := history.NewWithLimits(st, cfg.ChatHistoryMax, cfg.LegacyPlaybackMax)
 	hist.SetLogger(log)
+	ctcpCfg := session.NewCTCPConfig(
+		session.CTCPMode(cfg.CTCPPing),
+		session.CTCPMode(cfg.CTCPVersion),
+		session.CTCPMode(cfg.CTCPOther),
+	)
 	return &Server{
 		cfg:         cfg,
 		log:         log,
 		store:       st,
 		hist:        hist,
+		ctcpCfg:     ctcpCfg,
 		sess:        make(map[string]*session.Session),
 		sessByNetID: make(map[keeper.NetworkID]*session.Session),
 		certs:       &certHolder{},
@@ -827,6 +834,7 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 		return nil, err
 	}
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name), s.driver)
+	sess.SetCTCPConfig(s.ctcpCfg)
 	netID := sess.NetworkID()
 	s.attachAdmin(sess)
 	if s.logSink != nil {
@@ -1095,6 +1103,11 @@ func (s *Server) Rehash(cfgPath string) error {
 	}
 	s.hist.SetMaxLimit(newCfg.ChatHistoryMax)
 	s.hist.SetLegacyPlaybackMax(newCfg.LegacyPlaybackMax)
+	s.ctcpCfg.Set(
+		session.CTCPMode(newCfg.CTCPPing),
+		session.CTCPMode(newCfg.CTCPVersion),
+		session.CTCPMode(newCfg.CTCPOther),
+	)
 	// Global TLS client cert / bind host need no push: dialConfigForLocked
 	// resolves them fresh from s.cfg (updated above) on each Dial/Reconnect,
 	// matching the "keeper reads TLS material fresh per dial, brain caches

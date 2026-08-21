@@ -75,6 +75,11 @@ type Session struct {
 	driver  *brain.Driver
 	netID   keeper.NetworkID
 	tracker *RequestTracker
+	// ctcp holds the shared (server-wide) relay/edge/disable settings for
+	// incoming CTCP PING/VERSION/other requests. Nil-safe: a Session that
+	// never had SetCTCPConfig called (e.g. most existing tests) behaves as
+	// if every mode were CTCPModeRelay, matching pre-CTCP-feature behavior.
+	ctcp *CTCPConfig
 
 	mu       sync.RWMutex
 	self     *User
@@ -383,6 +388,17 @@ func (s *Session) WriteMessage(msg irc.Message) error {
 		return fmt.Errorf("uplink not ready")
 	}
 	return s.driver.WriteRaw(s.netID, msg.Wire())
+}
+
+// SetCTCPConfig installs the shared (server-wide) CTCP relay/edge/disable
+// settings this Session consults on every incoming CTCP request. Called
+// once at construction (internal/server.registerNetworkLocked); the
+// pointed-to CTCPConfig is updated in place on rehash, so no further calls
+// are needed per Session afterward.
+func (s *Session) SetCTCPConfig(c *CTCPConfig) {
+	s.mu.Lock()
+	s.ctcp = c
+	s.mu.Unlock()
 }
 
 func (s *Session) flushTrackerWrites() {

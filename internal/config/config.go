@@ -72,6 +72,19 @@ type Config struct {
 	// HistoryRetentionDays prunes stored messages older than N days (0 = no prune).
 	HistoryRetentionDays int `json:"history_retention_days"`
 
+	// CTCPPing / CTCPVersion / CTCPOther control how incoming CTCP requests
+	// (any CTCP-framed PRIVMSG, whether targeted at our own nick or a
+	// channel we're in) are handled: "relay" forwards live to attached
+	// downlinks unchanged (default); "edge" answers the request directly
+	// from the bouncer over the uplink instead of relaying it; "disable"
+	// drops the request entirely (no reply from anyone). CTCP requests are
+	// never stored for chathistory/legacy replay regardless of mode.
+	// CTCPOther (every CTCP verb besides PING/VERSION/ACTION) only supports
+	// "relay"/"disable" — there is no bouncer-side reply for those.
+	CTCPPing    string `json:"ctcp_ping,omitempty"`
+	CTCPVersion string `json:"ctcp_version,omitempty"`
+	CTCPOther   string `json:"ctcp_other,omitempty"`
+
 	// QuitMessage is sent as QUIT to all uplinks on process shutdown (not per-network).
 	// Empty uses version.QuitMessage() ("GoBNC <version>").
 	QuitMessage string `json:"quit_message"`
@@ -116,6 +129,9 @@ func Default() Config {
 		ChatHistoryMax:       DefaultChatHistoryMax,
 		HistoryRetentionDays: 0,
 		QuitMessage:          version.QuitMessage(),
+		CTCPPing:             "relay",
+		CTCPVersion:          "relay",
+		CTCPOther:            "relay",
 		DefaultUsername:      DefaultUsernameFallback,
 		DefaultRealname:      DefaultRealnameFallback,
 		AllowPasswordAuth:    true,
@@ -311,6 +327,15 @@ func LoadJSON(path string) (Config, error) {
 	if cfg.ChatHistoryMax <= 0 {
 		cfg.ChatHistoryMax = DefaultChatHistoryMax
 	}
+	if cfg.CTCPPing == "" {
+		cfg.CTCPPing = "relay"
+	}
+	if cfg.CTCPVersion == "" {
+		cfg.CTCPVersion = "relay"
+	}
+	if cfg.CTCPOther == "" {
+		cfg.CTCPOther = "relay"
+	}
 	return cfg, nil
 }
 
@@ -385,6 +410,15 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseAllowedIPs(c.AllowedIPs); err != nil {
 		return err
+	}
+	if c.CTCPPing != "relay" && c.CTCPPing != "edge" && c.CTCPPing != "disable" {
+		return fmt.Errorf("ctcp_ping: invalid value %q (want relay, edge, or disable)", c.CTCPPing)
+	}
+	if c.CTCPVersion != "relay" && c.CTCPVersion != "edge" && c.CTCPVersion != "disable" {
+		return fmt.Errorf("ctcp_version: invalid value %q (want relay, edge, or disable)", c.CTCPVersion)
+	}
+	if c.CTCPOther != "relay" && c.CTCPOther != "disable" {
+		return fmt.Errorf("ctcp_other: invalid value %q (want relay or disable)", c.CTCPOther)
 	}
 	return nil
 }

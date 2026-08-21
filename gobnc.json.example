@@ -52,6 +52,19 @@
   // Delete stored messages older than N days (0 = never prune).
   "history_retention_days": 0,
 
+  // How incoming CTCP requests (PING, VERSION, or anything else
+  // CTCP-framed, whether sent to our own nick or a channel we're in) are
+  // handled: "relay" forwards live to attached downlinks unchanged
+  // (default); "edge" answers directly from the bouncer over the uplink
+  // instead of relaying; "disable" drops the request, no reply from
+  // anyone. ctcp_other has no "edge" option. CTCP requests are never
+  // stored for chathistory/legacy replay, regardless of mode. ACTION
+  // (/me) and CTCP-framed NOTICE (a reply, not a request) always relay
+  // untouched.
+  "ctcp_ping": "relay",
+  "ctcp_version": "relay",
+  "ctcp_other": "relay",
+
   // QUIT reason sent to all uplinks on process shutdown.
   "quit_message": "GoBNC 0.1.1",
 

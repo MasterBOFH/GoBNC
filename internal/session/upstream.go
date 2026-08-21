@@ -717,6 +717,9 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.fanoutSelfEcho(msg, pending)
 		return
 	}
+	if s.handleUplinkCTCP(msg) {
+		return
+	}
 	s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
 	s.applyState(msg)
 
