@@ -443,6 +443,10 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 		Remote:          remote,
 		Outbound:        out,
 	})
+	// Begin sweeps expired requests; a stale head may just have released
+	// the held write behind it, and nothing else will flush it until the
+	// next uplink line otherwise.
+	s.flushTrackerWrites()
 	if label != "" {
 		if out.Tags == nil {
 			out.Tags = map[string]string{}

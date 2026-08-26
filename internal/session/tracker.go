@@ -59,13 +59,22 @@ type RouteDest struct {
 // stickyRoute delivers one follow-up numeric (e.g. 329 after MODE 324) to the
 // same dests after the target enquiry has already ended.
 type stickyRoute struct {
-	dests []RouteDest
-	Code  string
+	dests   []RouteDest
+	Code    string
+	Created time.Time
 }
+
+// requestTTL bounds how long a solicitous request stays routable. A reply
+// that never arrives (a server silently dropping a remote STATS, a netsplit
+// eating the end numeric, an ircd quirk we don't know about) must not pin
+// its route — and, for hold-write kinds, block every later same-kind
+// request — forever. Begin and routing sweep anything older than this.
+const requestTTL = 10 * time.Minute
 
 // RequestTracker routes solicitous replies to the originating downlink.
 type RequestTracker struct {
 	mu      sync.Mutex
+	now     func() time.Time             // clock; tests substitute it
 	labeled map[string]*pendingRequest   // label -> req
 	whox    map[string]*pendingRequest   // token -> req
 	whois   map[string][]*pendingRequest // folded nick -> waiters (oldest first)
@@ -88,6 +97,7 @@ const whoisRemoteNick = "\x00"
 // NewRequestTracker creates an empty tracker.
 func NewRequestTracker() *RequestTracker {
 	return &RequestTracker{
+		now:     time.Now,
 		labeled: make(map[string]*pendingRequest),
 		whox:    make(map[string]*pendingRequest),
 		whois:   make(map[string][]*pendingRequest),
@@ -311,6 +321,7 @@ type BeginOpts struct {
 func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeNow bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	rt.expireLocked()
 	cmd := opts.Cmd
 	req := &pendingRequest{
 		Client:          opts.Client,
@@ -323,7 +334,7 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 		Remote:          opts.Remote,
 		EndCodes:        endCodesFor(cmd, rt.ircd),
 		ReplyCodes:      replyCodesFor(cmd, rt.ircd),
-		Created:         time.Now(),
+		Created:         rt.now(),
 		Outbound:        opts.Outbound,
 	}
 	if opts.PreferLabel {
@@ -523,6 +534,7 @@ func (rt *RequestTracker) RouteMessage(msg irc.Message, cm irc.CaseMapping) (cli
 }
 
 func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []RouteDest {
+	rt.expireLocked()
 	if lbl, ok := msg.Tag("label"); ok && lbl != "" {
 		if req, ok := rt.labeled[lbl]; ok {
 			if req.EndCodes[msg.Command] {
@@ -533,7 +545,7 @@ func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []Rou
 						target = cm.Canonical(msg.Params[1])
 					}
 					if target != "" {
-						rt.sticky[target] = &stickyRoute{dests: destsOf(req), Code: "329"}
+						rt.sticky[target] = &stickyRoute{dests: destsOf(req), Code: "329", Created: rt.now()}
 					}
 				}
 				delete(rt.labeled, lbl)
@@ -698,7 +710,7 @@ func (rt *RequestTracker) routeTargetQueue(queues map[string][]*pendingRequest, 
 	dests := destsOf(req)
 	if req.EndCodes[cmd] {
 		if sticky324 && req.Command == "MODE" && cmd == "324" && req.ReplyCodes["329"] {
-			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329"}
+			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329", Created: rt.now()}
 		}
 		rt.popWaiters(queues, target)
 	}
@@ -728,7 +740,7 @@ func (rt *RequestTracker) routeModeLocked(msg irc.Message, cm irc.CaseMapping) [
 	dests := destsOf(req)
 	if req.EndCodes[msg.Command] {
 		if req.Command == "MODE" && msg.Command == "324" && req.ReplyCodes["329"] {
-			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329"}
+			rt.sticky[target] = &stickyRoute{dests: dests, Code: "329", Created: rt.now()}
 		}
 		rt.mode[key] = waiters[1:]
 		if len(rt.mode[key]) == 0 {
@@ -1216,6 +1228,64 @@ func isModeEnquiryError(cmd string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// expireLocked forgets every request older than requestTTL (see its doc).
+// A stale in-flight head releases the held write queued behind it, exactly
+// as DropClient does when the head's client goes away. Coalesced extras
+// ride on their head's age: they never wrote anything, so nothing can
+// arrive for them once the head's reply is given up on.
+func (rt *RequestTracker) expireLocked() {
+	now := rt.now()
+	stale := func(req *pendingRequest) bool { return now.Sub(req.Created) > requestTTL }
+	for k, req := range rt.labeled {
+		if stale(req) {
+			delete(rt.labeled, k)
+		}
+	}
+	for k, req := range rt.whox {
+		if stale(req) {
+			delete(rt.whox, k)
+		}
+	}
+	rt.expireQueue(rt.whois, stale)
+	rt.expireQueue(rt.stats, stale)
+	rt.expireQueue(rt.mode, stale)
+	rt.expireQueue(rt.topic, stale)
+	rt.expireQueue(rt.names, stale)
+	rt.expireQueue(rt.serial, stale)
+	for k, s := range rt.sticky {
+		if now.Sub(s.Created) > requestTTL {
+			delete(rt.sticky, k)
+		}
+	}
+}
+
+func (rt *RequestTracker) expireQueue(queues map[string][]*pendingRequest, stale func(*pendingRequest) bool) {
+	for key, waiters := range queues {
+		var kept []*pendingRequest
+		droppedHead := false
+		for i, req := range waiters {
+			if stale(req) {
+				if i == 0 {
+					droppedHead = true
+				}
+				continue
+			}
+			kept = append(kept, req)
+		}
+		if len(kept) == len(waiters) {
+			continue
+		}
+		if len(kept) == 0 {
+			delete(queues, key)
+			continue
+		}
+		queues[key] = kept
+		if droppedHead {
+			rt.enqueueHeldWrite(kept[0])
+		}
 	}
 }
 
