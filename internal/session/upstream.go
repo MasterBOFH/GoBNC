@@ -301,8 +301,13 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		// (internal/registration/sasl.go) — the moment the bouncer is
 		// about to authenticate, worth a NOTICE to this network's clients.
 		// Client-driven passthrough SASL is deliberately excluded (that's
-		// the client's own CAP REQ, not the bouncer's).
-		if s.Network.SASL {
+		// the client's own CAP REQ, not the bouncer's). So is any ACK
+		// after registration: only registration.Step ever sends
+		// AUTHENTICATE, and it is terminal by then, so a post-001 ACK
+		// (from the NEW case's re-REQ below) never precedes an auth
+		// attempt and the NOTICE would announce something that can't
+		// happen.
+		if s.Network.SASL && !registered {
 			for _, name := range added {
 				if name == "sasl" {
 					s.Broadcast("SASL authentication starting")
@@ -355,9 +360,20 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 				s.notifySASLOfferChange(prev, now)
 			}
 		}
+		// Bouncer-owned SASL that already succeeded (900 seen, no 901
+		// since) has nothing to gain from re-enabling the cap when an
+		// ircd re-advertises it — typically CAP DEL :sasl / CAP NEW
+		// :sasl=… around a services restart. Nothing could complete a
+		// post-registration re-auth anyway (registration.Step is terminal
+		// past PhaseComplete and nothing else sends AUTHENTICATE), so the
+		// REQ would only buy a CAP ACK and a misleading "SASL
+		// authentication starting" NOTICE with nothing after it.
+		s.mu.RLock()
+		skipSASL := !saslWanted || s.loggedIn
+		s.mu.RUnlock()
 		var req []string
 		for _, want := range DesiredCaps {
-			if want == "sasl" && !saslWanted {
+			if want == "sasl" && skipSASL {
 				continue
 			}
 			if _, ok := available[want]; ok && !s.HasUpCap(want) {
