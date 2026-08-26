@@ -126,7 +126,9 @@ func endCodesFor(cmd, ircd string) map[string]bool {
 	case "WHOWAS":
 		return map[string]bool{"369": true, "431": true}
 	case "STATS":
-		return map[string]bool{"219": true}
+		// 219 = normal end. 402 = no such server on a remote STATS: the
+		// server sends it alone, never followed by 219.
+		return map[string]bool{"219": true, "402": true}
 	case "LIST":
 		return map[string]bool{"323": true, "402": true}
 	case "NAMES":
@@ -208,6 +210,7 @@ func replyCodesFor(cmd, ircd string) map[string]bool {
 			"216": true, "217": true, "218": true, "219": true,
 			"241": true, "242": true, "243": true, "244": true, "245": true,
 			"246": true, "247": true, "248": true, "249": true, "250": true,
+			"402": true,
 		}
 	case "MAP":
 		return irc.MAPReplyCodes(ircd)
@@ -580,6 +583,22 @@ func (rt *RequestTracker) routeLocked(msg irc.Message, cm irc.CaseMapping) []Rou
 		}
 	}
 
+	// STATS 402 ERR_NOSUCHSERVER: the whole reply to a remote STATS the
+	// server can't route (no 219 follows). params[1] is the server mask the
+	// client sent, so match it against the in-flight (head) waiter's Remote.
+	// Only heads can be in flight — same-letter/different-remote requests
+	// behind them are HoldWrite and haven't been written yet.
+	if msg.Command == "402" && len(msg.Params) > 1 {
+		remote := foldServer(msg.Params[1])
+		for letter, waiters := range rt.stats {
+			if len(waiters) == 0 || waiters[0].Remote == "" || waiters[0].Remote != remote {
+				continue
+			}
+			dests := destsOf(waiters[0])
+			rt.popWaiters(rt.stats, letter)
+			return dests
+		}
+	}
 	// STATS: 219 carries the query letter in params[1].
 	if msg.Command == "219" && len(msg.Params) > 1 {
 		letter := foldStatsLetter(msg.Params[1])

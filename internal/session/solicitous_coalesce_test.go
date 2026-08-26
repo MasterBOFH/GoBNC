@@ -371,3 +371,50 @@ func TestRequestTrackerTIMELocalVsRemote(t *testing.T) {
 		t.Fatalf("held remote TIME: %+v", ready)
 	}
 }
+
+// A remote STATS that the server rejects with 402 ERR_NOSUCHSERVER never
+// gets a 219; the 402 is the whole reply. It must route to the requester
+// and clear the waiter, or every later STATS on the same letter is held
+// behind it forever (observed live: "stats p oinke*" -> 402, then plain
+// "stats p" produced no replies).
+func TestRequestTrackerSTATS402ClearsWaiter(t *testing.T) {
+	rt := NewRequestTracker()
+	cm := irc.CaseRFC1459
+	_, _, w1 := rt.Begin(BeginOpts{
+		Client: "c1", Cmd: "STATS", StatsLetter: "p", Remote: "oinke*",
+		Outbound: irc.Message{Command: "STATS", Params: []string{"p", "oinke*"}},
+	})
+	if !w1 {
+		t.Fatal("first STATS p oinke* should write")
+	}
+	got := rt.RouteAll(irc.Message{Command: "402", Params: []string{"telnIRC", "oinke*", "No such server"}}, cm)
+	requireDests(t, got, "c1")
+
+	_, _, w2 := rt.Begin(BeginOpts{
+		Client: "c1", Cmd: "STATS", StatsLetter: "p",
+		Outbound: irc.Message{Command: "STATS", Params: []string{"p"}},
+	})
+	if !w2 {
+		t.Fatal("STATS p after a 402'd remote STATS p must write, not hold")
+	}
+	got = rt.RouteAll(irc.Message{Command: "219", Params: []string{"telnIRC", "p", "End of /STATS report"}}, cm)
+	requireDests(t, got, "c1")
+	if ready := rt.TakeReady(); len(ready) != 0 {
+		t.Fatalf("nothing should be held: %+v", ready)
+	}
+}
+
+// Same failure via labeled-response: the label maps to the request, and
+// 402 must count as its end numeric.
+func TestRequestTrackerSTATS402EndsLabeled(t *testing.T) {
+	rt := NewRequestTracker()
+	cm := irc.CaseRFC1459
+	rt.Begin(BeginOpts{Client: "c1", Cmd: "STATS", ClientLabel: "L1", PreferLabel: true, Remote: "oinke*"})
+	msg := irc.Message{Command: "402", Params: []string{"telnIRC", "oinke*", "No such server"}}
+	msg.Tags = map[string]string{"label": "L1"}
+	got := rt.RouteAll(msg, cm)
+	requireDests(t, got, "c1")
+	if got = rt.RouteAll(msg, cm); len(got) != 0 {
+		t.Fatalf("label should be released after 402: %v", destIDs(got))
+	}
+}
