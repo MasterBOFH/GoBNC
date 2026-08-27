@@ -376,13 +376,29 @@ Each entry carries a brain-chosen key and a mode:
 | mode | semantics | built keys |
 |---|---|---|
 | `append` | accumulate in order under this key | `isupport` |
-| `replace` | latest-wins | `cloak`, `self-nick`, `account`, `channel:#foo`, `caps`, `uplink-server`, `rpl002`, `rpl003`, `rpl004` |
-| `delete` | remove the key | `channel:#foo` (on `PART`/self-`KICK`) |
+| `replace` | latest-wins | `cloak`, `self-nick`, `account`, `channel:#foo`, `caps`, `uplink-server`, `rpl002`, `rpl003`, `rpl004`, `resumable` |
+| `delete` | remove the key | `channel:#foo` (on `PART`/self-`KICK`), `resumable` (on `CAP DEL`) |
 
 The keeper matches on the key string and applies the mode
 (`internal/keeper/blob.go`). It never inspects the value — that's what
 keeps the store bounded on a long-running session without the keeper
-understanding IRC. (The version-tag idea raised below for a differently-
+understanding IRC.
+
+**One key the keeper reads back, by presence only: `resumable`**
+(`keeper.BlobKeyResumable`). The brain pushes it once the uplink has
+negotiated IRCv3 `draft/resume-0.5` (`internal/registration/resume.go`
+has the protocol; `internal/session` persists the token in SQLite and
+presents it on the next registration through `brain.NetworkConfig`) and
+deletes it on a `CAP DEL` of that capability. It changes exactly one
+keeper behaviour: `Manager.QuitCloseAll` — the keeper's *own* shutdown —
+sends `BRB :<reason>` instead of `QUIT :<reason>` to a network holding
+the key, so the server-side session survives for the next brain+keeper
+to `RESUME`. This is the mechanism that makes a keeper upgrade
+session-preserving on a server that supports resume; a brain restart
+never needed it. Still within the boundary rule: the brain decided what
+the wire means and told the keeper how to say goodbye; the keeper
+inspected no value and learned nothing about IRC. The blob is cleared on
+every disconnect, so the key can't outlive the connection it describes. (The version-tag idea raised below for a differently-
 built brain to recognize a format it doesn't understand is not built —
 values today are a fixed, package-internal encoding, JSON for the
 structured keys and plain bytes for the scalar ones; revisit if this

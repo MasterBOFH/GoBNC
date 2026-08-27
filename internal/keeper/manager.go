@@ -135,17 +135,24 @@ func (m *Manager) Snapshot() []NetworkStatus {
 // errNotConnected, discarded here — there's nothing to report shutdown
 // failures to once the caller is already exiting).
 //
+// A network the brain has marked resumable (Keeper.Resumable, via the
+// BlobKeyResumable blob key) gets BRB instead of QUIT, same reason text:
+// the whole point of the keeper going away with its session intact is
+// that the next brain+keeper can RESUME it, and a QUIT would end that
+// session for good. Everything else about the close is identical.
+//
 // This exists for exactly one caller: a deliberate keeper process
 // shutdown. That is the mirror image of the brain-exit rule elsewhere in
 // this project (see Driver.QuitNetwork's doc comment) — a brain restart
 // must send nothing, because the keeper keeps holding the sockets through
 // it, but a keeper shutdown genuinely has no one left to hold them, so
-// every server on the other end deserves a real QUIT rather than a
-// connection reset that reads as a ping timeout.
+// every server on the other end deserves a real QUIT (or BRB) rather than
+// a connection reset that reads as a ping timeout.
 func (m *Manager) QuitCloseAll(reason string, perNetworkTimeout, overallTimeout time.Duration) {
-	line := "QUIT"
+	quitLine, brbLine := "QUIT", "BRB"
 	if reason != "" {
-		line += " :" + reason
+		quitLine += " :" + reason
+		brbLine += " :" + reason
 	}
 	all := m.All()
 	done := make(chan struct{})
@@ -155,6 +162,10 @@ func (m *Manager) QuitCloseAll(reason string, perNetworkTimeout, overallTimeout 
 			wg.Add(1)
 			go func(k *Keeper) {
 				defer wg.Done()
+				line := quitLine
+				if k.Resumable() {
+					line = brbLine
+				}
 				_ = k.QuitClose(line, perNetworkTimeout)
 			}(k)
 		}

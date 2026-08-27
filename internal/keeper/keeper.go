@@ -267,6 +267,27 @@ func (k *Keeper) PushBlob(key string, mode BlobMode, value []byte) {
 	k.blob.Push(key, mode, value)
 }
 
+// BlobKeyResumable is the one blob key the keeper itself reads (by
+// presence only — its value is never inspected). The brain pushes it once
+// the uplink has negotiated a session-resumption capability (IRCv3
+// draft/resume-0.5, internal/registration/resume.go) and deletes it if
+// the ircd withdraws that capability; the blob is cleared on every
+// disconnect anyway, so it can never outlive the connection it describes.
+//
+// It changes exactly one thing: how the keeper says goodbye on its own
+// shutdown. A network holding this key gets "BRB :<reason>" — the spec's
+// "keep my session, I'll be back" — instead of "QUIT :<reason>", which
+// would end the server-side session the brain is about to resume. This is
+// still the brain deciding what the wire means and the keeper doing what
+// it was told; the keeper learns nothing about IRC from it.
+const BlobKeyResumable = "resumable"
+
+// Resumable reports whether the brain has marked this network's uplink
+// session resumable — see BlobKeyResumable.
+func (k *Keeper) Resumable() bool {
+	return k.blob.Has(BlobKeyResumable)
+}
+
 // BlobSnapshot returns this network's current resolved blob state, as
 // delivered to an attaching client in HelloAckMsg.
 func (k *Keeper) BlobSnapshot() []BlobEntry {
