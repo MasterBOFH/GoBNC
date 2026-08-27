@@ -151,3 +151,43 @@ func TestHeldResumeKicksClientWhenResumeFails(t *testing.T) {
 		t.Fatalf("resume-failed fallback: ERROR=%v closed=%v, want kick", hasCmd(d, "ERROR"), d.wasClosed())
 	}
 }
+
+// While resuming, the channel/roster burst (332 topic, 353/366 NAMES) IS
+// relayed to a held client — a NAMES reply is authoritative, so it is how
+// the client reconciles anything that changed during the gap — while the
+// welcome preamble (001..005) and the client's own umode MODE stay
+// suppressed.
+func TestHeldResumeRelaysRosterButNotWelcome(t *testing.T) {
+	s, d := resumableSession(t, true)
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	d.clearSent()
+
+	feed := func(line string) {
+		msg, err := irc.Parse(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":srv 005 me NICKLEN=30 :are supported by this server")
+	feed(":me MODE me :+iw")                       // own umodes: preamble, suppress
+	feed(":srv 332 me #chan :the topic")           // relay
+	feed(":srv 353 me = #chan :me +bob @carol")    // relay (authoritative roster)
+	feed(":srv 366 me #chan :End of /NAMES list.") // relay
+	feed(":srv 376 me :End of MOTD")
+
+	if hasCmd(d, "001") || hasCmd(d, "005") {
+		t.Fatalf("welcome preamble leaked to held client: %v", sentCommands(d))
+	}
+	for _, m := range d.snapshot() {
+		if m.Command == "MODE" && len(m.Params) > 0 && m.Param(0) == "me" {
+			t.Fatalf("self-umode MODE leaked to held client: %+v", m)
+		}
+	}
+	if !hasCmd(d, "332") || !hasCmd(d, "353") || !hasCmd(d, "366") {
+		t.Fatalf("roster/topic burst not relayed to held client: %v", sentCommands(d))
+	}
+}

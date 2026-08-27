@@ -155,13 +155,17 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	if visible {
 		targets = make([]Downlink, 0, len(s.awaitingUplink))
 		for id := range s.awaitingUplink {
-			// A client held across a resume already has this welcome burst
-			// from before the drop; re-sending 001..376 mid-session would
-			// read as a reconnect. Suppress it for them — their state is
-			// preserved, not rebuilt from the replay. A client that
-			// attached fresh during the resume window is not in this set
-			// and is served normally.
-			if s.resuming && s.heldAcrossResume[id] {
+			// A client held across a resume already has the welcome
+			// preamble (001..005, MOTD/LUSERS, its own umode line) from
+			// before the drop; re-sending it mid-session would read as a
+			// reconnect, so suppress just that for held clients. The
+			// channel/roster burst that follows (332/333/353/366, and any
+			// TOPIC/MODE) is NOT suppressed — a NAMES reply is authoritative
+			// for the channel's membership, so relaying it is exactly how a
+			// held client reconciles anything that changed during the gap.
+			// A client that attached fresh during the window is not in this
+			// set and is served everything normally.
+			if s.resuming && s.heldAcrossResume[id] && s.resumeSuppressibleLocked(msg) {
 				continue
 			}
 			if d, ok := s.downlinks[id]; ok {
@@ -193,6 +197,29 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 // HandleRegistrationLine's own case for why those need different handling
 // entirely, not just a "relay or don't" decision made from the command
 // name alone.
+// resumeSuppressibleLocked reports whether msg is part of the welcome
+// preamble a resumed reconnect replays that a held client already has and
+// should not be re-shown: the 001..005 block, the LUSERS/MOTD numerics, and
+// the client's own umode line (a self-targeted MODE, or 221 RPL_UMODEIS —
+// ircu2's feat/resume sends the former, but tolerate either). Everything
+// else the replay carries — the channel/roster burst above all — is relayed
+// so the held client reconciles gap changes from authoritative server data.
+// Caller holds s.mu (reads s.self via the case-mapped self-nick compare).
+func (s *Session) resumeSuppressibleLocked(msg irc.Message) bool {
+	switch strings.ToUpper(msg.Command) {
+	case "001", "002", "003", "004", "005",
+		"251", "252", "253", "254", "255", "256", "257", "258", "259",
+		"265", "266", "375", "372", "376", "377", "378", "422",
+		"221", "396", "900":
+		return true
+	case "MODE":
+		// Self-umode MODE (":me MODE me +iw") is preamble; a channel MODE
+		// is a real change and must relay.
+		return s.self != nil && s.isupport.CaseMapping.Equal(msg.Param(0), s.self.Nick)
+	}
+	return false
+}
+
 func isRegistrationVisible(cmd string) bool {
 	switch strings.ToUpper(cmd) {
 	case "NOTICE", "MODE":
