@@ -109,6 +109,11 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	case "900", "901", "903", "904", "905", "906", "907", "908":
 		s.applyAccountFromSASL(msg)
 		if s.Network.SASL {
+			// Flags only — the passthrough offer this outcome decides is
+			// computed once, in completeRegistration.
+			s.mu.Lock()
+			s.noteBouncerSASLOutcomeLocked(msg.Command)
+			s.mu.Unlock()
 			s.broadcastBouncerSASLFailure(msg)
 		}
 		return
@@ -211,6 +216,14 @@ func (s *Session) completeRegistration() {
 	}
 	prevOffer := caps.Offered(nil) // a fresh registration always starts from an empty upCaps (see HandleDisconnect)
 	s.registered = true
+	if s.bouncerSASLPending {
+		// sasl was ACK'd for the bouncer but no outcome ever came:
+		// registration.startSASL found no mechanism it could use and
+		// sent CAP END instead. The bouncer isn't going to authenticate —
+		// hand sasl to clients (rule 4 in bouncerOwnsSASLLocked).
+		s.bouncerSASLPending = false
+		s.bouncerSASLFailed = true
+	}
 	nick := s.self.Nick
 	// Clients that watched live registration are done awaiting.
 	awaiting := make([]Downlink, 0, len(s.awaitingUplink))
@@ -307,10 +320,24 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		// registration.StepPost AUTHENTICATE exchange.
 		if s.Network.SASL {
 			for _, name := range added {
-				if name == "sasl" {
-					s.Broadcast("SASL authentication starting")
-					break
+				if name != "sasl" {
+					continue
 				}
+				// Whose REQ was this? During registration, always the
+				// bouncer's. After it, the bouncer's only if the NEW case
+				// below marked one pending — otherwise it's a client's
+				// passthrough REQ (only possible once the bouncer's own
+				// attempt has failed), which is not ours to announce.
+				s.mu.Lock()
+				bouncer := !registered || s.bouncerSASLPending
+				if bouncer {
+					s.bouncerSASLPending = true
+				}
+				s.mu.Unlock()
+				if bouncer {
+					s.Broadcast("SASL authentication starting")
+				}
+				break
 			}
 		}
 		if !registered {
@@ -348,30 +375,41 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 			return
 		}
 		available := parseCapList(trailing)
-		saslWanted := s.Network.SASL
-		if v, ok := available["sasl"]; ok {
-			s.mu.Lock()
-			s.noteSASLOfferLocked(v)
-			s.mu.Unlock()
-			if !saslWanted {
-				prev, now := s.refreshSASLOffer()
-				s.notifySASLOfferChange(prev, now)
-			}
-		}
 		// Bouncer-owned SASL: re-REQing sasl here is what starts a
 		// post-registration re-auth (the ACK triggers
 		// registration.StepPost via brain.Driver), which is wanted when
 		// sasl wasn't available at connect time or we've since been
-		// logged out (901) — and pointless when we're still logged in
-		// (900 seen, no 901 since): an ircd re-advertising sasl around a
-		// services restart (CAP DEL :sasl / CAP NEW :sasl=…) must not
-		// make an authenticated session start over.
-		s.mu.RLock()
-		skipSASL := !saslWanted || s.loggedIn
-		s.mu.RUnlock()
+		// logged out (901) — and not when we're still logged in (900
+		// seen, no 901 since: an ircd re-advertising sasl around a
+		// services restart must not make an authenticated session start
+		// over), nor while an exchange — ours, or a client's passthrough
+		// one (rule 5 in bouncerOwnsSASLLocked) — is already in flight,
+		// nor when the offered mechanisms are ones we can't use (then
+		// clients get sasl instead, rule 4). While the bouncer is going
+		// to try, clients get nothing (rule 2): the offer is withdrawn
+		// and any client REQ waiting on the uplink is NAK'd.
+		bouncerTry := false
+		if v, ok := available["sasl"]; ok {
+			s.mu.Lock()
+			s.noteSASLOfferLocked(v)
+			if s.Network.SASL && !s.loggedIn && !s.bouncerSASLPending && s.saslClient == "" && !s.upCaps["sasl"] {
+				if s.bouncerSASLMechUsableLocked() {
+					bouncerTry = true
+					s.bouncerSASLPending = true
+					s.bouncerSASLFailed = false
+				} else {
+					s.bouncerSASLFailed = true
+				}
+			}
+			s.mu.Unlock()
+			if bouncerTry {
+				s.finishSASLWaiters(false)
+			}
+			s.syncSASLOffer()
+		}
 		var req []string
 		for _, want := range DesiredCaps {
-			if want == "sasl" && skipSASL {
+			if want == "sasl" && !bouncerTry {
 				continue
 			}
 			if _, ok := available[want]; ok && !s.HasUpCap(want) {
@@ -401,6 +439,10 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 			if name == "sasl" {
 				s.upSASLAvailable = false
 				s.upSASLMechs = nil
+				// An exchange the ircd just pulled sasl out from under
+				// isn't going to produce an outcome; let the next CAP NEW
+				// start a fresh one.
+				s.bouncerSASLPending = false
 			}
 		}
 		s.mu.Unlock()
@@ -547,6 +589,8 @@ func (s *Session) HandleDisconnect(err error) {
 	s.saslWaiters = nil
 	s.saslReqPending = false
 	s.saslClient = ""
+	s.bouncerSASLPending = false
+	s.bouncerSASLFailed = false
 	s.loggedIn = false
 	s.rpl002, s.rpl003, s.rpl004 = nil, nil, nil
 	s.uplinkServer = ""

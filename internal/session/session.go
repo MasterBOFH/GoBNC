@@ -117,13 +117,22 @@ type Session struct {
 	saslWaiters    []ClientID
 	saslReqPending bool
 	saslClient     ClientID // downlink mid AUTHENTICATE exchange
-	loggedIn       bool     // true after RPL_LOGGEDIN until RPL_LOGGEDOUT
-	rpl002         []string // params after nick
-	rpl003         []string
-	rpl004         []string
-	uplinkServer   string // source prefix from uplink 001 when known
-	ircd           string // detected IRCd family (irc.IRCd*)
-	registered     bool   // true after uplink OnRegistered until OnDisconnect
+	// bouncerSASLPending / bouncerSASLFailed track the bouncer's own
+	// (Network.SASL) attempt: pending from the moment the bouncer is
+	// committed to an exchange (its sasl CAP REQ post-registration, the
+	// CAP ACK during registration) until the outcome numeric; failed
+	// once an attempt ended in 904/905/906 or could never start (no
+	// usable mechanism), cleared by any later successful login. Together
+	// they decide who owns the uplink's sasl — see bouncerOwnsSASLLocked.
+	bouncerSASLPending bool
+	bouncerSASLFailed  bool
+	loggedIn           bool     // true after RPL_LOGGEDIN until RPL_LOGGEDOUT
+	rpl002             []string // params after nick
+	rpl003             []string
+	rpl004             []string
+	uplinkServer       string // source prefix from uplink 001 when known
+	ircd               string // detected IRCd family (irc.IRCd*)
+	registered         bool   // true after uplink OnRegistered until OnDisconnect
 	// gotWelcome tracks 001 pre-registration, mirroring
 	// registration.State.GotWelcome — completeRegistration is only ever
 	// triggered by 376/422 after 001 has actually been seen, matching

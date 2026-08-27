@@ -1,6 +1,8 @@
 package session
 
 import (
+	"strings"
+
 	"github.com/MasterBOFH/GoBNC/internal/caps"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
@@ -25,23 +27,96 @@ func (s *Session) SetSASLOfferForTest(offer string) {
 	s.mu.Unlock()
 }
 
+// bouncerOwnsSASLLocked reports whether the uplink's sasl belongs to the
+// bouncer's own configured SASL (Network.SASL) right now. Configured and
+// not known to have failed means the bouncer either has authenticated,
+// is mid-exchange, or is about to be — and clients are held off: no
+// passthrough offer, client AUTHENTICATE dropped, a client CAP REQ sasl
+// NAK'd. Once the bouncer's attempt has failed (904/905/906, or no
+// mechanism it could use), sasl is handed to clients exactly as if the
+// bouncer had no SASL configured, until a login succeeds again. The
+// rules, in order:
+//
+//  1. Network.SASL off: relay sasl to clients immediately (CAP LS/NEW).
+//  2. Network.SASL on: hold — never relay a CAP NEW sasl while the
+//     bouncer's exchange is pending; NAK client REQs meanwhile.
+//  3. Bouncer succeeds (900/903): don't relay; withdraw (CAP DEL) an
+//     offer left over from an earlier failure.
+//  4. Bouncer fails: relay CAP NEW sasl=… and let passthrough work.
+//  5. Bouncer never starts an exchange while a client's is in flight
+//     (handleCAPLine's NEW case checks saslClient).
+//
+// Two AUTHENTICATE exchanges can't interleave on one uplink, which is
+// what 2 and 5 exist for. Caller holds s.mu.
+func (s *Session) bouncerOwnsSASLLocked() bool {
+	return s.Network.SASL && !s.bouncerSASLFailed
+}
+
+// noteBouncerSASLOutcomeLocked records the end of a bouncer-owned
+// exchange from its outcome numeric. Caller holds s.mu.
+func (s *Session) noteBouncerSASLOutcomeLocked(cmd string) {
+	switch cmd {
+	case "900", "903", "907":
+		s.bouncerSASLPending = false
+		s.bouncerSASLFailed = false
+	case "904", "905", "906":
+		s.bouncerSASLPending = false
+		s.bouncerSASLFailed = true
+	}
+}
+
+// bouncerSASLMechUsableLocked mirrors registration.pickSASLMech's
+// mechanism-list half: with credentials the bouncer needs SCRAM-SHA-256
+// or PLAIN on offer, without a password EXTERNAL; an empty list (sasl
+// advertised with no value) is taken as "try it", as pickSASLMech does.
+// Whether a client certificate is actually configured for EXTERNAL isn't
+// known here (that resolution is I/O, done once in internal/server) — a
+// misconfigured EXTERNAL still gets REQ'd, and the resulting silent
+// non-attempt leaves the bouncer pending until the next CAP DEL/NEW.
+// Caller holds s.mu.
+func (s *Session) bouncerSASLMechUsableLocked() bool {
+	if len(s.upSASLMechs) == 0 {
+		return true
+	}
+	want := []string{"EXTERNAL"}
+	if s.Network.SASLUser != "" && s.Network.SASLPass != "" {
+		want = []string{"SCRAM-SHA-256", "PLAIN"}
+	}
+	for _, m := range s.upSASLMechs {
+		for _, w := range want {
+			if strings.EqualFold(m, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // refreshSASLOffer recomputes the passthrough SASL offer from the uplink's
 // current sasl availability — Session's own upSASLAvailable/upSASLMechs
 // (kept current by HandleRegistered and HandleLine's CAP interpretation),
-// replacing the old uplink.Uplink.SASLAvailable() query. bouncerOwnsSASL is
-// just s.Network.SASL now: internal/uplink.Uplink.OwnsSASL() only ever
-// reduced to the same field (u.cfg.Network.SASL), so the indirection
-// through a live Uplink instance added nothing worth keeping.
+// replacing the old uplink.Uplink.SASLAvailable() query — and from who
+// owns sasl right now (bouncerOwnsSASLLocked; this used to be the static
+// Network.SASL, which left clients with no way to authenticate the uplink
+// after the bouncer's own attempt had failed).
 func (s *Session) refreshSASLOffer() (prev, now string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev = s.saslOffer
 	s.saslOffer = ""
-	if !s.Network.SASL && s.upSASLAvailable {
+	if !s.bouncerOwnsSASLLocked() && s.upSASLAvailable {
 		s.saslOffer = caps.FormatSASL(s.upSASLMechs)
 	}
 	now = s.saslOffer
 	return prev, now
+}
+
+// syncSASLOffer recomputes the offer and tells cap-notify clients about
+// any change — the post-registration path for a sasl-only change (the
+// CAP ACK/DEL cases diff the whole offered set themselves).
+func (s *Session) syncSASLOffer() {
+	prev, now := s.refreshSASLOffer()
+	s.notifySASLOfferChange(prev, now)
 }
 
 func (s *Session) notifySASLOfferChange(prev, now string) {
@@ -153,15 +228,34 @@ func (s *Session) routeSASLTraffic(msg irc.Message) {
 
 	switch msg.Command {
 	case "900", "901":
+		if msg.Command == "900" {
+			// Whoever drove the exchange, the uplink is logged in: the
+			// bouncer's earlier failure (if any) no longer hands sasl to
+			// clients. The offer itself is resynced on the 903 that
+			// follows (both branches below) — see the client branch.
+			s.mu.Lock()
+			s.bouncerSASLFailed = false
+			s.mu.Unlock()
+		}
 		// Login state is session-wide regardless of who drove AUTHENTICATE.
 		s.broadcastToDownlinks(msg)
 		return
 	}
 
-	if s.Network.SASL {
+	s.mu.Lock()
+	bouncer := s.Network.SASL && s.bouncerSASLPending
+	if bouncer {
+		s.noteBouncerSASLOutcomeLocked(msg.Command)
+	}
+	s.mu.Unlock()
+	if bouncer {
 		// AUTHENTICATE stays uplink-only; the outcome numerics are
 		// swallowed too, except that a failure is worth a NOTICE — success
-		// is already covered by the 900 broadcast above.
+		// is already covered by the 900 broadcast above. The outcome also
+		// decides the passthrough offer (rules 3 and 4 in
+		// bouncerOwnsSASLLocked): a failure hands sasl to clients, a
+		// success takes back an offer left from an earlier failure.
+		s.syncSASLOffer()
 		s.broadcastBouncerSASLFailure(msg)
 		return
 	}
@@ -182,6 +276,11 @@ func (s *Session) routeSASLTraffic(msg irc.Message) {
 			s.saslClient = ""
 		}
 		s.mu.Unlock()
+		// A client login clears bouncerSASLFailed (see the 900 case
+		// above); after the outcome is delivered, withdraw the offer that
+		// login made moot — done here rather than on the 900 itself so
+		// the CAP DEL never lands between a client's 900 and 903.
+		s.syncSASLOffer()
 	}
 }
 
@@ -297,14 +396,16 @@ func (s *Session) rplLoggedInLocked() (irc.Message, bool) {
 }
 
 func (s *Session) forwardClientAuthenticate(d Downlink, msg irc.Message) error {
-	if s.Network.SASL {
-		// Bouncer handles SASL; clients never drive AUTHENTICATE.
-		return nil
-	}
 	if !d.HasCap("sasl") || s.driver == nil {
 		return nil
 	}
 	s.mu.Lock()
+	if s.bouncerOwnsSASLLocked() {
+		// Bouncer handles SASL; clients don't drive AUTHENTICATE unless
+		// the bouncer's own attempt has failed (rule 4).
+		s.mu.Unlock()
+		return nil
+	}
 	if s.saslClient != "" && s.saslClient != d.ID() {
 		s.mu.Unlock()
 		return nil
