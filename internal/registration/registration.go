@@ -57,6 +57,12 @@ var DesiredCaps = []string{
 	"sasl",
 	"chathistory",
 	"draft/chathistory",
+	// draft/resume-0.5 (github.com/DanielOaks/ircv3-specifications,
+	// branch master+resume): requested whenever offered, even on a
+	// connection that has no token to resume with, because negotiating it
+	// is what makes the server issue the token the *next* connection
+	// resumes with. See resume.go.
+	"draft/resume-0.5",
 }
 
 // Phase is where the state machine currently is.
@@ -65,6 +71,7 @@ type Phase int
 const (
 	PhaseCAPNegotiation  Phase = iota
 	PhaseAuthenticating        // CAP ACK'd sasl and we want it; mid AUTHENTICATE exchange
+	PhaseResuming              // RESUME <token> sent, waiting for RESUME SUCCESS or FAIL RESUME (see resume.go)
 	PhaseAwaitingWelcome       // CAP END sent (or skipped), waiting for 001..376/422
 	PhaseComplete
 	PhaseFailed
@@ -76,6 +83,8 @@ func (p Phase) String() string {
 		return "cap_negotiation"
 	case PhaseAuthenticating:
 		return "authenticating"
+	case PhaseResuming:
+		return "resuming"
 	case PhaseAwaitingWelcome:
 		return "awaiting_welcome"
 	case PhaseComplete:
@@ -121,6 +130,35 @@ type State struct {
 
 	RPL002, RPL003, RPL004 []string
 	ISUPPORT               *irc.ISUPPORT
+
+	// ResumeToken is the draft/resume-0.5 token the *previous* connection
+	// was issued, to be presented with RESUME once the server ACKs the
+	// capability. Set by the caller after New, before the first Step;
+	// empty means never attempt a resume. ResumeTimestamp is the optional
+	// server-time-format timestamp of the last line received on that
+	// previous connection, sent as RESUME's second parameter when set.
+	// Neither is ever touched by New — they're connection-attempt inputs,
+	// like the nick, that the caller carries across attempts.
+	ResumeToken     string
+	ResumeTimestamp string
+	// IssuedToken is the token *this* connection was issued (RESUME TOKEN),
+	// surfaced to the caller via ActionResumeToken so it can be persisted
+	// for the next attempt. Kept separate from ResumeToken because the
+	// server issues it before the RESUME command is sent — one field would
+	// clobber the token that's about to be presented.
+	IssuedToken string
+	// Resumed is true once the server accepted RESUME (RESUME SUCCESS):
+	// the session being registered is the old one, not a fresh login.
+	// Copied onto ActionRegistered so the caller can skip fresh-connection
+	// side effects (auto-join above all — the server replays the JOINs).
+	Resumed bool
+
+	// resumeRuledOut records that this connection can no longer resume —
+	// the cap wasn't offered, was NAK'd, or the RESUME itself failed —
+	// which is what turns a deferred nick-ladder exhaustion (pendingNickErr)
+	// into a real ActionFailed. See stepNickError and resume.go.
+	resumeRuledOut bool
+	pendingNickErr error
 
 	GotWelcome bool
 	Err        error // set when Phase == PhaseFailed
@@ -209,6 +247,13 @@ const (
 	// ActionFailed: registration cannot complete (nick exhausted, server
 	// ERROR, SASL required but failed). Err has the reason.
 	ActionFailed
+	// ActionResumeToken: the server issued this connection a
+	// draft/resume-0.5 token (Token). The caller should persist it —
+	// durably enough to survive whatever it wants to resume across — and
+	// feed it back as State.ResumeToken on the next connection attempt.
+	// Emitted at most once per connection in practice, but nothing here
+	// depends on that: a later one simply supersedes an earlier one.
+	ActionResumeToken
 )
 
 func (k ActionKind) String() string {
@@ -219,6 +264,8 @@ func (k ActionKind) String() string {
 		return "registered"
 	case ActionFailed:
 		return "failed"
+	case ActionResumeToken:
+		return "resume_token"
 	default:
 		return "unknown"
 	}
@@ -227,10 +274,12 @@ func (k ActionKind) String() string {
 // Action is one thing Step wants the caller to do. Exactly the fields
 // relevant to Kind are meaningful; the rest are zero.
 type Action struct {
-	Kind   ActionKind
-	Line   string // ActionSend
-	Err    error  // ActionFailed
-	Replay bool   // copied from the triggering Input; see ActionKind docs
+	Kind    ActionKind
+	Line    string // ActionSend
+	Err     error  // ActionFailed
+	Token   string // ActionResumeToken
+	Resumed bool   // ActionRegistered: the session was resumed, not freshly registered (State.Resumed)
+	Replay  bool   // copied from the triggering Input; see ActionKind docs
 }
 
 // Input is one message driving a Step call.
@@ -263,6 +312,11 @@ func Step(s State, in Input) (State, []Action) {
 	case "AUTHENTICATE":
 		return stepAuthenticate(s, in)
 
+	case "RESUME":
+		return stepResume(s, in)
+	case "FAIL":
+		return stepFail(s, in)
+
 	case "900":
 		return stepLoggedIn(s, in)
 	case "903", "904", "905", "906", "907": // SASL outcomes
@@ -273,7 +327,10 @@ func Step(s State, in Input) (State, []Action) {
 		if len(msg.Params) > 0 {
 			s.Nick = msg.Params[0]
 		}
-		if s.Phase == PhaseCAPNegotiation {
+		if s.Phase == PhaseCAPNegotiation || s.Phase == PhaseResuming {
+			// PhaseResuming: a server that completes registration on
+			// RESUME without a RESUME SUCCESS line first. Not what the
+			// spec describes, but 001 is unambiguous either way.
 			s.Phase = PhaseAwaitingWelcome
 		}
 		return s, nil
@@ -302,7 +359,7 @@ func Step(s State, in Input) (State, []Action) {
 			return s, nil // not actually registered yet; ignore
 		}
 		s.Phase = PhaseComplete
-		return s, []Action{{Kind: ActionRegistered, Replay: in.Replay}}
+		return s, []Action{{Kind: ActionRegistered, Resumed: s.Resumed, Replay: in.Replay}}
 
 	case "432", "433", "437": // erroneous/in-use/unavailable nick
 		return stepNickError(s, in)
@@ -345,6 +402,14 @@ func stepCAP(s State, in Input) (State, []Action) {
 				req = append(req, want)
 			}
 		}
+		if _, ok := s.Offered[ResumeCap]; !ok {
+			// The full offer is now known and resume isn't in it: a
+			// deferred nick-ladder failure (see stepNickError) is real.
+			var failed []Action
+			if s, failed = ruleOutResume(s, in); failed != nil {
+				return s, failed
+			}
+		}
 		if len(req) == 0 {
 			s.Phase = PhaseAwaitingWelcome
 			return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
@@ -352,21 +417,31 @@ func stepCAP(s State, in Input) (State, []Action) {
 		return s, []Action{{Kind: ActionSend, Line: "CAP REQ :" + strings.Join(req, " "), Replay: in.Replay}}
 
 	case "ACK":
-		acked := false
 		for _, raw := range strings.Fields(trailing) {
 			name, _, _ := strings.Cut(strings.TrimPrefix(raw, "-"), "=")
 			s.Acked[name] = true
-			if name == "sasl" {
-				acked = true
-			}
 		}
-		if s.SASL.Wanted && acked {
-			return startSASL(s, in)
+		if s.Phase == PhaseResuming {
+			// A second ACK while RESUME is outstanding (a server ACKing a
+			// multi-cap REQ in pieces) changes nothing: the resume
+			// outcome, not this ACK, decides what happens next.
+			return s, nil
 		}
-		s.Phase = PhaseAwaitingWelcome
-		return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
+		if resumePossible(s) && s.Acked[ResumeCap] {
+			// Resume, not SASL: the spec forbids authenticating when a
+			// resume is intended, since completing SASL ends
+			// registration and aborts the attempt. SASL (if wanted) runs
+			// only if the resume fails — see stepFail.
+			return sendResume(s, in)
+		}
+		return continueRegistration(s, in)
 
 	case "NAK":
+		// Whatever was NAK'd, no resume is happening on this connection.
+		var failed []Action
+		if s, failed = ruleOutResume(s, in); failed != nil {
+			return s, failed
+		}
 		s.Phase = PhaseAwaitingWelcome
 		return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
 
