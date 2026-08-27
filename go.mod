@@ -3,6 +3,7 @@ module github.com/MasterBOFH/GoBNC
 go 1.26.5
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/xdg-go/scram v1.2.0
