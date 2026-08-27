@@ -9,9 +9,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/MasterBOFH/GoBNC/internal/wsconn"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -278,10 +280,22 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 		return
 	}
 
+	// A WebSocket client (IRCv3 websocket extension) opens with an HTTP
+	// upgrade — "GET ..." — which no IRC client's first line ever is, so
+	// peeking distinguishes the two on the same TLS port. The buffered
+	// reader is reused either way: for a WS client it carries the request
+	// bytes into the upgrade; for a plain client it is the client's IRC
+	// line reader.
+	r := bufio.NewReaderSize(tc, irc.MaxClientLine)
+	if peek, _ := r.Peek(4); string(peek) == "GET " {
+		l.serveWebSocket(ctx, tc, r)
+		return
+	}
+
 	cl := &Client{
 		id:       session.ClientID(fmt.Sprintf("c%d", atomic.AddUint64(&l.idSeq, 1))),
 		conn:     tc,
-		r:        bufio.NewReaderSize(tc, irc.MaxClientLine),
+		r:        r,
 		caps:     make(map[string]bool),
 		capsSeen: make(map[string]bool),
 		log:      l.log,
@@ -293,7 +307,17 @@ func (l *Listener) handle(ctx context.Context, c net.Conn) {
 	// bare defer c.Close() here would race that flush and could drop the
 	// queued message entirely.
 	defer cl.Close()
+	l.serveClient(ctx, cl, tc)
+}
 
+// serveClient runs an authenticated-then-live downlink session over cl's
+// connection (a raw TLS conn, or a WebSocket adapter — cl.conn is all this
+// cares about). tc is the underlying *tls.Conn, kept for the client-cert
+// fingerprint and peer IP, which are properties of the TLS layer beneath
+// either transport. Split out of handle so the WebSocket path (which must
+// run the whole session inside an http.Handler) reuses it verbatim.
+func (l *Listener) serveClient(ctx context.Context, cl *Client, tc *tls.Conn) {
+	c := cl.conn
 	// Cert-only: reject unknown/missing client certs before any IRC (CAP/PASS/…).
 	cfg := l.config()
 	peerFP, presentedCert := peerCertFingerprint(tc)
@@ -1007,3 +1031,81 @@ func FingerprintSHA256(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
+
+// serveWebSocket upgrades an inbound IRCv3-WebSocket client and runs its
+// session. websocket.Accept needs http.ResponseWriter/*http.Request, so the
+// session runs inside a one-shot http.Server handler over this single TLS
+// connection; when the handler returns, http.Server closes the conn — so
+// the handler blocks in serveClient for the whole session. r is the
+// buffered reader that already holds the client's HTTP request bytes (from
+// the GET peek), replayed to the server via prefixConn.
+func (l *Listener) serveWebSocket(ctx context.Context, tc *tls.Conn, r *bufio.Reader) {
+	ln := &oneConnListener{conn: &prefixConn{r: r, Conn: tc}, done: make(chan struct{})}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			wsc, _, err := wsconn.Server(w, req, tc, irc.MaxClientLine)
+			if err != nil {
+				l.log.Debug("websocket accept failed", "ip", peerIP(tc), "err", err)
+				return
+			}
+			cl := &Client{
+				id:       session.ClientID(fmt.Sprintf("c%d", atomic.AddUint64(&l.idSeq, 1))),
+				conn:     wsc,
+				r:        bufio.NewReaderSize(wsc, irc.MaxClientLine),
+				caps:     make(map[string]bool),
+				capsSeen: make(map[string]bool),
+				log:      l.log,
+			}
+			defer cl.Close()
+			l.serveClient(ctx, cl, tc)
+		}),
+	}
+	// Serve returns once the handler completes and the one-shot listener
+	// reports no more connections; both the handler's own Close and this
+	// keep the underlying TLS conn from leaking.
+	_ = srv.Serve(ln)
+	_ = tc.Close()
+}
+
+// prefixConn is tc with its already-buffered bytes (the peeked HTTP request)
+// replayed first: Read drains r, which itself reads from tc, so the http
+// server sees the full request even though handle() peeked it. Everything
+// else is tc.
+type prefixConn struct {
+	r *bufio.Reader
+	net.Conn
+}
+
+func (p *prefixConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+// oneConnListener hands its single connection to http.Server.Serve exactly
+// once, then blocks Accept until Close so Serve stops after that one
+// connection rather than spinning.
+type oneConnListener struct {
+	conn net.Conn
+	once sync.Once
+	done chan struct{}
+}
+
+func (l *oneConnListener) Accept() (net.Conn, error) {
+	var c net.Conn
+	l.once.Do(func() { c = l.conn })
+	if c != nil {
+		return c, nil
+	}
+	<-l.done
+	return nil, errOneConnDone
+}
+
+func (l *oneConnListener) Close() error {
+	select {
+	case <-l.done:
+	default:
+		close(l.done)
+	}
+	return nil
+}
+
+func (l *oneConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+var errOneConnDone = errors.New("oneConnListener: closed")

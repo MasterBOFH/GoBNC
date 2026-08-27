@@ -196,3 +196,19 @@ func Client(ctx context.Context, transport net.Conn, urlStr string, maxLine int)
 	sub := ws.Subprotocol()
 	return newConn(ws, transport, sub, maxLine), sub, nil
 }
+
+// Server completes the IRCv3 WebSocket server handshake for an inbound
+// client and returns a line-framed net.Conn plus the negotiated
+// subprotocol. It is meant to be called from an http.Handler serving a
+// single hijackable connection (see internal/downlink's WebSocket path):
+// w and r are that handler's arguments, and base is the underlying
+// transport, used only so the returned conn reports the real client
+// address (websocket.Accept hijacks w, hiding it otherwise).
+func Server(w http.ResponseWriter, r *http.Request, base net.Conn, maxLine int) (net.Conn, string, error) {
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: Subprotocols})
+	if err != nil {
+		return nil, "", err
+	}
+	sub := ws.Subprotocol()
+	return newConn(ws, base, sub, maxLine), sub, nil
+}
