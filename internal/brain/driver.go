@@ -86,6 +86,14 @@ type NetworkConfig struct {
 	// back in through here.
 	ResumeToken string
 
+	// ResumeTimestamp is the draft/resume-0.5 RESUME timestamp param (the
+	// server-time of the last line the previous connection received). Only
+	// the boot/restart seed comes from here (the caller reads it from the
+	// store); during a live session the Driver tracks the current value
+	// itself from @time tags and prefers that on a redial — see
+	// resetStateLocked and handleLine.
+	ResumeTimestamp string
+
 	// Name is a purely cosmetic display label for this network (e.g. the
 	// store.Network.Name a caller already has) — used only for raw-traffic
 	// log lines (see Driver.log's doc comment); Driver has no other notion
@@ -145,6 +153,7 @@ type Driver struct {
 	mu              sync.Mutex
 	states          map[keeper.NetworkID]registration.State // presence = tracked
 	configs         map[keeper.NetworkID]NetworkConfig
+	lastServerTime  map[keeper.NetworkID]string // last @time tag seen, for the RESUME timestamp on a redial
 	channels        map[keeper.NetworkID][]ChannelJoin
 	dialConfigs     map[keeper.NetworkID]keeper.DialConfig             // last config passed to Dial; see Reconnect
 	epochs          map[keeper.NetworkID]uint64                        // current known epoch per network; see handleNetworkEvent
@@ -214,6 +223,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		maxBackoff:           DefaultMaxBackoff,
 		states:               make(map[keeper.NetworkID]registration.State),
 		configs:              make(map[keeper.NetworkID]NetworkConfig),
+		lastServerTime:       make(map[keeper.NetworkID]string),
 		channels:             make(map[keeper.NetworkID][]ChannelJoin),
 		dialConfigs:          make(map[keeper.NetworkID]keeper.DialConfig),
 		epochs:               make(map[keeper.NetworkID]uint64),
@@ -464,6 +474,13 @@ func (d *Driver) UpdateNetworkConfig(id keeper.NetworkID, cfg NetworkConfig) {
 func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
 	state := registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
 	state.ResumeToken = cfg.ResumeToken
+	// Prefer the timestamp learned live on the connection just ending over
+	// the (older) boot seed in cfg — a redial should tell the server how
+	// fresh our view actually is.
+	state.ResumeTimestamp = cfg.ResumeTimestamp
+	if live := d.lastServerTime[id]; live != "" {
+		state.ResumeTimestamp = live
+	}
 	d.states[id] = state
 	delete(d.currentNick, id)
 	if t, ok := d.deadlines[id]; ok {
@@ -886,6 +903,16 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	if err != nil {
 		trySendLine(d.lines, line)
 		return // unparseable line; nothing registration.Step can act on
+	}
+
+	// Remember the server-time of the most recent line, so a redial can
+	// present it as draft/resume-0.5's RESUME timestamp (how fresh our view
+	// was when the old connection ended). Cheap map write on the one
+	// goroutine that drives handleLine.
+	if ts, ok := msg.Tag("time"); ok && ts != "" {
+		d.mu.Lock()
+		d.lastServerTime[line.Network] = ts
+		d.mu.Unlock()
 	}
 
 	// Nick recovery reacts to the same parsed traffic, independent of

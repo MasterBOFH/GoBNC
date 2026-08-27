@@ -146,6 +146,11 @@ type Session struct {
 	resumedThisReg   bool
 	heldAcrossResume map[ClientID]bool
 	resumeTokenHeld  bool
+	// lastServerTime is the @time tag of the most recent uplink line, saved
+	// to the store at a resumable disconnect as draft/resume-0.5's RESUME
+	// timestamp so a brain that restarts before the redial still presents
+	// one (the live redial path uses brain.Driver's own copy).
+	lastServerTime string
 	// gotWelcome tracks 001 pre-registration, mirroring
 	// registration.State.GotWelcome — completeRegistration is only ever
 	// triggered by 376/422 after 001 has actually been seen, matching

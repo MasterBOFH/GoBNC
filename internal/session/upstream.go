@@ -58,10 +58,15 @@ var DesiredCaps = []string{
 // store.Message.KeeperSeq's doc comment), since a resumed brain replays a
 // network's full retained backlog unconditionally on every reattach.
 func (s *Session) HandleLine(raw []byte, seq uint64) {
+	msg, err := irc.Parse(string(raw))
 	s.mu.Lock()
 	s.lineSeq = seq
+	if err == nil {
+		if ts, ok := msg.Tag("time"); ok && ts != "" {
+			s.lastServerTime = ts
+		}
+	}
 	s.mu.Unlock()
-	msg, err := irc.Parse(string(raw))
 	if err != nil {
 		s.log.Warn("parse error", "line", gobnclog.RedactIRC(string(raw)), "err", err)
 		return
@@ -739,6 +744,9 @@ func (s *Session) HandleDisconnect(err error) {
 		return
 	}
 	if heldResume {
+		// Persist the last server-time so a brain restarting before the
+		// redial can still present a RESUME timestamp.
+		s.persistResumeTimestamp()
 		// Keep the clients; tell them the uplink is being resumed, not that
 		// anything failed. The resumed session's state rebuilds from the
 		// replay, and the duplicate welcome burst is suppressed for these

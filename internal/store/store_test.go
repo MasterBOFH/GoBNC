@@ -534,3 +534,34 @@ func TestApplyHostBareLeavesWebSocketAlone(t *testing.T) {
 		t.Fatalf("Host=%q, want other.example", n.Host)
 	}
 }
+
+func TestResumeTimestampRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	id, err := s.UpsertNetwork(ctx, Network{Name: "n", Host: "h", Port: 6697, TLS: true, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ts, err := s.ResumeTimestamp(ctx, id); err != nil || ts != "" {
+		t.Fatalf("fresh: ts=%q err=%v, want empty", ts, err)
+	}
+	if err := s.SetResumeTimestamp(ctx, id, "2026-08-27T18:17:03.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	if ts, _ := s.ResumeTimestamp(ctx, id); ts != "2026-08-27T18:17:03.000Z" {
+		t.Fatalf("after set: ts=%q", ts)
+	}
+	// Not clobbered by a config upsert (like the token).
+	if _, err := s.UpsertNetwork(ctx, Network{Name: "n", Host: "h2", Port: 6697, TLS: true, Nick: "me", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ts, _ := s.ResumeTimestamp(ctx, id); ts != "2026-08-27T18:17:03.000Z" {
+		t.Fatalf("after upsert: ts=%q, want unchanged", ts)
+	}
+	if err := s.SetResumeTimestamp(ctx, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if ts, _ := s.ResumeTimestamp(ctx, id); ts != "" {
+		t.Fatalf("after clear: ts=%q", ts)
+	}
+}

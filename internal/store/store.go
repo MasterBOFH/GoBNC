@@ -162,6 +162,7 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN resume_token TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN websocket INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN ws_path TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN resume_timestamp TEXT NOT NULL DEFAULT ''`)
 	// Existing networks with password SASL credentials keep doing SASL.
 	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
 	// Existing DBs created before keeper_seq — must run before the unique
@@ -409,6 +410,25 @@ func (s *Store) ResumeToken(ctx context.Context, networkID int64) (string, error
 		return "", nil
 	}
 	return tok, err
+}
+
+// SetResumeTimestamp stores the server-time of the last line received on the
+// network's uplink (draft/resume-0.5's optional RESUME timestamp param, in
+// IRCv3 server-time format), or "" to clear it. Separate from the token
+// because it is captured at disconnect, not at token issue.
+func (s *Store) SetResumeTimestamp(ctx context.Context, networkID int64, ts string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE networks SET resume_timestamp=? WHERE id=?`, ts, networkID)
+	return err
+}
+
+// ResumeTimestamp returns the stored RESUME timestamp for networkID, or "".
+func (s *Store) ResumeTimestamp(ctx context.Context, networkID int64) (string, error) {
+	var ts string
+	err := s.db.QueryRowContext(ctx, `SELECT resume_timestamp FROM networks WHERE id=?`, networkID).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return ts, err
 }
 
 // DeleteNetwork removes a network by name.
