@@ -308,7 +308,7 @@ func cmdCanUpgrade() error {
 	fmt.Printf("keeper-upgrade %s\n", u.String())
 	switch u {
 	case version.UpgradeShould:
-		fmt.Printf("running keeper is older than this binary (keeper %d) but compatible; gobnc die then start to spawn a new keeper (drops uplinks)\n", version.KeeperVersion)
+		fmt.Printf("running keeper is older than this binary (keeper %d) but compatible; gobnc die then start to spawn a new keeper (reconnects every uplink; a network that negotiated draft/resume-0.5 resumes its session, once the running keeper is itself generation >= 2)\n", version.KeeperVersion)
 	case version.UpgradeMust:
 		fmt.Printf("running keeper is incompatible; this binary requires keeper >= %d. gobnc die then start this binary so it can spawn a new keeper\n", version.MinKeeperVersion)
 		return errMustUpgrade
