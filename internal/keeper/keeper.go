@@ -25,6 +25,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/connio"
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/wsconn"
 )
 
 // State is the keeper's connection status. There are deliberately only two:
@@ -108,6 +109,18 @@ type DialConfig struct {
 	// reintroduce exactly the config-on-the-keeper-side split this package
 	// spent effort removing, for one field, and it wouldn't stay one field.
 	ReadIdleTimeout time.Duration
+
+	// WebSocket makes this uplink an IRCv3 WebSocket connection
+	// (https://ircv3.net/specs/extensions/websocket): after the TCP (and,
+	// if TLS, TLS) transport is established, the keeper performs the
+	// WebSocket client handshake over it and line-frames the result (see
+	// internal/wsconn). WSPath is the HTTP upgrade path, default "/". Both
+	// ride DialRequestMsg's JSON body additively — an older keeper that
+	// predates WebSocket support ignores them and dials a plain stream,
+	// which is why the brain must not send WebSocket=true to a keeper
+	// older than the generation that added it (see internal/version).
+	WebSocket bool   `json:"web_socket,omitempty"`
+	WSPath    string `json:"ws_path,omitempty"`
 
 	// Dial overrides the network dial for tests. Never set in production,
 	// and never sent over the wire — encoding/json cannot marshal a func
@@ -464,7 +477,7 @@ func (k *Keeper) Dial(ctx context.Context, cfg DialConfig) error {
 	}
 	k.mu.Unlock()
 
-	conn, err := dialRaw(ctx, cfg)
+	conn, err := dialRaw(ctx, cfg, k.maxLine)
 	if err != nil {
 		return err
 	}
@@ -756,7 +769,7 @@ func pongFor(msg irc.Message) string {
 // dialRaw performs the TCP connect and, if requested, the TLS handshake, all
 // bounded by ctx — a caller cancelling ctx aborts an in-progress handshake,
 // not just the TCP connect.
-func dialRaw(ctx context.Context, cfg DialConfig) (net.Conn, error) {
+func dialRaw(ctx context.Context, cfg DialConfig, maxLine int) (net.Conn, error) {
 	addr := cfg.addr()
 	timeout := cfg.DialTimeout
 	if timeout <= 0 {
@@ -787,10 +800,42 @@ func dialRaw(ctx context.Context, cfg DialConfig) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.TLS {
-		return conn, nil
+	if cfg.TLS {
+		conn, err = tlsHandshake(dctx, conn, cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return tlsHandshake(dctx, conn, cfg)
+	if cfg.WebSocket {
+		return wsHandshake(dctx, conn, cfg, maxLine)
+	}
+	return conn, nil
+}
+
+// wsHandshake performs the IRCv3 WebSocket client handshake over an
+// established (already TLS, if configured) transport and returns a
+// line-framed net.Conn. The scheme is cosmetic to wsconn.Client — the
+// transport is already encrypted or not — but is set to match so the URL
+// reads correctly in any error and so a server that inspects it behaves.
+func wsHandshake(ctx context.Context, transport net.Conn, cfg DialConfig, maxLine int) (net.Conn, error) {
+	scheme := "ws"
+	if cfg.TLS {
+		scheme = "wss"
+	}
+	path := cfg.WSPath
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	url := scheme + "://" + cfg.addr() + path
+	nc, _, err := wsconn.Client(ctx, transport, url, maxLine)
+	if err != nil {
+		_ = transport.Close()
+		return nil, fmt.Errorf("websocket handshake: %w", err)
+	}
+	return nc, nil
 }
 
 func tlsHandshake(ctx context.Context, conn net.Conn, cfg DialConfig) (net.Conn, error) {
