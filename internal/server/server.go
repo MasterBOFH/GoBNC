@@ -890,6 +890,19 @@ func (s *Server) blobForLocked(netID keeper.NetworkID) []keeper.BlobEntry {
 // must hold s.mu.
 func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error {
 	netID := sess.NetworkID()
+	// A WebSocket uplink needs a keeper that can dial one. An older keeper
+	// silently ignores DialConfig.WebSocket and dials a plain stream (see
+	// keeper.DialConfig / version.WSMinKeeperVersion), so refuse rather
+	// than connect wrongly. Only the fresh-dial path checks this: a network
+	// the keeper already held (resumedAtBoot) is by definition already
+	// connected the way it was dialled, on a keeper that supported it.
+	if n.WebSocket && !s.resumedAtBoot[netID] {
+		if running := version.NormalizeKeeperVersion(s.keeperClient.KeeperVersion); running < version.WSMinKeeperVersion {
+			delete(s.sess, n.Name)
+			delete(s.sessByNetID, netID)
+			return fmt.Errorf("network %q needs a WebSocket-capable keeper (>= gen %d); running keeper is gen %d — restart it (gobnc die, then start)", n.Name, version.WSMinKeeperVersion, running)
+		}
+	}
 	if s.resumedAtBoot[netID] {
 		// The keeper already holds this network's uplink live — this
 		// brain process is resuming after a restart, not starting fresh.

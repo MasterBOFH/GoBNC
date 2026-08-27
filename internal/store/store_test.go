@@ -442,3 +442,36 @@ func TestResumeTokenRoundTripSurvivesUpsert(t *testing.T) {
 		t.Fatalf("unknown network: tok=%q err=%v, want empty/nil", tok, err)
 	}
 }
+
+func TestNetworkWebSocketFields(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	if _, err := s.UpsertNetwork(ctx, Network{
+		Name: "ws", Host: "irc.example", Port: 443, TLS: true, Nick: "me", Enabled: true,
+		WebSocket: true, WSPath: "/webirc",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.NetworkByName(ctx, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.WebSocket || n.WSPath != "/webirc" {
+		t.Fatalf("NetworkByName: websocket=%v ws_path=%q, want true/\"/webirc\"", n.WebSocket, n.WSPath)
+	}
+	nets, err := s.ListNetworks(ctx)
+	if err != nil || len(nets) != 1 {
+		t.Fatalf("ListNetworks: %v %d", err, len(nets))
+	}
+	if !nets[0].WebSocket || nets[0].WSPath != "/webirc" {
+		t.Fatalf("ListNetworks: websocket=%v ws_path=%q", nets[0].WebSocket, nets[0].WSPath)
+	}
+	// A default (non-WS) network reads back false/empty.
+	if _, err := s.UpsertNetwork(ctx, Network{Name: "plain", Host: "h", Port: 6697, TLS: true, Nick: "me", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.NetworkByName(ctx, "plain")
+	if p.WebSocket || p.WSPath != "" {
+		t.Fatalf("plain network: websocket=%v ws_path=%q, want false/empty", p.WebSocket, p.WSPath)
+	}
+}

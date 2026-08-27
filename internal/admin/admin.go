@@ -207,8 +207,8 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		}
 		lines := make([]string, 0, len(nets))
 		for _, n := range nets {
-			lines = append(lines, fmt.Sprintf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\ttls_cert=%s\tbind_host=%s\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g",
-				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.TLSCert, n.BindHost, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate))
+			lines = append(lines, fmt.Sprintf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\ttls_cert=%s\tbind_host=%s\twebsocket=%v\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g",
+				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.TLSCert, n.BindHost, n.WebSocket, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate))
 		}
 		return lines, nil
 	case "reconnect":
@@ -284,6 +284,10 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			n.TLSKey = strings.TrimPrefix(a, "--tls-key=")
 		case strings.HasPrefix(a, "--bind-host="):
 			n.BindHost = strings.TrimPrefix(a, "--bind-host=")
+		case strings.HasPrefix(a, "--websocket="):
+			n.WebSocket = strings.TrimPrefix(a, "--websocket=") != "false"
+		case strings.HasPrefix(a, "--ws-path="):
+			n.WSPath = strings.TrimPrefix(a, "--ws-path=")
 		case strings.HasPrefix(a, "--user="):
 			n.Username = strings.TrimPrefix(a, "--user=")
 		case strings.HasPrefix(a, "--username="):
@@ -388,6 +392,12 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			changed = true
 		case strings.HasPrefix(a, "--bind-host="):
 			n.BindHost = strings.TrimPrefix(a, "--bind-host=")
+			changed = true
+		case strings.HasPrefix(a, "--websocket="):
+			n.WebSocket = strings.TrimPrefix(a, "--websocket=") != "false"
+			changed = true
+		case strings.HasPrefix(a, "--ws-path="):
+			n.WSPath = strings.TrimPrefix(a, "--ws-path=")
 			changed = true
 		case strings.HasPrefix(a, "--sasl="):
 			n.SASL = strings.TrimPrefix(a, "--sasl=") != "false"

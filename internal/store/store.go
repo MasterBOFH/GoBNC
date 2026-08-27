@@ -159,6 +159,8 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN sasl INTEGER NOT NULL DEFAULT 0`)
 	// draft/resume-0.5 token for the uplink session (see SetResumeToken).
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN resume_token TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN websocket INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN ws_path TEXT NOT NULL DEFAULT ''`)
 	// Existing networks with password SASL credentials keep doing SASL.
 	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
 	// Existing DBs created before keeper_seq — must run before the unique
@@ -189,17 +191,17 @@ func (s *Store) migrate() error {
 
 // Network is a configured IRC network.
 type Network struct {
-	ID           int64
-	Name         string
-	Host         string
-	Port         int
-	TLS          bool
-	Nick         string
-	Username     string
-	Realname     string
-	Pass         string
-	SASLUser 	 string
-	SASLPass 	 string
+	ID       int64
+	Name     string
+	Host     string
+	Port     int
+	TLS      bool
+	Nick     string
+	Username string
+	Realname string
+	Pass     string
+	SASLUser string
+	SASLPass string
 	// SASL enables bouncer-owned SASL. With user+pass: SCRAM-SHA-256/PLAIN.
 	// With empty password and a client cert: EXTERNAL (optional user = authzid).
 	// Cert alone does not enable SASL.
@@ -223,6 +225,11 @@ type Network struct {
 	// BindHost is the local address for uplink dials on this network.
 	// Empty inherits gobnc.json bind_host; "none" or "-" disables.
 	BindHost string
+	// WebSocket makes the uplink an IRCv3 WebSocket connection
+	// (needed e.g. for an ircu2 that restricts resume to WebSocket
+	// clients). WSPath is the HTTP upgrade path, default "/".
+	WebSocket bool
+	WSPath    string
 }
 
 // Channel is an auto-join channel.
@@ -255,8 +262,8 @@ type Message struct {
 // UpsertNetwork inserts or updates a network by name.
 func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO networks (name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host, websocket, ws_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			host=excluded.host, port=excluded.port, tls=excluded.tls, nick=excluded.nick,
 			username=excluded.username, realname=excluded.realname, pass=excluded.pass,
@@ -266,11 +273,11 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 			alt_nick=excluded.alt_nick, nick_recovery=excluded.nick_recovery,
 			tls_noverify=excluded.tls_noverify,
 			tls_cert=excluded.tls_cert, tls_key=excluded.tls_key,
-			bind_host=excluded.bind_host
+			bind_host=excluded.bind_host, websocket=excluded.websocket, ws_path=excluded.ws_path
 	`, n.Name, n.Host, n.Port, boolInt(n.TLS), n.Nick, n.Username, n.Realname, n.Pass,
 		n.SASLUser, n.SASLPass, boolInt(n.SASL), boolInt(n.SASLRequired), boolInt(n.Enabled),
 		n.FloodBurst, n.FloodRate, n.AltNick, boolInt(n.NickRecovery), boolInt(n.TLSNoVerify),
-		n.TLSCert, n.TLSKey, n.BindHost)
+		n.TLSCert, n.TLSKey, n.BindHost, boolInt(n.WebSocket), n.WSPath)
 	if err != nil {
 		return 0, err
 	}
@@ -284,7 +291,7 @@ func (s *Store) UpsertNetwork(ctx context.Context, n Network) (int64, error) {
 // ListNetworks returns all networks.
 func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host, websocket, ws_path
 		FROM networks ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -293,10 +300,10 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 	var out []Network
 	for rows.Next() {
 		var n Network
-		var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
+		var tls, saslOn, saslReq, en, nickRec, tlsNoVerify, ws int
 		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
 			&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
-			&n.TLSCert, &n.TLSKey, &n.BindHost); err != nil {
+			&n.TLSCert, &n.TLSKey, &n.BindHost, &ws, &n.WSPath); err != nil {
 			return nil, err
 		}
 		n.TLS = tls != 0
@@ -305,6 +312,7 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 		n.Enabled = en != 0
 		n.NickRecovery = nickRec != 0
 		n.TLSNoVerify = tlsNoVerify != 0
+		n.WebSocket = ws != 0
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -313,13 +321,13 @@ func (s *Store) ListNetworks(ctx context.Context) ([]Network, error) {
 // NetworkByName returns a network.
 func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error) {
 	var n Network
-	var tls, saslOn, saslReq, en, nickRec, tlsNoVerify int
+	var tls, saslOn, saslReq, en, nickRec, tlsNoVerify, ws int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host
+		SELECT id, name, host, port, tls, nick, username, realname, pass, sasl_user, sasl_pass, sasl, sasl_required, enabled, flood_burst, flood_rate, alt_nick, nick_recovery, tls_noverify, tls_cert, tls_key, bind_host, websocket, ws_path
 		FROM networks WHERE name=?`, name).Scan(
 		&n.ID, &n.Name, &n.Host, &n.Port, &tls, &n.Nick, &n.Username, &n.Realname,
 		&n.Pass, &n.SASLUser, &n.SASLPass, &saslOn, &saslReq, &en, &n.FloodBurst, &n.FloodRate, &n.AltNick, &nickRec, &tlsNoVerify,
-		&n.TLSCert, &n.TLSKey, &n.BindHost)
+		&n.TLSCert, &n.TLSKey, &n.BindHost, &ws, &n.WSPath)
 	if err != nil {
 		return n, err
 	}
@@ -329,6 +337,7 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error)
 	n.Enabled = en != 0
 	n.NickRecovery = nickRec != 0
 	n.TLSNoVerify = tlsNoVerify != 0
+	n.WebSocket = ws != 0
 	return n, nil
 }
 
@@ -664,10 +673,10 @@ type HistoryQuery struct {
 	BeforeBound *HistoryBound
 	AfterBound  *HistoryBound
 	AroundBound *HistoryBound
-	Between    bool // if true, require both After/AfterBound and Before/BeforeBound
-	Limit      int
-	Latest     bool     // if true, return the Limit most recent (optionally before Before)
-	Commands   []string // if non-empty, only these IRC commands
+	Between     bool // if true, require both After/AfterBound and Before/BeforeBound
+	Limit       int
+	Latest      bool     // if true, return the Limit most recent (optionally before Before)
+	Commands    []string // if non-empty, only these IRC commands
 }
 
 // HistoryBound is a message position in store order (time, then id).
