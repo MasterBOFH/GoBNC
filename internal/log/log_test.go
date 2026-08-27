@@ -254,3 +254,38 @@ func TestSetupChmodsWorldReadableLog(t *testing.T) {
 		t.Fatalf("log mode=%04o want owner-only", perm)
 	}
 }
+
+func TestRedactIRCResumeToken(t *testing.T) {
+	const tok = "A8KgnZPYDaRiGMzZWLu2frVvtN7lbCxO3hTwGLO"
+	cases := map[string]string{
+		// server → client, issued token
+		":irc.example RESUME TOKEN " + tok: ":irc.example RESUME TOKEN ***",
+		"RESUME TOKEN " + tok:              "RESUME TOKEN ***",
+		"RESUME token " + tok:              "RESUME TOKEN ***",
+		// client → server, presented token, with and without timestamp
+		"RESUME " + tok: "RESUME ***",
+		"RESUME " + tok + " 2017-04-13T15:12:51.620Z": "RESUME *** 2017-04-13T15:12:51.620Z",
+		// no secret in these
+		":irc.example RESUME SUCCESS dan": ":irc.example RESUME SUCCESS dan",
+		":irc.example FAIL RESUME INVALID_TOKEN :Cannot resume connection, token is not valid": ":irc.example FAIL RESUME INVALID_TOKEN :Cannot resume connection, token is not valid",
+	}
+	for in, want := range cases {
+		if got := RedactIRC(in); got != want {
+			t.Errorf("RedactIRC(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(RedactIRC(in), tok) {
+			t.Errorf("RedactIRC(%q) leaked the token", in)
+		}
+	}
+	got := RedactIRC("@time=2024-01-01T00:00:00.000Z :irc.example RESUME TOKEN " + tok)
+	if !strings.HasPrefix(got, "@time=") || strings.Contains(got, tok) || !strings.Contains(got, "RESUME TOKEN ***") {
+		t.Fatalf("tagged RESUME TOKEN: %q", got)
+	}
+	// The unparseable-line fallback must not leak either.
+	if got := redactIRCFallback("RESUME " + tok); got != "RESUME ***" {
+		t.Fatalf("fallback: %q", got)
+	}
+	if got := redactIRCFallback("RESUME SUCCESS dan"); got != "RESUME SUCCESS dan" {
+		t.Fatalf("fallback SUCCESS: %q", got)
+	}
+}

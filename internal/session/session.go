@@ -260,6 +260,11 @@ func (s *Session) NetworkID() keeper.NetworkID { return s.netID }
 
 // GracefulQuit asks the driver to flush paced sends and QUIT (bounded by ctx).
 func (s *Session) GracefulQuit(ctx context.Context, reason string) {
+	// A QUIT ends the server-side session for good; the resume token it
+	// issued can never be presented again. Cleared before the QUIT goes
+	// out so a crash in between errs towards a wasted attempt on a
+	// token that wasn't going to work, not a kept one that isn't.
+	s.clearResumeToken()
 	if s.driver == nil {
 		return
 	}

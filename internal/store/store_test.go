@@ -405,3 +405,40 @@ func openTemp(t *testing.T) *Store {
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
+
+func TestResumeTokenRoundTripSurvivesUpsert(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	n := Network{Name: "libera", Host: "irc.libera.chat", Port: 6697, TLS: true, Nick: "me", Enabled: true}
+	id, err := s.UpsertNetwork(ctx, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := s.ResumeToken(ctx, id); err != nil || tok != "" {
+		t.Fatalf("fresh network: tok=%q err=%v, want empty", tok, err)
+	}
+	if err := s.SetResumeToken(ctx, id, "JKbAypzFiovffzuD8VEfcs6bOLrXsSenxsyZNt8"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := s.ResumeToken(ctx, id); err != nil || tok != "JKbAypzFiovffzuD8VEfcs6bOLrXsSenxsyZNt8" {
+		t.Fatalf("after set: tok=%q err=%v", tok, err)
+	}
+	// A `network set` (UpsertNetwork of the same row) must not clobber it:
+	// the token is wire-learned session state, not operator config.
+	n.Nick = "me2"
+	if _, err := s.UpsertNetwork(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := s.ResumeToken(ctx, id); err != nil || tok != "JKbAypzFiovffzuD8VEfcs6bOLrXsSenxsyZNt8" {
+		t.Fatalf("after upsert: tok=%q err=%v, want unchanged", tok, err)
+	}
+	if err := s.SetResumeToken(ctx, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := s.ResumeToken(ctx, id); err != nil || tok != "" {
+		t.Fatalf("after clear: tok=%q err=%v", tok, err)
+	}
+	if tok, err := s.ResumeToken(ctx, id+1000); err != nil || tok != "" {
+		t.Fatalf("unknown network: tok=%q err=%v, want empty/nil", tok, err)
+	}
+}

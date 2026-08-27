@@ -157,6 +157,8 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN tls_key TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN bind_host TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN sasl INTEGER NOT NULL DEFAULT 0`)
+	// draft/resume-0.5 token for the uplink session (see SetResumeToken).
+	_, _ = s.db.Exec(`ALTER TABLE networks ADD COLUMN resume_token TEXT NOT NULL DEFAULT ''`)
 	// Existing networks with password SASL credentials keep doing SASL.
 	_, _ = s.db.Exec(`UPDATE networks SET sasl=1 WHERE sasl_user != '' AND sasl_pass != '' AND sasl=0`)
 	// Existing DBs created before keeper_seq — must run before the unique
@@ -328,6 +330,32 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error)
 	n.NickRecovery = nickRec != 0
 	n.TLSNoVerify = tlsNoVerify != 0
 	return n, nil
+}
+
+// SetResumeToken stores the draft/resume-0.5 token the ircd issued the
+// network's current uplink session (empty clears it). Deliberately not a
+// Network field and not touched by UpsertNetwork: it's session state the
+// bouncer learned from the wire, not configuration the operator sets, and
+// a `network set` must never clobber it. It lives in SQLite rather than
+// the keeper's blob store because it has to outlive exactly what the blob
+// doesn't — the uplink connection (the blob is cleared on every
+// disconnect, and a disconnect is the moment this token is needed) and
+// the keeper process itself. Same trust level as sasl_pass, which is
+// already plaintext here: whoever holds this token can resume the session.
+func (s *Store) SetResumeToken(ctx context.Context, networkID int64, token string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE networks SET resume_token=? WHERE id=?`, token, networkID)
+	return err
+}
+
+// ResumeToken returns the stored draft/resume-0.5 token for networkID, or
+// "" when none is held (or the network doesn't exist).
+func (s *Store) ResumeToken(ctx context.Context, networkID int64) (string, error) {
+	var tok string
+	err := s.db.QueryRowContext(ctx, `SELECT resume_token FROM networks WHERE id=?`, networkID).Scan(&tok)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return tok, err
 }
 
 // DeleteNetwork removes a network by name.

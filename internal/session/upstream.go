@@ -13,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
+	"github.com/MasterBOFH/GoBNC/internal/registration"
 	"github.com/google/uuid"
 )
 
@@ -40,6 +41,7 @@ var DesiredCaps = []string{
 	"sasl",
 	"chathistory",
 	"draft/chathistory",
+	registration.ResumeCap,
 }
 
 // HandleLine is the single entry point for every line the uplink says,
@@ -1193,6 +1195,12 @@ func (s *Session) clientAccepts(d Downlink, msg irc.Message) bool {
 			return true
 		}
 		return d.HasCap("invite-notify")
+	case "RESUME":
+		// RESUME TOKEN carries the credential that resumes this whole
+		// uplink session (see uplink_resume.go) — never a client's
+		// business, and never a client's to see. Pre-registration the
+		// same line is already invisible via isRegistrationVisible.
+		return false
 	default:
 		return true
 	}
