@@ -882,7 +882,18 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 		d.noteRX(line.Network)
 	}
 
-	newState, actions := registration.Step(state, registration.Input{Msg: msg})
+	// Past PhaseComplete Step is a deliberate no-op; StepPost carries the
+	// one post-registration exchange that still needs the state machine
+	// (a bouncer-owned SASL re-auth after a CAP NEW re-advertised sasl —
+	// see registration.StepPost). Same Action vocabulary, same sendLine
+	// path below; StepPost never emits ActionRegistered/ActionFailed.
+	var newState registration.State
+	var actions []registration.Action
+	if state.Phase == registration.PhaseComplete {
+		newState, actions = registration.StepPost(state, registration.Input{Msg: msg})
+	} else {
+		newState, actions = registration.Step(state, registration.Input{Msg: msg})
+	}
 
 	// Learning our own ident/host is intentionally narrow: RPL_LOGGEDIN
 	// (900, SASL), CHGHOST targeting self, or an observed nick!user@host

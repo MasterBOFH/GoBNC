@@ -52,15 +52,19 @@ func stepSASLOutcome(s State, in Input) (State, []Action) {
 	s.saslMech = ""
 	s.scramConv = nil
 
+	if s.GotWelcome {
+		// Post-registration SASL outcome (a StepPost re-auth) — nothing
+		// left for registration to do about it either way. Required is
+		// deliberately not consulted here: it decides whether the bouncer
+		// may *register* unauthenticated, and a re-auth failing after
+		// registration leaves the connection exactly where a services
+		// outage (901) already left it, which nothing tears down either.
+		return s, nil
+	}
 	if msg.Command != "903" && msg.Command != "907" && s.SASL.Required {
 		s.Phase = PhaseFailed
 		s.Err = fmt.Errorf("SASL failed: %s %v", msg.Command, msg.Params)
 		return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}
-	}
-	if s.GotWelcome {
-		// Post-registration SASL outcome (e.g. a services-side re-auth) —
-		// nothing left for the registration state machine to do about it.
-		return s, nil
 	}
 	s.Phase = PhaseAwaitingWelcome
 	return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
@@ -218,16 +222,18 @@ func abortSASL(s State, in Input, err error) (State, []Action) {
 	s.saslMech = ""
 	s.scramConv = nil
 	actions := []Action{{Kind: ActionSend, Line: "AUTHENTICATE *", Replay: in.Replay}}
+	if s.GotWelcome {
+		// Post-registration (StepPost) — see stepSASLOutcome on why
+		// Required doesn't apply once registered.
+		return s, actions
+	}
 	if s.SASL.Required {
 		s.Phase = PhaseFailed
 		s.Err = err
 		return s, append(actions, Action{Kind: ActionFailed, Err: err, Replay: in.Replay})
 	}
-	if !s.GotWelcome {
-		s.Phase = PhaseAwaitingWelcome
-		return s, append(actions, Action{Kind: ActionSend, Line: "CAP END", Replay: in.Replay})
-	}
-	return s, actions
+	s.Phase = PhaseAwaitingWelcome
+	return s, append(actions, Action{Kind: ActionSend, Line: "CAP END", Replay: in.Replay})
 }
 
 // sendAuthenticate chunks a base64 payload into <=400-byte AUTHENTICATE
@@ -251,5 +257,82 @@ func sendAuthenticate(s State, in Input, b64 string) (State, []Action) {
 			actions = append(actions, Action{Kind: ActionSend, Line: "AUTHENTICATE +", Replay: in.Replay})
 		}
 		return s, actions
+	}
+}
+
+// StepPost is Step's post-registration counterpart for the one exchange
+// that still needs the SASL machinery after PhaseComplete: bouncer-owned
+// SASL that could not happen at connect time. If sasl wasn't offered when
+// we registered (services down), or was and later went away (CAP DEL
+// :sasl) and we've since been logged out, the ircd re-advertising it with
+// CAP NEW makes Session CAP REQ it again; the resulting CAP ACK is the
+// same trigger startSASL waits for during registration, and this runs the
+// same AUTHENTICATE exchange. Session is the one deciding *whether* to
+// re-REQ (it knows if we're still logged in, StepPost doesn't need to);
+// StepPost only reacts to the ACK.
+//
+// Unlike Step, StepPost never changes Phase and never emits ActionFailed:
+// the connection is registered and stays that way whatever the outcome —
+// see stepSASLOutcome/abortSASL's GotWelcome branches. It is a no-op on a
+// State that isn't PhaseComplete, so a caller can route every line here
+// once Step has gone terminal without checking first.
+//
+// Known gap: saslMech/scramConv live only in this State, so a brain
+// restart mid-exchange forgets it; the ircd's AUTHENTICATE timeout ends
+// that attempt and the next CAP NEW starts a fresh one.
+func StepPost(s State, in Input) (State, []Action) {
+	if s.Phase != PhaseComplete {
+		return s, nil
+	}
+	msg := in.Msg
+	switch msg.Command {
+	case "CAP":
+		if len(msg.Params) < 2 {
+			return s, nil
+		}
+		switch strings.ToUpper(msg.Params[1]) {
+		case "NEW":
+			// Refresh the offered mechanism list: sasl may not have been
+			// in the CAP LS at all, or the list may have changed.
+			for _, tok := range strings.Fields(msg.Trailing()) {
+				name, val, _ := strings.Cut(tok, "=")
+				s.Offered[name] = val
+			}
+		case "DEL":
+			for _, tok := range strings.Fields(msg.Trailing()) {
+				name, _, _ := strings.Cut(tok, "=")
+				delete(s.Offered, name)
+				delete(s.Acked, name)
+			}
+		case "ACK":
+			acked := false
+			for _, raw := range strings.Fields(msg.Trailing()) {
+				name, val, _ := strings.Cut(strings.TrimPrefix(raw, "-"), "=")
+				s.Acked[name] = true
+				if name == "sasl" {
+					acked = true
+					if val != "" {
+						s.Offered[name] = val
+					}
+				}
+			}
+			if !acked || !s.SASL.Wanted || s.saslMech != "" {
+				return s, nil
+			}
+			mech, ok := pickSASLMech(s)
+			if !ok {
+				return s, nil
+			}
+			s.saslMech = mech
+			s.scramConv = nil
+			return s, []Action{{Kind: ActionSend, Line: "AUTHENTICATE " + mech, Replay: in.Replay}}
+		}
+		return s, nil
+	case "AUTHENTICATE":
+		return stepAuthenticate(s, in)
+	case "903", "904", "905", "906", "907":
+		return stepSASLOutcome(s, in)
+	default:
+		return s, nil
 	}
 }

@@ -301,13 +301,11 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		// (internal/registration/sasl.go) — the moment the bouncer is
 		// about to authenticate, worth a NOTICE to this network's clients.
 		// Client-driven passthrough SASL is deliberately excluded (that's
-		// the client's own CAP REQ, not the bouncer's). So is any ACK
-		// after registration: only registration.Step ever sends
-		// AUTHENTICATE, and it is terminal by then, so a post-001 ACK
-		// (from the NEW case's re-REQ below) never precedes an auth
-		// attempt and the NOTICE would announce something that can't
-		// happen.
-		if s.Network.SASL && !registered {
+		// the client's own CAP REQ, not the bouncer's). Post-registration
+		// the same holds: the only way sasl gets ACK'd then is the NEW
+		// case's own re-REQ below, which brain.Driver answers with a
+		// registration.StepPost AUTHENTICATE exchange.
+		if s.Network.SASL {
 			for _, name := range added {
 				if name == "sasl" {
 					s.Broadcast("SASL authentication starting")
@@ -360,14 +358,14 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 				s.notifySASLOfferChange(prev, now)
 			}
 		}
-		// Bouncer-owned SASL that already succeeded (900 seen, no 901
-		// since) has nothing to gain from re-enabling the cap when an
-		// ircd re-advertises it — typically CAP DEL :sasl / CAP NEW
-		// :sasl=… around a services restart. Nothing could complete a
-		// post-registration re-auth anyway (registration.Step is terminal
-		// past PhaseComplete and nothing else sends AUTHENTICATE), so the
-		// REQ would only buy a CAP ACK and a misleading "SASL
-		// authentication starting" NOTICE with nothing after it.
+		// Bouncer-owned SASL: re-REQing sasl here is what starts a
+		// post-registration re-auth (the ACK triggers
+		// registration.StepPost via brain.Driver), which is wanted when
+		// sasl wasn't available at connect time or we've since been
+		// logged out (901) — and pointless when we're still logged in
+		// (900 seen, no 901 since): an ircd re-advertising sasl around a
+		// services restart (CAP DEL :sasl / CAP NEW :sasl=…) must not
+		// make an authenticated session start over.
 		s.mu.RLock()
 		skipSASL := !saslWanted || s.loggedIn
 		s.mu.RUnlock()
