@@ -475,3 +475,62 @@ func TestNetworkWebSocketFields(t *testing.T) {
 		t.Fatalf("plain network: websocket=%v ws_path=%q, want false/empty", p.WebSocket, p.WSPath)
 	}
 }
+
+func TestApplyHostScheme(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantHost string
+		wantWS   bool
+		wantTLS  bool
+		wantPath string
+		wantPort int // 0 = unchanged from the 6667 seed
+		wantRet  bool
+	}{
+		{"irc.example", "irc.example", false, true, "", 0, false},          // bare host: WS/TLS untouched (seed TLS=true)
+		{"wss://irc.example", "irc.example", true, true, "", 0, true},      // wss ⇒ WebSocket + TLS
+		{"ws://irc.example", "irc.example", true, false, "", 0, true},      // ws ⇒ WebSocket, no TLS
+		{"wss://irc.example:443/webirc", "irc.example", true, true, "/webirc", 443, true},
+		{"WSS://IRC.example/", "IRC.example", true, true, "", 0, true},     // scheme case-insensitive, "/" path ignored
+		{"irc://irc.example", "irc://irc.example", false, true, "", 0, false}, // non-ws scheme: not a transport claim
+	}
+	for _, c := range cases {
+		n := Network{TLS: true, Port: 6667} // seed like a fresh add
+		ret := ApplyHost(&n, c.in)
+		if ret != c.wantRet {
+			t.Errorf("ApplyHost(%q) returned %v, want %v", c.in, ret, c.wantRet)
+		}
+		if n.Host != c.wantHost {
+			t.Errorf("ApplyHost(%q): Host=%q want %q", c.in, n.Host, c.wantHost)
+		}
+		if n.WebSocket != c.wantWS {
+			t.Errorf("ApplyHost(%q): WebSocket=%v want %v", c.in, n.WebSocket, c.wantWS)
+		}
+		if n.TLS != c.wantTLS {
+			t.Errorf("ApplyHost(%q): TLS=%v want %v", c.in, n.TLS, c.wantTLS)
+		}
+		if n.WSPath != c.wantPath {
+			t.Errorf("ApplyHost(%q): WSPath=%q want %q", c.in, n.WSPath, c.wantPath)
+		}
+		wantPort := c.wantPort
+		if wantPort == 0 {
+			wantPort = 6667
+		}
+		if n.Port != wantPort {
+			t.Errorf("ApplyHost(%q): Port=%d want %d", c.in, n.Port, wantPort)
+		}
+	}
+}
+
+// A bare host must not clear an existing WebSocket flag — turning it off is
+// an explicit choice (--websocket=false), because a scheme-less host says
+// nothing about the transport.
+func TestApplyHostBareLeavesWebSocketAlone(t *testing.T) {
+	n := Network{WebSocket: true, TLS: true, WSPath: "/x", Port: 443}
+	ApplyHost(&n, "other.example")
+	if !n.WebSocket || n.WSPath != "/x" {
+		t.Fatalf("bare host changed WS state: websocket=%v ws_path=%q", n.WebSocket, n.WSPath)
+	}
+	if n.Host != "other.example" {
+		t.Fatalf("Host=%q, want other.example", n.Host)
+	}
+}

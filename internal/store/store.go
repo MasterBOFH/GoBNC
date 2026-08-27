@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -339,6 +340,49 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (Network, error)
 	n.TLSNoVerify = tlsNoVerify != 0
 	n.WebSocket = ws != 0
 	return n, nil
+}
+
+// ApplyHost sets n.Host from a user-supplied host that may carry a
+// ws://<host> or wss://<host>[:port][/path] scheme. A scheme makes the
+// network a WebSocket uplink — wss implies TLS, ws implies plaintext — and
+// fills WSPath from the URL path and n.Port from a URL port if present.
+// A bare host (no "://") is stored verbatim and leaves WebSocket, TLS, and
+// WSPath untouched, so an existing network's other settings survive a plain
+// host change. Returns true if a WebSocket scheme was applied. To turn a
+// WebSocket network back into a plain one, set WebSocket=false explicitly
+// (a bare host does not clear it — a host with no scheme is not a claim
+// about the transport).
+func ApplyHost(n *Network, host string) bool {
+	if !strings.Contains(host, "://") {
+		n.Host = host
+		return false
+	}
+	u, err := url.Parse(host)
+	if err != nil {
+		n.Host = host
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "wss":
+		n.WebSocket, n.TLS = true, true
+	case "ws":
+		n.WebSocket, n.TLS = true, false
+	default:
+		// Not a WebSocket scheme (e.g. an accidental irc://): keep the
+		// bare hostname, don't invent a transport.
+		n.Host = host
+		return false
+	}
+	n.Host = u.Hostname()
+	if p := u.Port(); p != "" {
+		if pi, perr := strconv.Atoi(p); perr == nil {
+			n.Port = pi
+		}
+	}
+	if u.Path != "" && u.Path != "/" {
+		n.WSPath = u.Path
+	}
+	return true
 }
 
 // SetResumeToken stores the draft/resume-0.5 token the ircd issued the

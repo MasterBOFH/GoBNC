@@ -61,7 +61,7 @@ func Help() string {
   die
   reconnect [<name>]
   disconnect [<name>]
-  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host|ws://host|wss://host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
@@ -245,15 +245,19 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 
 func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) < 4 {
-		return nil, fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		return nil, fmt.Errorf("usage: network add <name> <host|ws://host|wss://host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
 	}
 	n := store.Network{
-		Name: args[1], Host: args[2], Nick: deps.Nick, TLS: true, Enabled: true,
+		Name: args[1], Nick: deps.Nick, TLS: true, Enabled: true,
 		Username: deps.Username, Realname: deps.Realname, AltNick: deps.AltNick, NickRecovery: true,
 	}
+	// args[2] may be a bare host or a ws://host / wss://host[:port][/path]
+	// URL; a scheme sets WebSocket/TLS/WSPath (and port, unless the
+	// positional port below overrides it).
+	store.ApplyHost(&n, args[2])
 	fmt.Sscanf(args[3], "%d", &n.Port)
 	i := 4
 	if len(args) > 4 && !strings.HasPrefix(args[4], "-") {
@@ -370,7 +374,7 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		}
 		switch {
 		case strings.HasPrefix(a, "--host="):
-			n.Host = strings.TrimPrefix(a, "--host=")
+			store.ApplyHost(&n, strings.TrimPrefix(a, "--host="))
 			changed = true
 		case strings.HasPrefix(a, "--port="):
 			fmt.Sscanf(strings.TrimPrefix(a, "--port="), "%d", &n.Port)
