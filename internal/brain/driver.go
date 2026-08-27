@@ -73,6 +73,19 @@ type NetworkConfig struct {
 	Username string
 	Realname string
 
+	// ResumeToken is the draft/resume-0.5 token the ircd issued this
+	// network's previous uplink session (registration.State.ResumeToken;
+	// see registration/resume.go). Seeded into every fresh
+	// registration.State this Driver builds for the network — the next
+	// Reconnect, and every automatic redial after a drop — so the attempt
+	// presents it with RESUME. Kept current by Driver itself whenever a
+	// live connection is issued a new one (registration.ActionResumeToken),
+	// so an auto-redial after a crash-level drop needs no help from the
+	// caller to resume; the caller's own persisted copy (internal/session
+	// writes it to the store) is what survives a brain restart and comes
+	// back in through here.
+	ResumeToken string
+
 	// Name is a purely cosmetic display label for this network (e.g. the
 	// store.Network.Name a caller already has) — used only for raw-traffic
 	// log lines (see Driver.log's doc comment); Driver has no other notion
@@ -449,7 +462,9 @@ func (d *Driver) UpdateNetworkConfig(id keeper.NetworkID, cfg NetworkConfig) {
 // treatment a first-time registration does; the difference is only where
 // cfg comes from). Caller must hold d.mu.
 func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
-	d.states[id] = registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state := registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state.ResumeToken = cfg.ResumeToken
+	d.states[id] = state
 	delete(d.currentNick, id)
 	if t, ok := d.deadlines[id]; ok {
 		t.Stop()
@@ -926,8 +941,26 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 			d.disarmDeadline(line.Network)
 			d.setCurrentNick(line.Network, newState.Nick)
 			trySendResult(d.results, Result{Network: line.Network, State: newState})
-			d.joinChannels(line.Network)
+			// A resumed session is still in its channels — the ircd
+			// replays the JOINs itself. Auto-joining on top would at
+			// best be redundant traffic, at worst re-JOIN a channel the
+			// user had deliberately left mid-session on the old
+			// connection (the join list is the *configured* set, not
+			// the live one).
+			if !a.Resumed {
+				d.joinChannels(line.Network)
+			}
 			d.startNickRecoveryIfNeeded(line.Network)
+		case registration.ActionResumeToken:
+			// The connection was just issued its token: from now on any
+			// redial of this network — Reconnect, or armReconnect after
+			// a drop — presents this one. The caller persists its own
+			// copy for across-restart use (see NetworkConfig.ResumeToken).
+			d.mu.Lock()
+			cfg := d.configs[line.Network]
+			cfg.ResumeToken = a.Token
+			d.configs[line.Network] = cfg
+			d.mu.Unlock()
 		case registration.ActionFailed:
 			d.disarmDeadline(line.Network)
 			trySendResult(d.results, Result{Network: line.Network, State: newState})
