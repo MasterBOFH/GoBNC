@@ -217,10 +217,31 @@ func (s *Session) resumeSuppressibleLocked(msg irc.Message) bool {
 		"265", "266", "375", "372", "376", "377", "378", "422",
 		"221", "396", "900":
 		return true
+	case "332":
+		// RPL_TOPIC: suppress only when the topic is unchanged from before
+		// the drop; a topic that changed during the gap must reach the client.
+		ch := s.isupport.CaseMapping.Canonical(msg.Param(1))
+		old, ok := s.resumeTopicSnap[ch]
+		return ok && old == msg.Trailing()
+	case "333":
+		// RPL_TOPICWHOTIME: metadata for the topic just (not) shown —
+		// suppress it exactly when that channel's topic is unchanged.
+		ch := s.isupport.CaseMapping.Canonical(msg.Param(1))
+		old, ok := s.resumeTopicSnap[ch]
+		cur := ""
+		if c := s.channels[ch]; c != nil {
+			cur = c.Topic
+		}
+		return ok && old == cur
 	case "MODE":
-		// Self-umode MODE (":me MODE me +iw") is preamble; a channel MODE
-		// is a real change and must relay.
-		return s.self != nil && s.isupport.CaseMapping.Equal(msg.Param(0), s.self.Nick)
+		// A channel MODE is a real change and must relay. The client's own
+		// umode line is suppressed only when its umodes are unchanged from
+		// before the drop (applyState has already applied this line, so
+		// UModeString is the post-line value).
+		if s.self != nil && s.isupport.CaseMapping.Equal(msg.Param(0), s.self.Nick) {
+			return s.self.UModeString() == s.resumeUModeSnap
+		}
+		return false
 	}
 	return false
 }
@@ -291,6 +312,8 @@ func (s *Session) completeRegistration() {
 	s.resuming = false
 	s.resumedThisReg = false
 	s.heldAcrossResume = nil
+	s.resumeTopicSnap = nil
+	s.resumeUModeSnap = ""
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
 
@@ -697,8 +720,21 @@ func (s *Session) HandleDisconnect(err error) {
 			held[id] = true
 		}
 		s.heldAcrossResume = held
+		// Snapshot before the wipe below, to diff the resumed burst against.
+		topics := make(map[string]string, len(s.channels))
+		for k, ch := range s.channels {
+			topics[k] = ch.Topic
+		}
+		s.resumeTopicSnap = topics
+		if s.self != nil {
+			s.resumeUModeSnap = s.self.UModeString()
+		} else {
+			s.resumeUModeSnap = ""
+		}
 	} else {
 		s.heldAcrossResume = nil
+		s.resumeTopicSnap = nil
+		s.resumeUModeSnap = ""
 	}
 	s.regBuffer = nil
 	s.registered = false
