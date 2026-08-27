@@ -57,6 +57,13 @@ var DesiredCaps = []string{
 	"sasl",
 	"chathistory",
 	"draft/chathistory",
+	// event-playback makes a server-side history replay (a CHATHISTORY
+	// reply, or a draft/resume-0.5 gap replay) carry JOIN/PART/QUIT/KICK/
+	// NICK/TOPIC events, not just PRIVMSG/NOTICE — the events for the time
+	// we were away are exactly the ones our own store can never have
+	// recorded. Harmless on servers that don't offer it.
+	"event-playback",
+	"draft/event-playback",
 	// draft/resume-0.5 (github.com/DanielOaks/ircv3-specifications,
 	// branch master+resume): requested whenever offered, even on a
 	// connection that has no token to resume with, because negotiating it
