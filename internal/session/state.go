@@ -23,6 +23,7 @@ func (s *Session) applyState(msg irc.Message) {
 	var blobOnlyJoins []string
 	var blobWelcomeKey string
 	var blobWelcome, blobCloak, blobSelfNick, blobUplinkServer []byte
+	var resumeToken string
 
 	s.mu.Lock()
 	prevSelfHost := ""
@@ -76,6 +77,8 @@ func (s *Session) applyState(msg irc.Message) {
 		s.stateACCOUNTLocked(msg)
 	case "MODE":
 		persist = append(persist, s.stateMODELocked(msg)...)
+	case "RESUME":
+		resumeToken = resumeTokenFrom(msg)
 	// Numerics
 	case "001":
 		var nick []byte
@@ -134,6 +137,9 @@ func (s *Session) applyState(msg irc.Message) {
 	}
 	if blobSelfNick != nil {
 		s.pushBlob("self-nick", keeper.BlobModeReplace, blobSelfNick)
+	}
+	if resumeToken != "" {
+		s.persistResumeToken(resumeToken)
 	}
 }
 

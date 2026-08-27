@@ -21,7 +21,7 @@ func IRC(l *slog.Logger, peer, dir, line string) {
 	l.Debug("irc", "peer", peer, "dir", dir, "line", RedactIRC(line))
 }
 
-// RedactIRC masks secrets in PASS / AUTHENTICATE lines for logging.
+// RedactIRC masks secrets in PASS / AUTHENTICATE / RESUME lines for logging.
 // Uses the IRC parser so tagged or prefixed lines are handled correctly.
 func RedactIRC(line string) string {
 	msg, err := irc.Parse(line)
@@ -45,6 +45,26 @@ func RedactIRC(line string) string {
 		}
 		msg.Params = []string{"***"}
 		msg.Raw = redactCommandBody(msg.Source, "AUTHENTICATE", "***")
+		return msg.Wire()
+	case "RESUME":
+		// draft/resume-0.5: the token is a bearer credential for the
+		// whole uplink session. Server→client "RESUME TOKEN <t>" and
+		// client→server "RESUME <t> [timestamp]" both carry it;
+		// "RESUME SUCCESS <nick>" doesn't.
+		switch strings.ToUpper(msg.Param(0)) {
+		case "SUCCESS":
+			return line
+		case "TOKEN":
+			msg.Params = []string{"TOKEN", "***"}
+			msg.Raw = redactCommandBody(msg.Source, "RESUME", "TOKEN ***")
+		default:
+			body := "***"
+			if len(msg.Params) > 1 {
+				body += " " + strings.Join(msg.Params[1:], " ")
+			}
+			msg.Params = append([]string{"***"}, msg.Params[1:]...)
+			msg.Raw = redactCommandBody(msg.Source, "RESUME", body)
+		}
 		return msg.Wire()
 	default:
 		return line
@@ -70,6 +90,9 @@ func redactIRCFallback(line string) string {
 	}
 	if strings.HasPrefix(upper, "AUTHENTICATE ") && !strings.EqualFold(strings.TrimSpace(line[13:]), "+") {
 		return "AUTHENTICATE ***"
+	}
+	if strings.HasPrefix(upper, "RESUME ") && !strings.HasPrefix(upper, "RESUME SUCCESS") {
+		return "RESUME ***"
 	}
 	return line
 }
