@@ -46,7 +46,8 @@ func (d *memDL) Send(m irc.Message) error {
 	d.mu.Unlock()
 	return nil
 }
-func (d *memDL) Close() error { return nil }
+func (d *memDL) Close() error       { return nil }
+func (d *memDL) RemoteAddr() string { return "127.0.0.1" }
 func (d *memDL) snapshot() []irc.Message {
 	d.mu.Lock()
 	defer d.mu.Unlock()
