@@ -40,8 +40,8 @@ func main() {
 	logFile := flag.String("log-file", "", "write logs here instead of stderr")
 	debug := flag.Bool("debug", false, "debug-level logging, including keeper<->brain control frames (metadata only, never line/blob content)")
 	flag.BoolVar(debug, "d", false, "short for -debug")
-	quitMessage := flag.String("quit-message", "", "QUIT reason sent to every connected network on shutdown (default: version.QuitMessage())")
-	quitTimeout := flag.Duration("quit-timeout", 5*time.Second, "per-network bound on the shutdown QUIT write")
+	quitMessage := flag.String("quit-message", "", "QUIT (or, for a resumable uplink, BRB) reason sent to every connected network on shutdown (default: version.QuitMessage())")
+	quitTimeout := flag.Duration("quit-timeout", 5*time.Second, "per-network bound on the shutdown QUIT/BRB write")
 	quitOverallTimeout := flag.Duration("quit-overall-timeout", 10*time.Second, "overall bound on shutdown across every network")
 	flag.Parse()
 

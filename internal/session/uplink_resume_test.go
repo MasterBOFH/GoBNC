@@ -157,3 +157,49 @@ func TestGracefulQuitClearsResumeToken(t *testing.T) {
 		t.Fatalf("after GracefulQuit: tok=%q err=%v, want cleared", tok, err)
 	}
 }
+
+// TestResumableFlagFollowsCapACKAndDEL: the keeper's BlobKeyResumable
+// (what turns its shutdown QUIT into BRB) is set once the uplink ACKs
+// draft/resume-0.5 and removed again if the ircd DELs it.
+func TestResumableFlagFollowsCapACKAndDEL(t *testing.T) {
+	db := testutil.TempStore(t)
+	ctx := context.Background()
+	if _, err := db.UpsertNetwork(ctx, store.Network{
+		Name: "n", Host: "irc.example", Port: 1, Nick: "testnick", Enabled: true,
+		Username: "u", Realname: "r",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	netCfg, err := db.NetworkByName(ctx, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(netCfg, db, nil, nil, nil)
+
+	ln, host, port := newFakeIRCListener(t)
+	scriptDone := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			scriptDone <- err
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		scriptDone <- runResumeTokenServer(conn, time.Now().Add(8*time.Second))
+	}()
+	tu := newTestUplink(t, s, netCfg, host, port)
+	if err := tu.driver.StartRegistration(tu.netID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 5*time.Second, func() bool { return s.Registered() })
+	if err := <-scriptDone; err != nil {
+		t.Fatal("script:", err)
+	}
+	k := tu.mgr.All()[tu.netID]
+	waitUntil(t, 3*time.Second, k.Resumable)
+
+	// Deliver a DEL the way the demux would — HandleLine is the same
+	// entry point; the blob push it triggers goes over the live driver.
+	s.HandleLine([]byte(":server CAP testnick DEL :"+registration.ResumeCap), 1<<20)
+	waitUntil(t, 3*time.Second, func() bool { return !k.Resumable() })
+}

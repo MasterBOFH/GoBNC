@@ -71,6 +71,17 @@ func (b *blobStore) Push(key string, mode BlobMode, value []byte) {
 	}
 }
 
+// Has reports whether key currently holds an entry. Still key-only — the
+// value is never looked at — which is what keeps this inside the
+// "matches on key, never inspects value" rule; see BlobKeyResumable for
+// the one caller.
+func (b *blobStore) Has(key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.entries[key]
+	return ok
+}
+
 // Snapshot returns every currently-held entry, in the order each key was
 // first pushed — this is what an attaching client receives in HelloAckMsg.
 func (b *blobStore) Snapshot() []BlobEntry {

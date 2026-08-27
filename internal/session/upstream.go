@@ -311,6 +311,15 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		if len(added) > 0 {
 			s.pushBlob("caps", keeper.BlobModeReplace, s.blobCapsValue())
 		}
+		for _, name := range added {
+			if name == registration.ResumeCap {
+				// Tell the keeper this session can be resumed, so its
+				// own shutdown says BRB rather than QUIT — see
+				// keeper.BlobKeyResumable. Presence is the signal; the
+				// value is filler.
+				s.pushBlob(keeper.BlobKeyResumable, keeper.BlobModeReplace, []byte("1"))
+			}
+		}
 		// Bouncer-owned SASL: a CAP ACK granting sasl is exactly what
 		// registration.startSASL waits for before sending AUTHENTICATE
 		// (internal/registration/sasl.go) — the moment the bouncer is
@@ -450,6 +459,11 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 		s.mu.Unlock()
 		if len(removed) > 0 {
 			s.pushBlob("caps", keeper.BlobModeReplace, s.blobCapsValue())
+		}
+		for _, name := range removed {
+			if name == registration.ResumeCap {
+				s.pushBlob(keeper.BlobKeyResumable, keeper.BlobModeDelete, nil)
+			}
 		}
 		// sasl's own DEL notice, if any, falls out of this diff naturally:
 		// refreshSASLOffer recomputes saslOffer from the fields just
