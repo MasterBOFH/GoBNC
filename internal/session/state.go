@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
@@ -79,6 +80,12 @@ func (s *Session) applyState(msg irc.Message) {
 		persist = append(persist, s.stateMODELocked(msg)...)
 	case "RESUME":
 		resumeToken = resumeTokenFrom(msg)
+		if strings.EqualFold(msg.Param(0), "SUCCESS") {
+			// The uplink accepted our RESUME: this reconnect is a genuine
+			// resume, not a fresh registration — completeRegistration keeps
+			// the held clients rather than kicking them.
+			s.resumedThisReg = true
+		}
 	// Numerics
 	case "001":
 		var nick []byte

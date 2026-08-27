@@ -155,6 +155,15 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	if visible {
 		targets = make([]Downlink, 0, len(s.awaitingUplink))
 		for id := range s.awaitingUplink {
+			// A client held across a resume already has this welcome burst
+			// from before the drop; re-sending 001..376 mid-session would
+			// read as a reconnect. Suppress it for them — their state is
+			// preserved, not rebuilt from the replay. A client that
+			// attached fresh during the resume window is not in this set
+			// and is served normally.
+			if s.resuming && s.heldAcrossResume[id] {
+				continue
+			}
 			if d, ok := s.downlinks[id]; ok {
 				targets = append(targets, d)
 			}
@@ -236,6 +245,20 @@ func (s *Session) completeRegistration() {
 	}
 	s.awaitingUplink = make(map[ClientID]bool)
 	s.regBuffer = nil
+	// Resume-window bookkeeping captured before it is cleared below.
+	wasResuming := s.resuming
+	didResume := s.resumedThisReg
+	var heldClients []Downlink
+	if wasResuming {
+		for id := range s.heldAcrossResume {
+			if d, ok := s.downlinks[id]; ok {
+				heldClients = append(heldClients, d)
+			}
+		}
+	}
+	s.resuming = false
+	s.resumedThisReg = false
+	s.heldAcrossResume = nil
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
 
@@ -258,6 +281,38 @@ func (s *Session) completeRegistration() {
 		s.notifyAttachCaps(d)
 	}
 	s.flushHeldAfterRegister()
+
+	if wasResuming {
+		s.resolveHeldResume(heldClients, didResume)
+	}
+}
+
+// resolveHeldResume settles the clients held across a resume once the
+// reconnect finishes registering. If it genuinely resumed (a RESUME SUCCESS
+// was seen), their preserved state is still valid — tell them so and keep
+// them. If it fell back to a fresh registration instead, their state is now
+// stale (the fresh connection re-joined from config, not the old session),
+// so kick them with an ERROR to reattach cleanly, matching what a
+// non-resume disconnect does.
+func (s *Session) resolveHeldResume(held []Downlink, didResume bool) {
+	if didResume {
+		for _, d := range held {
+			_ = d.Send(s.rewriteFor(d, irc.Message{
+				Source:  ServerName,
+				Command: "NOTICE",
+				Params:  []string{nickOrStar(s.Nick()), "Session resumed."},
+			}))
+		}
+		return
+	}
+	s.log.Info("resume fell back to fresh registration; reattaching held clients")
+	errMsg := irc.Message{Command: "ERROR", Params: []string{"uplink resume failed; reconnect"}}
+	for _, d := range held {
+		id := d.ID()
+		_ = d.Send(errMsg)
+		_ = d.Close()
+		s.Detach(id)
+	}
 }
 
 // handleCAPLine interprets one CAP line from the uplink and updates
@@ -576,6 +631,11 @@ func (s *Session) HandleDisconnect(err error) {
 
 	s.mu.Lock()
 	wasRegistered := s.registered
+	// Held resume: a registered uplink that negotiated draft/resume-0.5 and
+	// holds a token can be resumed, so keep the clients attached across the
+	// reconnect instead of kicking them (see the resuming/heldAcrossResume
+	// fields). Decided from in-memory state only — no store read under lock.
+	heldResume := wasRegistered && s.upCaps[registration.ResumeCap] && s.resumeTokenHeld
 	nickErrLine := s.lastNickErrorLine
 	hadNickErr := s.hasLastNickErrorLine
 	s.lastNickErrorLine = irc.Message{}
@@ -584,16 +644,29 @@ func (s *Session) HandleDisconnect(err error) {
 	for _, d := range s.downlinks {
 		clients = append(clients, d)
 	}
-	if wasRegistered {
+	if wasRegistered && !heldResume {
 		s.downlinks = make(map[ClientID]Downlink)
 		s.awaitingUplink = make(map[ClientID]bool)
 	} else {
-		// Stay attached and keep waiting for the next successful registration.
+		// Stay attached and keep waiting for the next successful
+		// registration (an ordinary reconnect-while-attached, or a held
+		// resume).
 		awaiting := make(map[ClientID]bool, len(s.downlinks))
 		for id := range s.downlinks {
 			awaiting[id] = true
 		}
 		s.awaitingUplink = awaiting
+	}
+	s.resuming = heldResume
+	s.resumedThisReg = false
+	if heldResume {
+		held := make(map[ClientID]bool, len(s.downlinks))
+		for id := range s.downlinks {
+			held[id] = true
+		}
+		s.heldAcrossResume = held
+	} else {
+		s.heldAcrossResume = nil
 	}
 	s.regBuffer = nil
 	s.registered = false
@@ -630,11 +703,27 @@ func (s *Session) HandleDisconnect(err error) {
 	s.tracker = NewRequestTracker()
 	s.mu.Unlock()
 
-	if wasRegistered {
+	if wasRegistered && !heldResume {
 		errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}
 		for _, d := range clients {
 			_ = d.Send(errMsg)
 			_ = d.Close()
+		}
+		return
+	}
+	if heldResume {
+		// Keep the clients; tell them the uplink is being resumed, not that
+		// anything failed. The resumed session's state rebuilds from the
+		// replay, and the duplicate welcome burst is suppressed for these
+		// clients (see HandleRegistrationLine); completeRegistration keeps
+		// them if the reconnect actually resumed, or kicks them if it fell
+		// back to a fresh registration.
+		for _, d := range clients {
+			_ = d.Send(s.rewriteFor(d, irc.Message{
+				Source:  ServerName,
+				Command: "NOTICE",
+				Params:  []string{nickOrStar(nick), "Uplink connection lost; resuming session..."},
+			}))
 		}
 		return
 	}

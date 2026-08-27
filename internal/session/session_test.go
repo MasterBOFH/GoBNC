@@ -2247,12 +2247,13 @@ func TestRequestClientSASLAlreadyEnabled(t *testing.T) {
 }
 
 type fakeDL struct {
-	id   ClientID
-	ip   string // RemoteAddr override; defaults to "127.0.0.1" when empty
-	mu   sync.Mutex
-	caps map[string]bool
-	seen map[string]bool
-	sent []irc.Message
+	id     ClientID
+	ip     string // RemoteAddr override; defaults to "127.0.0.1" when empty
+	mu     sync.Mutex
+	caps   map[string]bool
+	seen   map[string]bool
+	sent   []irc.Message
+	closed bool
 }
 
 func (f *fakeDL) ID() ClientID { return f.id }
@@ -2307,7 +2308,18 @@ func (f *fakeDL) Send(m irc.Message) error {
 	return nil
 }
 
-func (f *fakeDL) Close() error { return nil }
+func (f *fakeDL) Close() error {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeDL) wasClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
 
 func (f *fakeDL) RemoteAddr() string {
 	if f.ip != "" {

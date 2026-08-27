@@ -133,6 +133,19 @@ type Session struct {
 	uplinkServer       string // source prefix from uplink 001 when known
 	ircd               string // detected IRCd family (irc.IRCd*)
 	registered         bool   // true after uplink OnRegistered until OnDisconnect
+	// Held-resume (draft/resume-0.5, uplink side): when a registered uplink
+	// with the resume cap and a stored token drops, downlink clients are
+	// held across the reconnect instead of being ERROR-kicked, and the
+	// resumed welcome burst is not re-shown to them. resuming marks that
+	// window; resumedThisReg is set when a RESUME SUCCESS is seen for the
+	// reconnect in progress (a real resume vs a fresh-registration
+	// fallback); heldAcrossResume is the set of held clients; resumeTokenHeld
+	// mirrors "a token is stored for this network", in memory so
+	// HandleDisconnect decides without a blocking store read under lock.
+	resuming         bool
+	resumedThisReg   bool
+	heldAcrossResume map[ClientID]bool
+	resumeTokenHeld  bool
 	// gotWelcome tracks 001 pre-registration, mirroring
 	// registration.State.GotWelcome — completeRegistration is only ever
 	// triggered by 376/422 after 001 has actually been seen, matching
