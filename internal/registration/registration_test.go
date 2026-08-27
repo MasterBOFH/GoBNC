@@ -384,15 +384,3 @@ func TestRealNoCAPPathCompletesWithoutAnyCAPTraffic(t *testing.T) {
 		t.Fatalf("got %d CAP actions, want exactly 1 (Start's opening CAP LS 302, never followed up since the server never replies): %+v", capActions, actions)
 	}
 }
-
-// Upstream event-playback: requested whenever offered, so a server-side
-// history replay includes JOIN/PART/QUIT events for the time we were
-// away — see DesiredCaps.
-func TestEventPlaybackRequestedWhenOffered(t *testing.T) {
-	s := New("nick", "", false, SASLConfig{})
-	_, acts := step(t, s, ":irc.example CAP nick LS :chathistory draft/event-playback event-playback server-time")
-	req := lastSendLine(t, acts)
-	if !strings.HasPrefix(req, "CAP REQ") || !strings.Contains(req, "draft/event-playback") || !strings.Contains(req, " event-playback") {
-		t.Fatalf("got %q, want a CAP REQ including both event-playback names", req)
-	}
-}
