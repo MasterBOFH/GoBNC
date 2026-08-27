@@ -31,6 +31,14 @@ func stepNickError(s State, in Input) (State, []Action) {
 	bad := msg.Param(1)
 	next, ok := nextLadderNick(s, bad)
 	if !ok {
+		if resumePossible(s) {
+			// Expected, not fatal: the old session still holds our
+			// nick, and RESUME SUCCESS returns it. Remember the error
+			// in case the resume is ruled out later (see
+			// ruleOutResume), and keep registering meanwhile.
+			s.pendingNickErr = resumeFailErr(msg.Command, msg.Params)
+			return s, nil
+		}
 		s.Phase = PhaseFailed
 		s.Err = fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
 		return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}
