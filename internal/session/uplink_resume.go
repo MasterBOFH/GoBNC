@@ -34,6 +34,9 @@ func (s *Session) persistResumeToken(token string) {
 	if err := s.store.SetResumeToken(context.Background(), s.Network.ID, token); err != nil {
 		s.log.Error("persist resume token", "err", err)
 	}
+	s.mu.Lock()
+	s.resumeTokenHeld = true
+	s.mu.Unlock()
 }
 
 // clearResumeToken forgets the stored token — for when the server-side
@@ -46,4 +49,7 @@ func (s *Session) clearResumeToken() {
 	if err := s.store.SetResumeToken(context.Background(), s.Network.ID, ""); err != nil {
 		s.log.Error("clear resume token", "err", err)
 	}
+	s.mu.Lock()
+	s.resumeTokenHeld = false
+	s.mu.Unlock()
 }
