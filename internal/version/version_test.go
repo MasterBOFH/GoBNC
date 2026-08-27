@@ -63,17 +63,21 @@ func TestClassifyUpgrade(t *testing.T) {
 }
 
 func TestCanUpgradeNormalizesUnversionedKeeper(t *testing.T) {
-	// Current constants are all 1: a missing keeper_version (0) is
-	// generation 1, so introducing versioning is not a must-upgrade.
-	if KeeperVersion != 1 || MinKeeperVersion != 1 {
+	// KeeperVersion=2, MinKeeperVersion=1: a missing keeper_version (0) is
+	// generation 1 — older than this binary's keeper but still accepted,
+	// so "should", never "must". Generation 2 itself is current.
+	if KeeperVersion != 2 || MinKeeperVersion != 1 {
 		t.Skipf("package constants moved (KeeperVersion=%d MinKeeperVersion=%d); adjust this test",
 			KeeperVersion, MinKeeperVersion)
 	}
-	if got := CanUpgrade(0); got != UpgradeNone {
-		t.Errorf("CanUpgrade(0)=%s, want none (unversioned keeper ≡ 1)", got)
+	if got := CanUpgrade(0); got != UpgradeShould {
+		t.Errorf("CanUpgrade(0)=%s, want should (unversioned keeper ≡ 1, older than 2, still >= min 1)", got)
 	}
-	if got := CanUpgrade(1); got != UpgradeNone {
-		t.Errorf("CanUpgrade(1)=%s, want none", got)
+	if got := CanUpgrade(1); got != UpgradeShould {
+		t.Errorf("CanUpgrade(1)=%s, want should", got)
+	}
+	if got := CanUpgrade(2); got != UpgradeNone {
+		t.Errorf("CanUpgrade(2)=%s, want none", got)
 	}
 }
 

@@ -79,7 +79,13 @@ const BrainVersion = 1
 // keeper behavior or the keeper↔brain protocol surface, including additive
 // JSON fields. Leave MinKeeperVersion behind on a non-breaking change so
 // an already-running older keeper still accepts this brain.
-const KeeperVersion = 1
+//
+// Generation 2: Manager.QuitCloseAll sends BRB instead of QUIT to a network
+// the brain marked resumable (keeper.BlobKeyResumable) — a behaviour change
+// only; no protocol change, so MinKeeperVersion stays at 1 and a brain of
+// this generation runs unchanged against a generation-1 keeper (which
+// simply still QUITs on its own shutdown).
+const KeeperVersion = 2
 
 // MinKeeperVersion is the oldest keeper generation this brain will attach
 // to. Bump it (typically to equal KeeperVersion) on a breaking keeper
