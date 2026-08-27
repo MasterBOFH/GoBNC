@@ -39,6 +39,23 @@ func (s *Session) persistResumeToken(token string) {
 	s.mu.Unlock()
 }
 
+// persistResumeTimestamp saves the last-seen @time as the RESUME timestamp.
+// Must be called without s.mu held (a SQLite write).
+func (s *Session) persistResumeTimestamp() {
+	if s.store == nil || s.Network.ID == 0 {
+		return
+	}
+	s.mu.RLock()
+	ts := s.lastServerTime
+	s.mu.RUnlock()
+	if ts == "" {
+		return
+	}
+	if err := s.store.SetResumeTimestamp(context.Background(), s.Network.ID, ts); err != nil {
+		s.log.Error("persist resume timestamp", "err", err)
+	}
+}
+
 // clearResumeToken forgets the stored token — for when the server-side
 // session it resumes is deliberately ended (QUIT). Must be called without
 // s.mu held.
@@ -48,6 +65,9 @@ func (s *Session) clearResumeToken() {
 	}
 	if err := s.store.SetResumeToken(context.Background(), s.Network.ID, ""); err != nil {
 		s.log.Error("clear resume token", "err", err)
+	}
+	if err := s.store.SetResumeTimestamp(context.Background(), s.Network.ID, ""); err != nil {
+		s.log.Error("clear resume timestamp", "err", err)
 	}
 	s.mu.Lock()
 	s.resumeTokenHeld = false

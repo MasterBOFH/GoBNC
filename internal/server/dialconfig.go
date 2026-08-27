@@ -67,6 +67,11 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 		s.log.Warn("read resume token", "network", n.Name, "err", err)
 		resumeToken = ""
 	}
+	resumeTS, err := s.store.ResumeTimestamp(context.Background(), n.ID)
+	if err != nil {
+		s.log.Warn("read resume timestamp", "network", n.Name, "err", err)
+		resumeTS = ""
+	}
 
 	return brain.NetworkConfig{
 		PrimaryNick:  n.Nick,
@@ -79,11 +84,12 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 			Pass:          n.SASLPass,
 			HasClientCert: hasClientCert,
 		},
-		Pass:        n.Pass,
-		Username:    n.Username,
-		Realname:    n.Realname,
-		ResumeToken: resumeToken,
-		Name:        n.Name,
+		Pass:            n.Pass,
+		Username:        n.Username,
+		Realname:        n.Realname,
+		ResumeToken:     resumeToken,
+		ResumeTimestamp: resumeTS,
+		Name:            n.Name,
 	}
 }
 
