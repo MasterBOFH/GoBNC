@@ -159,6 +159,9 @@ func TestHeldResumeKicksClientWhenResumeFails(t *testing.T) {
 // suppressed.
 func TestHeldResumeRelaysRosterButNotWelcome(t *testing.T) {
 	s, d := resumableSession(t, true)
+	s.mu.Lock()
+	s.self.UModes = map[byte]bool{'i': true, 'w': true} // unchanged across the gap → self-MODE suppressed
+	s.mu.Unlock()
 	s.HandleDisconnect(irc.ErrLineTooLong)
 	d.clearSent()
 
@@ -190,4 +193,68 @@ func TestHeldResumeRelaysRosterButNotWelcome(t *testing.T) {
 	if !hasCmd(d, "332") || !hasCmd(d, "353") || !hasCmd(d, "366") {
 		t.Fatalf("roster/topic burst not relayed to held client: %v", sentCommands(d))
 	}
+}
+
+// The resumed burst re-sends topic and self-umode; a held client should see
+// them only when they actually changed during the gap.
+func TestHeldResumeDiffsTopicAndUmode(t *testing.T) {
+	setup := func(t *testing.T) (*Session, *fakeDL) {
+		s, d := resumableSession(t, true)
+		// Seed pre-drop state: a channel with a topic, and self umodes.
+		s.mu.Lock()
+		s.channels["#chan"] = &ChannelState{Name: "#chan", Topic: "old topic", Members: map[string]struct{}{}, Modes: irc.NewChannelModes()}
+		s.self.UModes = map[byte]bool{'i': true, 'w': true}
+		s.mu.Unlock()
+		s.HandleDisconnect(irc.ErrLineTooLong)
+		d.clearSent()
+		return s, d
+	}
+	feed := func(s *Session, line string) {
+		msg, err := irc.Parse(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+
+	t.Run("unchanged suppressed", func(t *testing.T) {
+		s, d := setup(t)
+		feed(s, ":srv RESUME SUCCESS :me")
+		feed(s, ":me JOIN #chan")
+		feed(s, ":srv 332 me #chan :old topic")
+		feed(s, ":srv 333 me #chan setter 123")
+		feed(s, ":me MODE me :+iw")
+		feed(s, ":srv 376 me :End of MOTD")
+		if hasCmd(d, "332") || hasCmd(d, "333") {
+			t.Fatalf("unchanged topic relayed: %v", sentCommands(d))
+		}
+		for _, m := range d.snapshot() {
+			if m.Command == "MODE" && m.Param(0) == "me" {
+				t.Fatalf("unchanged umode relayed: %+v", m)
+			}
+		}
+	})
+
+	t.Run("changed relayed", func(t *testing.T) {
+		s, d := setup(t)
+		feed(s, ":srv RESUME SUCCESS :me")
+		feed(s, ":me JOIN #chan")
+		feed(s, ":srv 332 me #chan :NEW topic")
+		feed(s, ":srv 333 me #chan setter 456")
+		feed(s, ":me MODE me :-w") // dropped +w during the gap
+		feed(s, ":srv 376 me :End of MOTD")
+		if !hasCmd(d, "332") {
+			t.Fatalf("changed topic not relayed: %v", sentCommands(d))
+		}
+		sawMode := false
+		for _, m := range d.snapshot() {
+			if m.Command == "MODE" && m.Param(0) == "me" {
+				sawMode = true
+			}
+		}
+		if !sawMode {
+			t.Fatalf("changed umode not relayed: %v", d.snapshot())
+		}
+	})
 }

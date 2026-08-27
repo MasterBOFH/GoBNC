@@ -151,6 +151,12 @@ type Session struct {
 	// timestamp so a brain that restarts before the redial still presents
 	// one (the live redial path uses brain.Driver's own copy).
 	lastServerTime string
+	// resumeTopicSnap / resumeUModeSnap capture per-channel topic and self
+	// umodes at a resumable drop, so the resumed burst's 332/333 and self
+	// MODE can be relayed to held clients only when they actually changed
+	// during the gap (an unchanged re-send is suppressed as no-op noise).
+	resumeTopicSnap map[string]string
+	resumeUModeSnap string
 	// gotWelcome tracks 001 pre-registration, mirroring
 	// registration.State.GotWelcome — completeRegistration is only ever
 	// triggered by 376/422 after 001 has actually been seen, matching
