@@ -40,6 +40,8 @@ func (s *Server) dialConfigForLocked(n store.Network) keeper.DialConfig {
 		cfg.CertFile = certPath
 		cfg.KeyFile = keyPath
 	}
+	cfg.WebSocket = n.WebSocket
+	cfg.WSPath = n.WSPath
 	return cfg
 }
 
