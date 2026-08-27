@@ -81,11 +81,20 @@ const BrainVersion = 1
 // an already-running older keeper still accepts this brain.
 //
 // Generation 2: Manager.QuitCloseAll sends BRB instead of QUIT to a network
-// the brain marked resumable (keeper.BlobKeyResumable) — a behaviour change
-// only; no protocol change, so MinKeeperVersion stays at 1 and a brain of
-// this generation runs unchanged against a generation-1 keeper (which
-// simply still QUITs on its own shutdown).
-const KeeperVersion = 2
+// the brain marked resumable (keeper.BlobKeyResumable).
+// Generation 3: the keeper can dial an IRCv3 WebSocket uplink
+// (DialConfig.WebSocket, internal/wsconn). Additive JSON field, so
+// MinKeeperVersion stays 1 — but a network configured for WebSocket
+// genuinely requires a gen-3 keeper: an older one ignores the field and
+// dials a plain stream, so the brain must gate a WebSocket dial on
+// WSMinKeeperVersion rather than let it connect wrongly.
+const KeeperVersion = 3
+
+// WSMinKeeperVersion is the keeper generation that can dial a WebSocket
+// uplink. Unlike MinKeeperVersion (which gates the whole attach), this is
+// a per-network capability check the brain applies only to a network
+// configured for WebSocket — see internal/server's dial path.
+const WSMinKeeperVersion = 3
 
 // MinKeeperVersion is the oldest keeper generation this brain will attach
 // to. Bump it (typically to equal KeeperVersion) on a breaking keeper
