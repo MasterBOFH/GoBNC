@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/MasterBOFH/GoBNC/internal/brain"
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
@@ -54,6 +56,16 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 	globalCert, globalKey := s.cfg.TLSClientCert, s.cfg.TLSClientKey
 	_, _, hasClientCert := config.ResolveTLSClientCert(n.TLSCert, n.TLSKey, globalCert, globalKey)
 
+	// The draft/resume-0.5 token isn't a store.Network field (see
+	// store.Store.SetResumeToken for why) — read alongside. A read error
+	// costs one resume attempt, not the connection: log and register
+	// fresh.
+	resumeToken, err := s.store.ResumeToken(context.Background(), n.ID)
+	if err != nil {
+		s.log.Warn("read resume token", "network", n.Name, "err", err)
+		resumeToken = ""
+	}
+
 	return brain.NetworkConfig{
 		PrimaryNick:  n.Nick,
 		AltNick:      n.AltNick,
@@ -65,10 +77,11 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 			Pass:          n.SASLPass,
 			HasClientCert: hasClientCert,
 		},
-		Pass:     n.Pass,
-		Username: n.Username,
-		Realname: n.Realname,
-		Name:     n.Name,
+		Pass:        n.Pass,
+		Username:    n.Username,
+		Realname:    n.Realname,
+		ResumeToken: resumeToken,
+		Name:        n.Name,
 	}
 }
 
