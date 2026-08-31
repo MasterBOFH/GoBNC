@@ -175,6 +175,14 @@ type Driver struct {
 	writeResults     chan keeper.WriteResultMsg
 	quitCloseResults chan keeper.QuitCloseResultMsg
 	netEvents        chan keeper.NetworkEventMsg
+
+	// netEvMu makes publishing on netEvents safe from outside Run's own
+	// goroutine (the keepalive loop's synthesized disconnect — see
+	// keepaliveLoop): Run closes netEvents when it exits, and a timer-driven
+	// publish racing that close would panic. Every publish and the close
+	// itself go through publishNetworkEvent/closeNetEvents under this mutex.
+	netEvMu     sync.Mutex
+	netEvClosed bool
 }
 
 // NewDriver wraps an already-attached, live-mode client. Call SendLiveReady
@@ -795,7 +803,7 @@ func (d *Driver) Run(ctx context.Context) error {
 	defer close(d.closeResults)
 	defer close(d.writeResults)
 	defer close(d.quitCloseResults)
-	defer close(d.netEvents)
+	defer d.closeNetEvents()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -840,7 +848,7 @@ func (d *Driver) Run(ctx context.Context) error {
 				d.recordEpoch(ev.NetworkEvent.Network, ev.NetworkEvent.Epoch)
 			}
 			d.handleNetworkEvent(*ev.NetworkEvent)
-			trySendNetworkEvent(d.netEvents, *ev.NetworkEvent)
+			d.publishNetworkEvent(*ev.NetworkEvent)
 		}
 	}
 }
@@ -1032,11 +1040,29 @@ func trySendWriteResult(ch chan keeper.WriteResultMsg, v keeper.WriteResultMsg) 
 	}
 }
 
-func trySendNetworkEvent(ch chan keeper.NetworkEventMsg, v keeper.NetworkEventMsg) {
+// publishNetworkEvent is the netEvents counterpart of the trySend*
+// helpers, with one extra property the others don't need: it's safe to
+// call from goroutines other than Run's (the keepalive loop synthesizes a
+// disconnect event — see keepaliveLoop), because it checks under netEvMu
+// that closeNetEvents hasn't already run. Same non-blocking drop semantics
+// otherwise.
+func (d *Driver) publishNetworkEvent(v keeper.NetworkEventMsg) {
+	d.netEvMu.Lock()
+	defer d.netEvMu.Unlock()
+	if d.netEvClosed {
+		return
+	}
 	select {
-	case ch <- v:
+	case d.netEvents <- v:
 	default:
 	}
+}
+
+func (d *Driver) closeNetEvents() {
+	d.netEvMu.Lock()
+	defer d.netEvMu.Unlock()
+	d.netEvClosed = true
+	close(d.netEvents)
 }
 
 func trySendQuitCloseResult(ch chan keeper.QuitCloseResultMsg, v keeper.QuitCloseResultMsg) {

@@ -61,9 +61,13 @@ func (k EventKind) String() string {
 	return "disconnected"
 }
 
-// Event is published on every state transition. Err is non-nil on
-// EventDisconnected only when the socket died on its own (read error,
-// deadline, EOF); a deliberate Close() publishes Err == nil.
+// Event is published when the socket's state changes on its own:
+// EventConnected on a successful Dial, EventDisconnected only when the
+// socket died on its own (read error, deadline, EOF), with Err carrying the
+// cause. A deliberate Close() publishes no Event at all (see readLoop's
+// !deliberate guard) — a caller that needs "this connection is gone"
+// semantics for a close it requested itself must synthesize that signal on
+// its own side (internal/brain's keepalive timeout does exactly this).
 type Event struct {
 	Kind  EventKind
 	Epoch uint64

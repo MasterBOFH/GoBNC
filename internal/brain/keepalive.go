@@ -123,9 +123,31 @@ func (d *Driver) keepaliveLoop(id keeper.NetworkID, stop <-chan struct{}) {
 			if d.log != nil {
 				d.log.Info("uplink keepalive timeout; closing", "network", d.peerLabel(id))
 			}
-			d.stopKeepalive(id)
 			_ = d.client.SendClose(id)
-			d.armReconnect(id)
+			// A deliberate CloseRequest never produces a keeper
+			// EventDisconnected (the keeper publishes one only when the
+			// socket dies on its own — see Keeper.readLoop's cleanup), so
+			// without help nothing downstream ever learns this uplink is
+			// gone: internal/server's demux calls Session.HandleDisconnect
+			// only on a NetworkEvent{Disconnected} or a PhaseFailed Result,
+			// and this path used to produce neither — downlinks stayed
+			// attached to a dead, silently re-registering network.
+			// failRegistration solves the same problem for its own
+			// deliberate Close by emitting the PhaseFailed Result; here the
+			// network is registered, so synthesize the event the keeper
+			// won't send and run it through the same handleNetworkEvent +
+			// publish pair Run uses for a genuine disconnect — same teardown
+			// (nick recovery, this keepalive loop via its stopKeepalive,
+			// armReconnect), same demux routing to HandleDisconnect. If the
+			// socket happens to die on its own in this same instant, the
+			// keeper's genuine event doubles this one — HandleDisconnect is
+			// documented benign when called twice for one disconnect.
+			d.mu.Lock()
+			epoch := d.epochs[id]
+			d.mu.Unlock()
+			ev := keeper.NetworkEventMsg{Network: id, Kind: keeper.EventDisconnected, Epoch: epoch, Error: "keepalive timeout"}
+			d.handleNetworkEvent(ev)
+			d.publishNetworkEvent(ev)
 			return
 		}
 	}
