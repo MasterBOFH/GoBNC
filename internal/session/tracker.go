@@ -290,17 +290,18 @@ type BeginOpts struct {
 	ClientLabel     string
 	PreferLabel     bool
 	PreferWHOX      bool
-	WhoisTargets    []string    // folded nicks
-	WHOMask         string      // WHO mask (for 315 matching)
-	StatsLetter     string      // folded STATS query letter ("" if none)
-	EnquiryTarget   string      // folded MODE/TOPIC/NAMES target (channel or nick)
-	ModeLetters     string      // MODE list letters as the client sent them (normalized in Begin)
-	WHOXFlags       string      // WHOX flags before '%'; must match to coalesce
-	WHOXFields      string      // WHOX field letters (client form); 't' ignored for coalesce
-	WHOXClientToken string      // client's original querytype; restored on 354, not a coalesce key
-	WhoisWire       *[]string   // output: nicks that still need an uplink WHOIS
-	Remote          string      // optional server/target; empty = local; whoisRemoteNick = WHOIS nick nick
-	Outbound        irc.Message // uplink line; queued when writeNow is false
+	WhoisTargets    []string        // WHOIS nicks as the client spelled them (Begin folds for routing)
+	CaseMapping     irc.CaseMapping // folds WhoisTargets into routing keys
+	WHOMask         string          // WHO mask (for 315 matching)
+	StatsLetter     string          // folded STATS query letter ("" if none)
+	EnquiryTarget   string          // folded MODE/TOPIC/NAMES target (channel or nick)
+	ModeLetters     string          // MODE list letters as the client sent them (normalized in Begin)
+	WHOXFlags       string          // WHOX flags before '%'; must match to coalesce
+	WHOXFields      string          // WHOX field letters (client form); 't' ignored for coalesce
+	WHOXClientToken string          // client's original querytype; restored on 354, not a coalesce key
+	WhoisWire       *[]string       // output: client-spelled nicks that still need an uplink WHOIS
+	Remote          string          // optional server/target; empty = local; whoisRemoteNick = WHOIS nick nick
+	Outbound        irc.Message     // uplink line; queued when writeNow is false
 }
 
 // Begin registers an outbound solicitous command.
@@ -363,12 +364,16 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 	// the same local/remote form coalesces; a different form (WHOIS nick vs
 	// WHOIS nick nick vs WHOIS server nick) is a separate enquiry — the
 	// write is held until the in-flight nick exchange ends.
+	// The folded nick is only the routing key; the uplink line keeps the
+	// client's spelling so the server's echo (318 names the nick as
+	// queried) comes back the way the client typed it.
 	if cmd == "WHOIS" && len(opts.WhoisTargets) > 0 {
 		var need []string
-		for _, nick := range opts.WhoisTargets {
-			if nick == "" {
+		for _, wire := range opts.WhoisTargets {
+			if wire == "" {
 				continue
 			}
+			nick := opts.CaseMapping.Canonical(wire)
 			w := &pendingRequest{
 				Client:      opts.Client,
 				ClientLabel: opts.ClientLabel,
@@ -377,7 +382,7 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 				Remote:      opts.Remote,
 				EndCodes:    endCodesFor("WHOIS", rt.ircd),
 				Created:     time.Now(),
-				Outbound:    whoisOutbound(nick, opts.Remote),
+				Outbound:    whoisOutbound(wire, opts.Remote),
 			}
 			if q := rt.whois[nick]; len(q) > 0 {
 				if existing := findRemoteMatch(q, opts.Remote); existing != nil {
@@ -389,7 +394,7 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 				continue
 			}
 			rt.whois[nick] = []*pendingRequest{w}
-			need = append(need, nick)
+			need = append(need, wire)
 		}
 		if opts.WhoisWire != nil {
 			*opts.WhoisWire = need

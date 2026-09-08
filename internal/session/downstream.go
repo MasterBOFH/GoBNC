@@ -398,9 +398,7 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 	cm := s.isupport.CaseMapping
 	var whoisTargets []string
 	if cmd == "WHOIS" && !preferLabel {
-		for _, n := range ParseWHOISTargets(msg.Params) {
-			whoisTargets = append(whoisTargets, cm.Canonical(n))
-		}
+		whoisTargets = ParseWHOISTargets(msg.Params)
 	}
 	whoMask := ""
 	if cmd == "WHO" || cmd == "WHOX" {
@@ -432,6 +430,7 @@ func (s *Session) forwardSolicitous(d Downlink, msg irc.Message) error {
 		PreferLabel:     preferLabel,
 		PreferWHOX:      preferWHOX && clientWHOX,
 		WhoisTargets:    whoisTargets,
+		CaseMapping:     cm,
 		WhoisWire:       &whoisWire,
 		WHOMask:         whoMask,
 		WHOXFlags:       whoxFlags,
