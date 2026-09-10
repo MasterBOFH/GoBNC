@@ -31,6 +31,12 @@ func realSpawn(binary string, args []string) (pid int, err error) {
 		return 0, err
 	}
 	pid = cmd.Process.Pid
-	_ = cmd.Process.Release()
+	// Reap the child once it exits. Setsid detaches the keeper's session,
+	// not its parent link: while this process lives it stays the keeper's
+	// parent, and an exited-but-unreaped child is a zombie that
+	// kill(pid, 0) — daemon.Alive, which daemon.Stop polls — still reports
+	// as live. Releasing the handle instead of waiting made gobnc die sit
+	// out its full keeper-stop timeout on a keeper that was already gone.
+	go func() { _ = cmd.Wait() }()
 	return pid, nil
 }
