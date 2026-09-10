@@ -52,6 +52,9 @@ to stay attached (required under systemd/rc.d). -debug also forces a debug conso
 (file still uses gobnc.json log_level). Daemon mode defaults log_file to the state
 dir when unset.
 
+Every command accepts -config <path> (default gobnc.json in the current directory),
+anywhere on the line; auth and network commands read db_path from it.
+
 Secrets (bouncer password, SASL password) are prompted on a TTY; they are not accepted on the command line.
 auth set-password asks whether to generate a random password (default yes); otherwise you enter one.
 
@@ -95,12 +98,7 @@ from gobnc.json when those fields are omitted.
 Pass --sasl-pass (no value) to prompt for a SASL password.`)
 		return nil
 	}
-	cfgPath := "gobnc.json"
-	for i, a := range args {
-		if a == "-config" && i+1 < len(args) {
-			cfgPath = args[i+1]
-		}
-	}
+	cfgPath, args := splitConfigFlag(args)
 	cfg, _ := config.LoadJSON(cfgPath)
 
 	switch args[0] {
@@ -141,6 +139,26 @@ Pass --sasl-pass (no value) to prompt for a SASL password.`)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// splitConfigFlag pulls "-config <path>" out of a CLI argument list,
+// returning the path (default gobnc.json) and the remaining arguments.
+// The flag is accepted anywhere, so subcommands get only their own
+// arguments: auth set-password takes none at all, and add-fingerprint
+// would otherwise swallow the pair into its free-text label. A trailing
+// "-config" with no value is left alone for the subcommand to reject.
+func splitConfigFlag(args []string) (string, []string) {
+	cfgPath := "gobnc.json"
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-config" && i+1 < len(args) {
+			cfgPath = args[i+1]
+			i++
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	return cfgPath, rest
 }
 
 func adminDeps(st *store.Store, cfg config.Config) admin.Deps {
