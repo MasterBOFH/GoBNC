@@ -409,6 +409,7 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 			_ = handleClientCAP(cl, msg)
 		case "PASS":
 			pass = msg.ParamsText()
+			cl.passSeen = true
 			// Resolve the network as soon as we know it so a CAP LS received
 			// before PASS can be answered with one collated list (including
 			// any uplink-backed caps already available) instead of CAP LS
@@ -478,6 +479,9 @@ func (l *Listener) authenticate(ctx context.Context, cl *Client, tc *tls.Conn) (
 		case triedPassword:
 			return false, "", fmt.Errorf("invalid password")
 		default:
+			if pass != "" && !strings.Contains(pass, "/") {
+				return false, "", fmt.Errorf("no valid credentials (PASS has no network/ prefix and no client cert was presented)")
+			}
 			return false, "", fmt.Errorf("no valid credentials")
 		}
 	}
@@ -587,10 +591,18 @@ func handleClientCAP(cl *Client, msg irc.Message) error {
 		if msg.Param(1) == "302" {
 			cl.cap302 = true
 		}
-		if cl.sess == nil && cl.provSess == nil {
+		if cl.sess == nil && cl.provSess == nil && !cl.passSeen {
 			// Network not resolved yet (PASS not seen). Defer the reply so we
 			// can answer with one collated list — instead of a bare CAP LS now
 			// followed by a separate CAP NEW once the uplink's caps are known.
+			// Only while PASS is still to come: once PASS has been seen and
+			// its network didn't resolve (unknown name, or no network/ prefix
+			// at all), nothing later in registration can resolve it, so
+			// deferring would leave the client waiting for a CAP LS reply
+			// that never arrives — it never sends CAP END, and the login
+			// sits silent until the auth timeout instead of failing at
+			// once. Answer with the bouncer-local set instead; auth then
+			// rejects the PASS immediately with a proper ERROR.
 			cl.pendingLS = true
 			return nil
 		}
@@ -677,6 +689,7 @@ type Client struct {
 	capEnded   bool // client sent CAP END
 	cap302     bool // client sent CAP LS 302
 	pendingLS  bool // CAP LS received before the network (PASS) was known
+	passSeen   bool // PASS received (whether or not its network resolved)
 	lastRXUnix int64
 
 	// outOnce lazily starts out/writeLoop on first Send/Close, rather than

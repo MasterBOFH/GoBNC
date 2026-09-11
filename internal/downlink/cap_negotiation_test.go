@@ -228,3 +228,59 @@ func readMatchingLine(c net.Conn, br *bufio.Reader, match func(string) bool, tim
 	}
 	return "", fmt.Errorf("timeout waiting for matching line")
 }
+
+// A CAP LS that arrives after a PASS whose network did not resolve (no
+// network/ prefix, or an unknown name) must be answered immediately, not
+// deferred: PASS has already gone by, so nothing later in registration can
+// resolve the network, and a deferred reply would never be sent — the
+// client waits for CAP LS before CAP END, and the login sits silent until
+// the 30s auth timeout instead of failing at once.
+func TestCAPLSAfterUnresolvedPASSIsAnsweredImmediately(t *testing.T) {
+	for _, pass := range []string{"PASS justthepassword", "PASS nosuchnet/pw"} {
+		t.Run(pass, func(t *testing.T) {
+			fx := testutil.NewTLSFixture(t)
+			db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			cfg := config.Default()
+			cfg.AllowPasswordAuth = true
+			cfg.AllowCertAuth = true
+			_ = db.SetPasswordHash(context.Background(), mustHash(t, "pw"))
+
+			ln, err := tls.Listen("tcp", "127.0.0.1:0", fx.ServerTLS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			sess := session.New(store.Network{Name: "net", Nick: "x"}, db, nil, nil, nil)
+			l := NewListener(cfg, db, &memMgr{s: sess}, fx.ServerTLS, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = l.Serve(ctx, ln) }()
+
+			c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{RootCAs: fx.ClientTLS.RootCAs, ServerName: "localhost"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			r := bufio.NewReader(c)
+			_, _ = c.Write([]byte(pass + "\r\nCAP LS 302\r\nNICK me\r\nUSER me 0 * :me\r\n"))
+			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			line, err := r.ReadString('\n')
+			if err != nil || !strings.Contains(line, "CAP * LS") {
+				t.Fatalf("want an immediate CAP LS reply, got %q err=%v", line, err)
+			}
+			// Client finishes negotiation; auth must now fail right away.
+			_, _ = c.Write([]byte("CAP END\r\n"))
+			line, err = r.ReadString('\n')
+			if err != nil || !strings.HasPrefix(line, "ERROR ") {
+				t.Fatalf("want an immediate ERROR, got %q err=%v", line, err)
+			}
+			if _, err = r.ReadString('\n'); err == nil {
+				t.Fatal("connection must be closed after ERROR")
+			}
+		})
+	}
+}
