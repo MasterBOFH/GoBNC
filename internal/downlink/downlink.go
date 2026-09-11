@@ -844,6 +844,14 @@ func (c *Client) MarkSeenCap(name string) {
 	c.mu.Unlock()
 }
 
+// ClearSeenCap forgets name as advertised (after a CAP DEL), so a later
+// CAP NEW for it reaches the client again.
+func (c *Client) ClearSeenCap(name string) {
+	c.mu.Lock()
+	delete(c.capsSeen, name)
+	c.mu.Unlock()
+}
+
 func (c *Client) markCapsSeen(list []string) {
 	c.mu.Lock()
 	if c.capsSeen == nil {

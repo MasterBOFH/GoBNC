@@ -298,3 +298,60 @@ func TestHeldResumeSuppressesPreWelcomeNotices(t *testing.T) {
 		t.Fatalf("post-welcome NOTICE not relayed to held client: %v", sentCommands(d))
 	}
 }
+
+// A client held across a resume already has the caps the fresh uplink
+// re-ACKs — from its side nothing changed, so it must get no CAP NEW for
+// them. A cap the new uplink offers that the client never saw is still
+// announced, and a cap withdrawn (CAP DEL) and later re-offered is
+// announced again.
+func TestHeldResumeNoCapNewForCapsClientAlreadyHas(t *testing.T) {
+	s, d := resumableSession(t, true)
+	d.caps["cap-notify"] = true
+	for _, c := range []string{"cap-notify", "message-tags", "server-time", "account-tag", "away-notify"} {
+		d.MarkSeenCap(c)
+	}
+	s.mu.Lock()
+	s.upCaps["account-tag"] = true
+	s.upCaps["away-notify"] = true
+	s.mu.Unlock()
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	d.clearSent()
+
+	feed := func(line string) {
+		msg, err := irc.Parse(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed(":srv CAP me ACK :account-tag away-notify")
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":srv 376 me :End of MOTD")
+
+	for _, m := range d.snapshot() {
+		if m.Command == "CAP" {
+			t.Fatalf("held client got a CAP notification for caps it already had: %+v", m)
+		}
+	}
+
+	// A cap the client has never seen still gets announced …
+	s.broadcastCapNotify("NEW", []string{"chghost"})
+	if !hasCmd(d, "CAP") {
+		t.Fatal("CAP NEW for a never-seen cap was not sent")
+	}
+	// … once: a second announcement of the same cap is a no-op …
+	d.clearSent()
+	s.broadcastCapNotify("NEW", []string{"chghost"})
+	if hasCmd(d, "CAP") {
+		t.Fatal("CAP NEW re-announced a cap the client had already seen")
+	}
+	// … until a CAP DEL withdraws it.
+	s.broadcastCapNotify("DEL", []string{"chghost"})
+	d.clearSent()
+	s.broadcastCapNotify("NEW", []string{"chghost"})
+	if !hasCmd(d, "CAP") {
+		t.Fatal("CAP NEW after CAP DEL was not re-announced")
+	}
+}

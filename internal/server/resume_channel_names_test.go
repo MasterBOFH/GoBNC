@@ -48,6 +48,7 @@ func (f *fakeServerDL) ClearCap(n string) {
 }
 func (f *fakeServerDL) HasSeenCap(string) bool { return false }
 func (f *fakeServerDL) MarkSeenCap(string)     {}
+func (f *fakeServerDL) ClearSeenCap(string)    {}
 func (f *fakeServerDL) Send(msg irc.Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
