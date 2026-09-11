@@ -639,14 +639,14 @@ func parseCapList(s string) map[string]string {
 }
 
 // broadcastCapNotify sends CAP NEW/DEL to clients that negotiated cap-notify.
+// NEW is per client: only caps this client hasn't already been shown (in
+// its CAP LS reply or an earlier NEW) are announced — a client held across
+// a resume, or attached across any re-registration, already has the caps
+// the fresh uplink re-ACKs, and from its side nothing changed. DEL forgets
+// the cap as seen so a later NEW for it is announced again.
 func (s *Session) broadcastCapNotify(sub string, names []string) {
 	if len(names) == 0 {
 		return
-	}
-	msg := irc.Message{
-		Source:  ServerName,
-		Command: "CAP",
-		Params:  []string{"*", sub, strings.Join(names, " ")},
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -654,18 +654,33 @@ func (s *Session) broadcastCapNotify(sub string, names []string) {
 		if !d.HasCap("cap-notify") {
 			continue
 		}
-		if sub == "DEL" {
+		send := names
+		switch sub {
+		case "DEL":
 			for _, n := range names {
 				d.ClearCap(caps.CapName(n))
+				d.ClearSeenCap(caps.CapName(n))
 			}
-		} else if sub == "NEW" {
-			// Record as seen so a later attach-time sync (notifyAttachCaps)
-			// does not re-announce it.
+		case "NEW":
+			send = send[:0:0]
 			for _, n := range names {
+				if d.HasSeenCap(caps.CapName(n)) {
+					continue
+				}
+				// Record as seen so a later attach-time sync
+				// (notifyAttachCaps) does not re-announce it.
 				d.MarkSeenCap(caps.CapName(n))
+				send = append(send, n)
+			}
+			if len(send) == 0 {
+				continue
 			}
 		}
-		_ = d.Send(msg)
+		_ = d.Send(irc.Message{
+			Source:  ServerName,
+			Command: "CAP",
+			Params:  []string{"*", sub, strings.Join(send, " ")},
+		})
 	}
 }
 

@@ -34,6 +34,7 @@ func (d *memDL) ClearCap(n string)    { delete(d.caps, n) }
 func (d *memDL) HasSeenCap(n string) bool {
 	return d.seen[n]
 }
+func (d *memDL) ClearSeenCap(n string) { delete(d.seen, n) }
 func (d *memDL) MarkSeenCap(n string) {
 	if d.seen == nil {
 		d.seen = make(map[string]bool)

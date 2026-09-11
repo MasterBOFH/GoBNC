@@ -29,6 +29,9 @@ type Downlink interface {
 	// it was already included in the client's initial CAP LS reply.
 	HasSeenCap(name string) bool
 	MarkSeenCap(name string)
+	// ClearSeenCap forgets a cap advertised earlier, so a later CAP NEW
+	// for it (after a CAP DEL) is announced again.
+	ClearSeenCap(name string)
 	Send(msg irc.Message) error
 	Close() error
 	// RemoteAddr returns the client's peer IP (no port), used only for the

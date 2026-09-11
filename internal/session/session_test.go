@@ -2295,6 +2295,12 @@ func (f *fakeDL) MarkSeenCap(n string) {
 	f.seen[n] = true
 }
 
+func (f *fakeDL) ClearSeenCap(n string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.seen, n)
+}
+
 func (f *fakeDL) EnableCap(n string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
