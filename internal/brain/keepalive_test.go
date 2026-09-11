@@ -618,3 +618,12 @@ func TestDriverKeepalivePINGsAfterNickConfigChange(t *testing.T) {
 		t.Fatal("keepalive PING stopped after network mod --nick=taken")
 	}
 }
+
+// The uplink keepalive must fire well inside Cloudflare's 100s idle cutoff
+// for proxied WebSockets, or a quiet ircd costs the connection (and the
+// resume token with it) before we ever ping.
+func TestKeepaliveIdleUnderProxyIdleCutoff(t *testing.T) {
+	if KeepaliveIdle >= 100*time.Second {
+		t.Fatalf("KeepaliveIdle=%s, must stay under the 100s proxy idle cutoff", KeepaliveIdle)
+	}
+}
