@@ -178,6 +178,11 @@ type Driver struct {
 	backoff         map[keeper.NetworkID]time.Duration
 	reconnectTimers map[keeper.NetworkID]*time.Timer
 	stopped         map[keeper.NetworkID]bool
+	// resetOnDial marks a network whose auto-redial has been sent and
+	// whose registration.State must be reset to fresh when (and only
+	// when) that dial actually succeeds — see armReconnect for why the
+	// reset can't happen before the dial is sent.
+	resetOnDial map[keeper.NetworkID]bool
 
 	// keepMu guards idle-PING keepalive state, separately from mu for the
 	// same reason nickRecMu is — see keepalive.go.
@@ -239,6 +244,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		backoff:              make(map[keeper.NetworkID]time.Duration),
 		reconnectTimers:      make(map[keeper.NetworkID]*time.Timer),
 		stopped:              make(map[keeper.NetworkID]bool),
+		resetOnDial:          make(map[keeper.NetworkID]bool),
 		flood:                make(map[keeper.NetworkID]*floodState),
 		results:              make(chan Result, 16),
 		lines:                make(chan keeper.LineMsg, 8192),
@@ -852,6 +858,7 @@ func (d *Driver) Run(ctx context.Context) error {
 			if ev.DialResult.OK {
 				d.recordEpoch(ev.DialResult.Network, ev.DialResult.Epoch)
 				d.resetBackoff(ev.DialResult.Network)
+				d.applyPendingReset(ev.DialResult.Network)
 				// EventConnected is published by Keeper.Dial before the
 				// listener subscribes fan-in, so this brain typically
 				// never sees it for a fresh dial. DialResult.OK is the
@@ -859,6 +866,20 @@ func (d *Driver) Run(ctx context.Context) error {
 				// loop here.
 				d.noteRX(ev.DialResult.Network)
 				d.startKeepaliveIfNeeded(ev.DialResult.Network)
+			} else if ev.DialResult.Error == keeper.ErrAlreadyConnected.Error() {
+				// The network's uplink is live — this dial was redundant
+				// (a late failure result for an attempt a newer, successful
+				// dial already superseded arming a redial; an operator
+				// re-dialling a connected network), not evidence of a
+				// dead link. Arming a redial here is what produced a
+				// self-sustaining loop seen live: every retry fails the
+				// same way, re-arms, and (before applyPendingReset moved
+				// the reset to dial success) reset the live network's
+				// registration State each time round.
+				d.clearPendingReset(ev.DialResult.Network)
+				if d.log != nil {
+					d.log.Debug("dial refused: network already connected; not arming redial", "network", ev.DialResult.Network)
+				}
 			} else {
 				d.armReconnect(ev.DialResult.Network)
 			}

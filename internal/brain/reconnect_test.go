@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	"github.com/MasterBOFH/GoBNC/internal/registration"
 )
 
 // TestDriverAutoReconnectsAfterRegistrationDeadline proves failRegistration's
@@ -188,4 +189,127 @@ func TestDriverStopNetworkBlocksArmReconnect(t *testing.T) {
 		t.Fatalf("armReconnect redialed a stopped network")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+// TestDriverRedundantDialDoesNotLoopOrResetLiveNetwork reproduces a loop
+// seen live: a redial armed for a network whose uplink is actually
+// connected (a late failure result for a dial that a newer, successful
+// dial had already superseded) makes the keeper answer
+// ErrAlreadyConnected. That "failure" used to arm yet another redial —
+// forever, on the backoff cadence — and each round reset the live
+// network's registration.State to fresh (stopping its keepalive and
+// nick-recovery loops with it) before sending the dial that was then
+// refused. armReconnect is driven directly, as in
+// TestDriverStopNetworkBlocksArmReconnect, since the live trigger is a
+// race between two dial attempts' results that a fixture can't order.
+func TestDriverRedundantDialDoesNotLoopOrResetLiveNetwork(t *testing.T) {
+	client, _ := newAttachedLiveClientWithManager(t)
+
+	srv := newFakeIRCServer(t)
+	defer srv.close()
+	release := make(chan struct{})
+	defer close(release)
+	go srv.serveOneUntil(t, release)
+	host, port := srv.addr()
+
+	const netID keeper.NetworkID = 1
+	driver := NewDriver(client, WithBackoff(20*time.Millisecond, 20*time.Millisecond))
+	driver.RegisterNetwork(netID, NetworkConfig{PrimaryNick: "gobncbrain"})
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	go func() { _ = driver.Run(runCtx) }()
+
+	if err := driver.Dial(netID, keeper.DialConfig{Host: host, Port: port}, 0); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if dr := awaitDialResult(t, driver, 5*time.Second); !dr.OK {
+		t.Fatalf("DialResult=%+v, want OK", dr)
+	}
+	if err := driver.StartRegistration(netID); err != nil {
+		t.Fatalf("StartRegistration: %v", err)
+	}
+	awaitComplete(t, driver, 10*time.Second)
+
+	// The uplink is live and registered. Arm a redial against it anyway.
+	driver.armReconnect(netID)
+
+	dr := awaitDialResult(t, driver, 5*time.Second)
+	if dr.OK || dr.Error != keeper.ErrAlreadyConnected.Error() {
+		t.Fatalf("redundant DialResult=%+v, want refused with %q", dr, keeper.ErrAlreadyConnected)
+	}
+	// With a 20ms backoff, a loop would produce a dozen more of these
+	// inside this window; there must be none.
+	select {
+	case dr := <-driver.DialResults():
+		t.Fatalf("redial loop: got another DialResult %+v after an already-connected refusal", dr)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	driver.mu.Lock()
+	phase := driver.states[netID].Phase
+	driver.mu.Unlock()
+	if phase != registration.PhaseComplete {
+		t.Fatalf("live network's registration State was reset: phase=%v, want complete", phase)
+	}
+	driver.keepMu.Lock()
+	_, keepaliveRunning := driver.keepStops[netID]
+	driver.keepMu.Unlock()
+	if !keepaliveRunning {
+		t.Fatal("live network's keepalive loop was stopped by the redundant dial")
+	}
+}
+
+// serveOneUntil is serveOne, but holds the registered connection open
+// until release is closed instead of dropping it right after 376.
+func (s *fakeIRCServer) serveOneUntil(t *testing.T, release <-chan struct{}) {
+	t.Helper()
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	send := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+	buf := make([]byte, 4096)
+	var pending string
+	readLine := func() (string, bool) {
+		for {
+			if i := indexCRLF(pending); i >= 0 {
+				line := pending[:i]
+				pending = pending[i+2:]
+				return line, true
+			}
+			n, err := conn.Read(buf)
+			if err != nil {
+				return "", false
+			}
+			pending += string(buf[:n])
+		}
+	}
+
+	nick := "nick"
+	gotNick, gotUser := false, false
+	for {
+		line, ok := readLine()
+		if !ok {
+			return
+		}
+		switch {
+		case hasPrefix(line, "CAP LS"):
+			send(":fake.example CAP * LS :")
+		case hasPrefix(line, "NICK "):
+			nick = line[len("NICK "):]
+			gotNick = true
+		case hasPrefix(line, "USER "):
+			gotUser = true
+		}
+		if gotNick && gotUser {
+			break
+		}
+	}
+	send(":fake.example 001 " + nick + " :Welcome")
+	send(":fake.example 376 " + nick + " :End of MOTD")
+	<-release
 }
