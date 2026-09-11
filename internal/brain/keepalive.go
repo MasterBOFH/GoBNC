@@ -12,11 +12,15 @@ import (
 // while the client is still writing (ISON reclaim is the case that showed
 // this), and some don't treat those writes as resetting their own ping
 // timer either. Without a client-originated PING the uplink then sits
-// silent from the server's point of view until it is dropped. 120s idle /
-// 60s grace is the old budget; downlink's wider 300s/120s budget is a
-// different path (a client pinging us, not us pinging the ircd).
+// silent from the server's point of view until it is dropped. 60s idle /
+// 60s grace: the idle threshold must stay under 100s, because a WebSocket
+// uplink proxied through Cloudflare is cut after 100s with no traffic in
+// either direction (seen live — an ircd quiet for 125s cost the uplink,
+// and the resume token with it, when idle was 120s). downlink's wider
+// 300s/120s budget is a different path (a client pinging us, not us
+// pinging the ircd).
 var (
-	KeepaliveIdle  = 120 * time.Second
+	KeepaliveIdle  = 60 * time.Second
 	KeepaliveGrace = 60 * time.Second
 )
 
