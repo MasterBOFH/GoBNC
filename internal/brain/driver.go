@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -933,6 +934,22 @@ func (d *Driver) handleLine(line keeper.LineMsg) {
 	if ts, ok := msg.Tag("time"); ok && ts != "" {
 		d.mu.Lock()
 		d.lastServerTime[line.Network] = ts
+		d.mu.Unlock()
+	}
+
+	// A RESUME TOKEN is taken at any phase, not only through Step's
+	// ActionResumeToken (which can't fire past PhaseComplete — Step is a
+	// no-op there and StepPost doesn't handle RESUME). An ircd that issues
+	// a token after registration — after RESUME SUCCESS, or the welcome —
+	// would otherwise leave this in-memory copy (what every auto-redial
+	// presents) one token behind the one Session persisted from the same
+	// line, and the next resume would fail INVALID_TOKEN by construction.
+	// Each connection's token supersedes the last; the newest always wins.
+	if strings.EqualFold(msg.Command, "RESUME") && strings.EqualFold(msg.Param(0), "TOKEN") && msg.Param(1) != "" {
+		d.mu.Lock()
+		cfg := d.configs[line.Network]
+		cfg.ResumeToken = msg.Param(1)
+		d.configs[line.Network] = cfg
 		d.mu.Unlock()
 	}
 

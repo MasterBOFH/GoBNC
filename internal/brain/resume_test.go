@@ -356,3 +356,33 @@ func TestResumeDoesNotRedriveRegistration(t *testing.T) {
 		// Expected: nothing happened.
 	}
 }
+
+// A RESUME TOKEN issued after registration completed must still replace
+// the driver's in-memory token — it's what every auto-redial presents. The
+// ircd may hand the resumed (or freshly registered) connection its token
+// after the welcome, where Step no longer runs; without this the driver
+// would present the previous connection's token and fail INVALID_TOKEN.
+func TestPostRegistrationResumeTokenReplacesDriverToken(t *testing.T) {
+	d := NewDriver(nil)
+	const id keeper.NetworkID = 1
+	d.RegisterNetwork(id, NetworkConfig{PrimaryNick: "n", ResumeToken: "old"})
+	d.mu.Lock()
+	st := d.states[id]
+	st.Phase = registration.PhaseComplete
+	d.states[id] = st
+	d.mu.Unlock()
+
+	d.handleLine(keeper.LineMsg{Network: id, Raw: []byte(":srv RESUME TOKEN newtoken")})
+
+	d.mu.Lock()
+	got := d.configs[id].ResumeToken
+	d.resetStateLocked(id, d.configs[id])
+	presented := d.states[id].ResumeToken
+	d.mu.Unlock()
+	if got != "newtoken" {
+		t.Fatalf("config ResumeToken=%q, want the post-registration token", got)
+	}
+	if presented != "newtoken" {
+		t.Fatalf("next redial would present %q, want the newest token", presented)
+	}
+}
