@@ -258,3 +258,43 @@ func TestHeldResumeDiffsTopicAndUmode(t *testing.T) {
 		}
 	})
 }
+
+// The ircd's pre-welcome connection preamble (NOTICE AUTH "*** Looking up
+// your hostname" etc.) is re-sent on every redial; a held client already
+// saw it on the original connection, so it must not be relayed — while a
+// NOTICE after 001 (services, a server notice in the burst) still is.
+func TestHeldResumeSuppressesPreWelcomeNotices(t *testing.T) {
+	s, d := resumableSession(t, true)
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	d.clearSent()
+
+	feed := func(line string) {
+		msg, err := irc.Parse(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed("NOTICE AUTH :*** Looking up your hostname")
+	feed("NOTICE AUTH :*** Found your hostname")
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":NickServ!s@services NOTICE me :You are now identified")
+	feed(":srv 376 me :End of MOTD")
+
+	for _, m := range d.snapshot() {
+		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "hostname") {
+			t.Fatalf("pre-welcome NOTICE AUTH leaked to held client: %+v", m)
+		}
+	}
+	found := false
+	for _, m := range d.snapshot() {
+		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "identified") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("post-welcome NOTICE not relayed to held client: %v", sentCommands(d))
+	}
+}

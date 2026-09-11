@@ -233,6 +233,14 @@ func (s *Session) resumeSuppressibleLocked(msg irc.Message) bool {
 			cur = c.Topic
 		}
 		return ok && old == cur
+	case "NOTICE":
+		// Before 001 the only NOTICEs are the ircd's connection preamble
+		// ("*** Looking up your hostname", "*** Found your hostname", the
+		// ident check) — a held client already saw them on the original
+		// connection, and seeing them again mid-session reads as a
+		// reconnect. Anything after 001 (services, server notices during
+		// the burst) is real traffic and relays.
+		return !s.gotWelcome
 	case "MODE":
 		// A channel MODE is a real change and must relay. The client's own
 		// umode line is suppressed only when its umodes are unchanged from
