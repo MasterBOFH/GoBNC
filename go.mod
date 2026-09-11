@@ -7,7 +7,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/xdg-go/scram v1.2.0
 	golang.org/x/crypto v0.56.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.58.0
 )
