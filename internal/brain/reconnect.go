@@ -60,7 +60,7 @@ func (d *Driver) StopNetwork(id keeper.NetworkID) error {
 func (d *Driver) armReconnect(id keeper.NetworkID) {
 	d.mu.Lock()
 	cfg, ok := d.dialConfigs[id]
-	netCfg, tracked := d.configs[id]
+	_, tracked := d.configs[id]
 	d.mu.Unlock()
 	if !ok {
 		return
@@ -98,13 +98,53 @@ func (d *Driver) armReconnect(id keeper.NetworkID) {
 		// no ActionRegistered would ever fire again. Same reset
 		// Reconnect's own resetStateLocked call performs, just reached
 		// from the auto-redial path instead of a caller-driven one.
+		//
+		// Deferred to the dial's success (applyPendingReset, from Run's
+		// DialResult handling) rather than done here, before SendDial:
+		// this timer can fire for a network whose uplink is actually
+		// live — a late failure result for a dial attempt that a newer,
+		// successful dial had already superseded arms it — and the
+		// keeper then refuses the dial with ErrAlreadyConnected. Resetting
+		// first would wipe the live connection's registered State (and,
+		// via resetStateLocked, stop its keepalive and nick-recovery
+		// loops) for nothing. Run handles DialResult and the new
+		// connection's lines on the same goroutine, in order, so a reset
+		// on DialResult.OK still lands before any line of the new
+		// connection reaches Step.
 		if tracked {
-			d.mu.Lock()
-			d.resetStateLocked(id, netCfg)
-			d.mu.Unlock()
+			d.reconnMu.Lock()
+			d.resetOnDial[id] = true
+			d.reconnMu.Unlock()
 		}
 		_ = d.client.SendDial(id, cfg, 0) // best-effort; a failure surfaces as another DialResult, re-arming
 	})
+	d.reconnMu.Unlock()
+}
+
+// applyPendingReset performs the registration.State reset an auto-redial
+// deferred (see armReconnect) now that the dial it was for has succeeded.
+// A no-op for a dial that wasn't an auto-redial (Dial and Reconnect reset
+// — or don't — on their own terms; see clearStopped).
+func (d *Driver) applyPendingReset(id keeper.NetworkID) {
+	d.reconnMu.Lock()
+	pending := d.resetOnDial[id]
+	delete(d.resetOnDial, id)
+	d.reconnMu.Unlock()
+	if !pending {
+		return
+	}
+	d.mu.Lock()
+	if netCfg, tracked := d.configs[id]; tracked {
+		d.resetStateLocked(id, netCfg)
+	}
+	d.mu.Unlock()
+}
+
+// clearPendingReset drops a deferred auto-redial reset whose dial did not
+// succeed, so it can't leak onto an unrelated later successful dial.
+func (d *Driver) clearPendingReset(id keeper.NetworkID) {
+	d.reconnMu.Lock()
+	delete(d.resetOnDial, id)
 	d.reconnMu.Unlock()
 }
 
@@ -132,6 +172,10 @@ func (d *Driver) resetBackoff(id keeper.NetworkID) {
 func (d *Driver) clearStopped(id keeper.NetworkID) {
 	d.reconnMu.Lock()
 	delete(d.stopped, id)
+	// An explicit Dial/Reconnect supersedes any auto-redial in flight;
+	// Reconnect has already reset the State itself, and a plain Dial is a
+	// caller-driven fresh start that never wanted the auto path's reset.
+	delete(d.resetOnDial, id)
 	if t, ok := d.reconnectTimers[id]; ok {
 		t.Stop()
 		delete(d.reconnectTimers, id)
