@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -50,7 +51,22 @@ import (
 func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 	var resumedChannels []string
 
+	// The RESUME TOKEN line that normally sets resumeTokenHeld was seen by
+	// the previous brain process, not this one; the token it persisted is
+	// this connection's current one. Without this, a resumed brain judged
+	// every later drop non-resumable and kicked held clients instead of
+	// holding them. A SQLite read — done before taking s.mu.
+	tokenHeld := false
+	if s.store != nil && s.Network.ID != 0 {
+		if tok, err := s.store.ResumeToken(context.Background(), s.Network.ID); err == nil && tok != "" {
+			tokenHeld = true
+		} else if err != nil {
+			s.log.Warn("read resume token at seed", "err", err)
+		}
+	}
+
 	s.mu.Lock()
+	s.resumeTokenHeld = tokenHeld
 	// isupport first: channel case-mapping below depends on it being
 	// current. Snapshot's own first-push order already happens to put
 	// isupport first in the normal case (005 always precedes JOIN traffic
