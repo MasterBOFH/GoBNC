@@ -704,7 +704,6 @@ func (s *Session) broadcastCapNotify(sub string, names []string) {
 // keep downlinks open, clear ephemeral registration state, and NOTICE the
 // failure so /bnc remains usable.
 func (s *Session) HandleDisconnect(err error) {
-	s.log.Info("uplink down", "err", err)
 	reason := disconnectReason(err)
 
 	s.mu.Lock()
@@ -713,7 +712,13 @@ func (s *Session) HandleDisconnect(err error) {
 	// holds a token can be resumed, so keep the clients attached across the
 	// reconnect instead of kicking them (see the resuming/heldAcrossResume
 	// fields). Decided from in-memory state only — no store read under lock.
-	heldResume := wasRegistered && s.upCaps[registration.ResumeCap] && s.resumeTokenHeld
+	resumeCap := s.upCaps[registration.ResumeCap]
+	tokenHeld := s.resumeTokenHeld
+	heldResume := wasRegistered && resumeCap && tokenHeld
+	// Logged with the decision's inputs: a client kicked instead of held
+	// is otherwise indistinguishable from a network that can't resume.
+	s.log.Info("uplink down", "err", err,
+		"registered", wasRegistered, "resume_cap", resumeCap, "token_held", tokenHeld, "held", heldResume)
 	nickErrLine := s.lastNickErrorLine
 	hadNickErr := s.hasLastNickErrorLine
 	s.lastNickErrorLine = irc.Message{}
