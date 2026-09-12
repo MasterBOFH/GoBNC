@@ -763,6 +763,9 @@ func (s *Session) HandleDisconnect(err error) {
 	}
 	s.resuming = heldResume
 	s.resumedThisReg = false
+	// A hold left from the previous resume (no self-MODE ever came) is
+	// stale now: the snapshot below is taken fresh for this drop.
+	s.postResumeUModeHold = nil
 	if heldResume {
 		held := make(map[ClientID]bool, len(s.downlinks))
 		for id := range s.downlinks {

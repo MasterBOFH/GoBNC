@@ -575,3 +575,33 @@ func TestHeldResumeSuppressesPost376SelfUModeOnce(t *testing.T) {
 		})
 	}
 }
+
+// If the ircd never sends a self-MODE after a resume (no umodes to
+// report), the one-shot hold stays armed harmlessly — but it must not
+// carry over into the next drop, where a fresh snapshot is taken.
+func TestPostResumeUModeHoldClearedOnNextDrop(t *testing.T) {
+	s, _ := resumableSession(t, true)
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	feed := func(line string) {
+		msg, _ := irc.Parse(line)
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":srv 376 me :End of MOTD")
+	s.mu.Lock()
+	armed := s.postResumeUModeHold != nil
+	s.mu.Unlock()
+	if !armed {
+		t.Fatal("hold not armed after a resumed registration")
+	}
+	// No self-MODE arrives. Next drop:
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	s.mu.Lock()
+	armed = s.postResumeUModeHold != nil
+	s.mu.Unlock()
+	if armed {
+		t.Fatal("stale post-resume umode hold survived into the next drop")
+	}
+}
