@@ -330,7 +330,19 @@ func (s *Session) completeRegistration() {
 	s.resumedThisReg = false
 	s.heldAcrossResume = nil
 	s.resumeTopicSnap = nil
-	s.resumeUModeSnap = ""
+	if didResume {
+		// ircu sends the client's own umode line *after* the end of
+		// MOTD, i.e. after this window has closed — keep the snapshot
+		// and the held set for exactly one more self-MODE (see
+		// HandleMessage), or held clients see "User mode [+…]" on every
+		// resume for umodes that never changed.
+		s.postResumeUModeHold = make(map[ClientID]bool, len(heldClients))
+		for _, d := range heldClients {
+			s.postResumeUModeHold[d.ID()] = true
+		}
+	} else {
+		s.resumeUModeSnap = ""
+	}
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
 
@@ -1060,12 +1072,28 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	if msg.Command == "354" || msg.Command == "315" {
 		return
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
+	// The one self-MODE a resumed registration sends after 376 (see
+	// completeRegistration): held clients skip it when their umodes are
+	// unchanged from before the drop; a changed set relays. One-shot
+	// either way — the next self-MODE is a real change.
+	skip := map[ClientID]bool(nil)
+	if s.postResumeUModeHold != nil && strings.EqualFold(msg.Command, "MODE") &&
+		s.self != nil && s.isupport.CaseMapping.Equal(msg.Param(0), s.self.Nick) {
+		if s.self.UModeString() == s.resumeUModeSnap {
+			skip = s.postResumeUModeHold
+		}
+		s.postResumeUModeHold = nil
+		s.resumeUModeSnap = ""
+	}
 	for _, d := range s.downlinks {
+		if skip[d.ID()] {
+			continue
+		}
 		downlinks = append(downlinks, d)
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	legacyHit := false
 	for _, d := range downlinks {
 		out := s.rewriteFor(d, msg)
