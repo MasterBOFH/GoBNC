@@ -7,6 +7,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	"github.com/MasterBOFH/GoBNC/internal/registration"
 )
 
 // SeedFromBlob initializes Session's state directly from a resumed
@@ -97,6 +98,13 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 					s.upCaps[n] = true
 				}
 			}
+		case e.Key == keeper.BlobKeyResumable:
+			// Pushed on the resume cap's ACK for the keeper's own benefit
+			// (BRB, not QUIT, on shutdown). Also honoured here: a caps
+			// blob written before it carried uplink-only caps has no
+			// draft/resume-0.5 in it, and this marker is the one record
+			// of it a keeper holding such a blob still has.
+			s.upCaps[registration.ResumeCap] = true
 		case e.Key == "self-nick":
 			if len(e.Values) > 0 && s.self != nil {
 				s.ensureSelfLocked(string(e.Values[0]))
