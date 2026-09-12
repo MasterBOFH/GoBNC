@@ -1,10 +1,14 @@
 package session
 
 import (
+	"context"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	"github.com/MasterBOFH/GoBNC/internal/registration"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
@@ -353,5 +357,53 @@ func TestHeldResumeNoCapNewForCapsClientAlreadyHas(t *testing.T) {
 	s.broadcastCapNotify("NEW", []string{"chghost"})
 	if !hasCmd(d, "CAP") {
 		t.Fatal("CAP NEW after CAP DEL was not re-announced")
+	}
+}
+
+// A brain that restarted and reattached to a keeper-held uplink never saw
+// this connection's RESUME TOKEN line — the previous brain did, and
+// persisted it. SeedFromBlob must pick the held-token fact up from the
+// store, or the next drop is judged non-resumable and kicks the clients
+// it should hold.
+func TestSeedFromBlobRestoresResumeTokenHeld(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	id, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetResumeToken(ctx, id, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, nil, nil, nil)
+	capsJSON, _ := json.Marshal([]string{registration.ResumeCap})
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "caps", Values: [][]byte{capsJSON}},
+	})
+	s.mu.Lock()
+	s.registered = true
+	s.mu.Unlock()
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	d.clearSent()
+	s.HandleDisconnect(irc.ErrLineTooLong)
+
+	if hasCmd(d, "ERROR") || d.wasClosed() {
+		t.Fatalf("resumed brain kicked a client on a resumable drop: %v", sentCommands(d))
+	}
+	s.mu.Lock()
+	resuming := s.resuming
+	s.mu.Unlock()
+	if !resuming {
+		t.Fatal("session not marked resuming after drop with a stored token")
 	}
 }
