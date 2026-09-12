@@ -58,6 +58,27 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		return s.failInvalidUTF8(d, msg.Command)
 	}
 	cmd := strings.ToUpper(msg.Command)
+	// While the uplink isn't registered — a fresh connect, a reconnect
+	// with clients attached, or a held resume waiting on the ircd's
+	// verdict — nothing the client sends for the uplink can go out: the
+	// ircd answers 451 and the command is lost, and a client held across
+	// a resume has no idea it's in that window (seen live: a JOIN sent
+	// during a resume bounced with "451 Register first"). Queue it, in
+	// arrival order, for flushHeldAfterRegister. Enquiries keep their
+	// dedupe (holdUntilRegistered); everything else — PRIVMSG above all —
+	// is queued verbatim, every copy.
+	if !s.Registered() && isUplinkBound(cmd) {
+		if s.holdUntilRegistered(d, msg) {
+			return nil
+		}
+		s.mu.Lock()
+		s.heldUntilReg = append(s.heldUntilReg, heldClientMsg{Client: d.ID(), Msg: msg})
+		if len(s.heldUntilReg) > maxHeldUntilReg {
+			s.heldUntilReg = s.heldUntilReg[len(s.heldUntilReg)-maxHeldUntilReg:]
+		}
+		s.mu.Unlock()
+		return nil
+	}
 	switch cmd {
 	case "PING":
 		return d.Send(irc.Message{Command: "PONG", Params: msg.Params})
@@ -196,8 +217,24 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 	}
 }
 
+// isUplinkBound reports whether a client command is one HandleClientMessage
+// forwards to the uplink, as opposed to answering locally (PING/PONG, BNC,
+// CHATHISTORY, MARKREAD, QUIT, a passthrough AUTHENTICATE) — or NICK, which
+// is deliberately dropped while unregistered rather than held (it would
+// race the registration nick ladder; see its own case).
+func isUplinkBound(cmd string) bool {
+	switch cmd {
+	case "PING", "PONG", "BNC", "AUTHENTICATE", "MARKREAD", "CHATHISTORY", "QUIT", "NICK", "CAP":
+		return false
+	}
+	return true
+}
+
 const (
-	maxHeldUntilReg  = 64
+	// maxHeldUntilReg bounds the pre-registration queue; the oldest entries
+	// are dropped past it. Sized for a client typing through a resume
+	// window (tens of seconds), not for a client scripting a flood.
+	maxHeldUntilReg  = 256
 	heldFlushSentTTL = 5 * time.Second
 )
 
@@ -352,21 +389,17 @@ func (s *Session) flushHeldAfterRegister() {
 	}
 }
 
-// forwardHeldMessage sends a previously held command without re-entering hold/dedup.
+// forwardHeldMessage sends a previously held command without re-entering
+// hold/dedup. An enquiry goes straight to the uplink through the tracker;
+// anything else — a PRIVMSG, JOIN, a MODE that sets something — is
+// re-dispatched through HandleClientMessage now that the uplink is
+// registered, so it gets the same treatment it would have live (echo
+// fan-out, label remapping, JOIN key bookkeeping) rather than a bare write.
 func (s *Session) forwardHeldMessage(d Downlink, msg irc.Message) error {
-	cmd := strings.ToUpper(msg.Command)
-	switch cmd {
-	case "MODE", "TOPIC", "SILENCE":
+	if s.isHoldableUntilReg(msg) {
 		return s.forwardSolicitous(d, msg)
-	default:
-		if IsSolicitous(cmd) {
-			return s.forwardSolicitous(d, msg)
-		}
-		if s.driver == nil {
-			return fmt.Errorf("uplink not ready")
-		}
-		return s.WriteMessage(s.toUplink(msg))
 	}
+	return s.HandleClientMessage(d, msg)
 }
 
 // toUplink strips client tags the uplink cannot handle (old ircds treat @tags as the command).
