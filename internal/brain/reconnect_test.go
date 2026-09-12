@@ -313,3 +313,124 @@ func (s *fakeIRCServer) serveOneUntil(t *testing.T, release <-chan struct{}) {
 	send(":fake.example 376 " + nick + " :End of MOTD")
 	<-release
 }
+
+// An operator-requested reconnect ends the current connection with a QUIT
+// (so a draft/resume-0.5 ircd drops the session and frees the nick)
+// before redialling — not a bare socket close, which would leave the old
+// session resumable.
+func TestDriverReconnectWithQuitSendsQuitThenRedials(t *testing.T) {
+	client, _ := newAttachedLiveClientWithManager(t)
+
+	srv := newFakeIRCServer(t)
+	defer srv.close()
+	release := make(chan struct{})
+	quitSeen := make(chan string, 1)
+	go func() {
+		srv.serveOneUntilThenRead(t, release, quitSeen) // first connection
+		srv.serveOne(t)                                 // the redial
+	}()
+	host, port := srv.addr()
+
+	const netID keeper.NetworkID = 1
+	driver := NewDriver(client, WithBackoff(20*time.Millisecond, 20*time.Millisecond))
+	driver.RegisterNetwork(netID, NetworkConfig{PrimaryNick: "gobncbrain"})
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	go func() { _ = driver.Run(runCtx) }()
+
+	if err := driver.Dial(netID, keeper.DialConfig{Host: host, Port: port}, 0); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if dr := awaitDialResult(t, driver, 5*time.Second); !dr.OK {
+		t.Fatalf("DialResult=%+v", dr)
+	}
+	if err := driver.StartRegistration(netID); err != nil {
+		t.Fatal(err)
+	}
+	awaitComplete(t, driver, 10*time.Second)
+
+	close(release)
+	if err := driver.ReconnectWithQuit(netID, "QUIT :Reconnecting", 2*time.Second); err != nil {
+		t.Fatalf("ReconnectWithQuit: %v", err)
+	}
+	select {
+	case line := <-quitSeen:
+		if line != "QUIT :Reconnecting" {
+			t.Fatalf("server read %q before close, want the QUIT line", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never received the QUIT before the close")
+	}
+	if dr := awaitDialResult(t, driver, 5*time.Second); !dr.OK || dr.Epoch != 2 {
+		t.Fatalf("redial DialResult=%+v, want OK epoch=2", dr)
+	}
+	if err := driver.StartRegistration(netID); err != nil {
+		t.Fatal(err)
+	}
+	awaitComplete(t, driver, 10*time.Second)
+}
+
+// serveOneUntilThenRead is serveOneUntil, but after release it reads one
+// more line from the (still open) connection and reports it — what the
+// client sent right before hanging up.
+func (s *fakeIRCServer) serveOneUntilThenRead(t *testing.T, release <-chan struct{}, got chan<- string) {
+	t.Helper()
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	send := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+	buf := make([]byte, 4096)
+	var pending string
+	readLine := func() (string, bool) {
+		for {
+			if i := indexCRLF(pending); i >= 0 {
+				line := pending[:i]
+				pending = pending[i+2:]
+				return line, true
+			}
+			n, err := conn.Read(buf)
+			if err != nil {
+				return "", false
+			}
+			pending += string(buf[:n])
+		}
+	}
+	nick := "nick"
+	gotNick, gotUser := false, false
+	for {
+		line, ok := readLine()
+		if !ok {
+			return
+		}
+		switch {
+		case hasPrefix(line, "CAP LS"):
+			send(":fake.example CAP * LS :")
+		case hasPrefix(line, "NICK "):
+			nick = line[len("NICK "):]
+			gotNick = true
+		case hasPrefix(line, "USER "):
+			gotUser = true
+		}
+		if gotNick && gotUser {
+			break
+		}
+	}
+	send(":fake.example 001 " + nick + " :Welcome")
+	send(":fake.example 376 " + nick + " :End of MOTD")
+	<-release
+	// Skip whatever registration tail is still buffered (CAP END); the
+	// line of interest is what the client sends right before hanging up.
+	for {
+		line, ok := readLine()
+		if !ok {
+			return
+		}
+		if hasPrefix(line, "QUIT") || !hasPrefix(line, "CAP ") {
+			got <- line
+			return
+		}
+	}
+}

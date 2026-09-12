@@ -1001,9 +1001,15 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 	return nil
 }
 
-// ReconnectNetwork reloads network settings from the DB and drops the uplink
-// connection so it dials again immediately. Downlinks stay attached.
-// If the network is not running, it is started instead.
+// ReconnectNetwork reloads network settings from the DB, QUITs the uplink,
+// and dials it again immediately as a fresh registration — never a
+// resume: the stored draft/resume-0.5 token is cleared first (see
+// Session.DisconnectForReconnect) so the redial presents none, and the
+// QUIT (rather than a bare close, see brain.Driver.ReconnectWithQuit) ends
+// the server-side session so the ircd holds nothing to resume and the
+// nick is free. Attached clients are disconnected with an ERROR and
+// reattach to the fresh registration, exactly as on any non-resumable
+// drop. If the network is not running, it is started instead.
 func (s *Server) ReconnectNetwork(name string) error {
 	if s.runCtx == nil {
 		return fmt.Errorf("server not running")
@@ -1028,16 +1034,26 @@ func (s *Server) ReconnectNetwork(name string) error {
 	}
 	s.mu.Unlock()
 
+	// Token cleared and clients kicked *before* the config is rebuilt from
+	// the store below, so the NetworkConfig the redial registers with
+	// carries no ResumeToken.
+	sess.DisconnectForReconnect()
+
 	s.mu.RLock()
 	netCfg := s.networkConfigForLocked(n)
 	dialCfg := s.dialConfigForLocked(n)
+	quitMsg := s.cfg.QuitMessage
 	s.mu.RUnlock()
 	sess.ApplyNetworkConfig(n, netCfg)
 	if chs, err := s.store.ListChannels(s.runCtx, n.ID); err == nil {
 		s.driver.SetChannels(sess.NetworkID(), channelJoinsFor(chs))
 	}
 	s.driver.UpdateDialConfig(sess.NetworkID(), dialCfg)
-	if err := s.driver.Reconnect(sess.NetworkID()); err != nil {
+	quitLine := "QUIT :Reconnecting"
+	if quitMsg != "" {
+		quitLine = "QUIT :" + quitMsg
+	}
+	if err := s.driver.ReconnectWithQuit(sess.NetworkID(), quitLine, 5*time.Second); err != nil {
 		return err
 	}
 	s.log.Info("network reconnect requested", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)

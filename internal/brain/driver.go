@@ -156,12 +156,13 @@ type Driver struct {
 	configs         map[keeper.NetworkID]NetworkConfig
 	lastServerTime  map[keeper.NetworkID]string // last @time tag seen, for the RESUME timestamp on a redial
 	channels        map[keeper.NetworkID][]ChannelJoin
-	dialConfigs     map[keeper.NetworkID]keeper.DialConfig             // last config passed to Dial; see Reconnect
-	epochs          map[keeper.NetworkID]uint64                        // current known epoch per network; see handleNetworkEvent
-	deadlines       map[keeper.NetworkID]*time.Timer                   // armed while registering; see armDeadline
-	currentNick     map[keeper.NetworkID]string                        // see nickrecovery.go
-	closeWaiters    map[keeper.NetworkID]chan keeper.CloseResultMsg    // see Reconnect
-	blobPushWaiters map[keeper.NetworkID]chan keeper.BlobPushResultMsg // see PushBlob
+	dialConfigs     map[keeper.NetworkID]keeper.DialConfig              // last config passed to Dial; see Reconnect
+	epochs          map[keeper.NetworkID]uint64                         // current known epoch per network; see handleNetworkEvent
+	deadlines       map[keeper.NetworkID]*time.Timer                    // armed while registering; see armDeadline
+	currentNick     map[keeper.NetworkID]string                         // see nickrecovery.go
+	closeWaiters    map[keeper.NetworkID]chan keeper.CloseResultMsg     // see Reconnect
+	quitWaiters     map[keeper.NetworkID]chan keeper.QuitCloseResultMsg // see ReconnectWithQuit
+	blobPushWaiters map[keeper.NetworkID]chan keeper.BlobPushResultMsg  // see PushBlob
 
 	// nickRecMu guards the maps below, separately from mu — matches
 	// internal/uplink's own separate nickRecMu, since nick-recovery state
@@ -236,6 +237,7 @@ func NewDriver(client *keeper.AttachClient, opts ...DriverOption) *Driver {
 		deadlines:            make(map[keeper.NetworkID]*time.Timer),
 		currentNick:          make(map[keeper.NetworkID]string),
 		closeWaiters:         make(map[keeper.NetworkID]chan keeper.CloseResultMsg),
+		quitWaiters:          make(map[keeper.NetworkID]chan keeper.QuitCloseResultMsg),
 		blobPushWaiters:      make(map[keeper.NetworkID]chan keeper.BlobPushResultMsg),
 		nickRecStops:         make(map[keeper.NetworkID]chan struct{}),
 		isonPending:          make(map[keeper.NetworkID]bool),
@@ -573,6 +575,27 @@ func (d *Driver) UpdateDialConfig(id keeper.NetworkID, cfg keeper.DialConfig) {
 // that dispatch is wrong in general, only this specific "the next request
 // depends on the previous one having completed" case.
 func (d *Driver) Reconnect(id keeper.NetworkID) error {
+	return d.reconnect(id, "", 0)
+}
+
+// ReconnectWithQuit is Reconnect, but the current connection is ended
+// with quitLine (a "QUIT …" line, written before the close, bounded by
+// timeout) instead of a bare socket close. The difference matters on a
+// draft/resume-0.5 network: a bare close leaves the ircd holding the old
+// session for its resume window — the nick stays taken, and a redial
+// that still presents the stored token silently resumes it — whereas a
+// QUIT ends the session for good. An operator-requested reconnect wants
+// the latter. The caller is responsible for dropping the stored token
+// from the NetworkConfig before this runs (a QUIT session can't be
+// resumed; presenting its token would only earn a FAIL).
+func (d *Driver) ReconnectWithQuit(id keeper.NetworkID, quitLine string, timeout time.Duration) error {
+	if quitLine == "" {
+		quitLine = "QUIT"
+	}
+	return d.reconnect(id, quitLine, timeout)
+}
+
+func (d *Driver) reconnect(id keeper.NetworkID, quitLine string, quitTimeout time.Duration) error {
 	d.mu.Lock()
 	dialCfg, ok := d.dialConfigs[id]
 	if !ok {
@@ -586,11 +609,38 @@ func (d *Driver) Reconnect(id keeper.NetworkID) error {
 	}
 	d.resetStateLocked(id, netCfg)
 	d.epochs[id]++
-	waiter := make(chan keeper.CloseResultMsg, 1)
-	d.closeWaiters[id] = waiter
 	d.mu.Unlock()
 	d.clearStopped(id)
 
+	if quitLine != "" {
+		waiter := make(chan keeper.QuitCloseResultMsg, 1)
+		d.mu.Lock()
+		d.quitWaiters[id] = waiter
+		d.mu.Unlock()
+		if err := d.client.SendQuitClose(id, quitLine, quitTimeout); err != nil {
+			d.mu.Lock()
+			delete(d.quitWaiters, id)
+			d.mu.Unlock()
+			return err
+		}
+		select {
+		case <-waiter:
+			// Same reasoning as the CloseResult wait below: OK or not
+			// (e.g. nothing was connected), the keeper is done and a
+			// Dial is safe.
+		case <-time.After(closeConfirmTimeout + quitTimeout):
+			d.mu.Lock()
+			delete(d.quitWaiters, id)
+			d.mu.Unlock()
+			return fmt.Errorf("brain: Reconnect: network %d: no QuitCloseResult within %s", id, closeConfirmTimeout+quitTimeout)
+		}
+		return d.client.SendDial(id, dialCfg, 0)
+	}
+
+	waiter := make(chan keeper.CloseResultMsg, 1)
+	d.mu.Lock()
+	d.closeWaiters[id] = waiter
+	d.mu.Unlock()
 	if err := d.client.SendClose(id); err != nil {
 		d.mu.Lock()
 		delete(d.closeWaiters, id)
@@ -612,6 +662,20 @@ func (d *Driver) Reconnect(id keeper.NetworkID) error {
 	}
 
 	return d.client.SendDial(id, dialCfg, 0)
+}
+
+// notifyQuitCloseWaiter delivers a QuitCloseResult to a pending
+// ReconnectWithQuit call waiting on it — mirrors notifyCloseWaiter.
+func (d *Driver) notifyQuitCloseWaiter(res keeper.QuitCloseResultMsg) {
+	d.mu.Lock()
+	waiter, ok := d.quitWaiters[res.Network]
+	if ok {
+		delete(d.quitWaiters, res.Network)
+	}
+	d.mu.Unlock()
+	if ok {
+		waiter <- res
+	}
 }
 
 // closeConfirmTimeout bounds Reconnect's wait for CloseResult. Close is a
@@ -894,6 +958,7 @@ func (d *Driver) Run(ctx context.Context) error {
 			}
 			trySendWriteResult(d.writeResults, *ev.WriteResult)
 		case ev.QuitCloseResult != nil:
+			d.notifyQuitCloseWaiter(*ev.QuitCloseResult)
 			trySendQuitCloseResult(d.quitCloseResults, *ev.QuitCloseResult)
 		case ev.BlobPushResult != nil:
 			d.notifyBlobPushWaiter(*ev.BlobPushResult)

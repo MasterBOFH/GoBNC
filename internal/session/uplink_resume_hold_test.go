@@ -605,3 +605,48 @@ func TestPostResumeUModeHoldClearedOnNextDrop(t *testing.T) {
 		t.Fatal("stale post-resume umode hold survived into the next drop")
 	}
 }
+
+// An operator-requested reconnect is never a resume: the stored token is
+// cleared and clients are kicked to reattach to the fresh registration,
+// even on a network that would otherwise hold them.
+func TestDisconnectForReconnectKicksClientsAndClearsToken(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	id, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetResumeToken(ctx, id, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.registered = true
+	s.upCaps[registration.ResumeCap] = true
+	s.resumeTokenHeld = true
+	s.mu.Unlock()
+	d.clearSent()
+
+	s.DisconnectForReconnect()
+
+	if !hasCmd(d, "ERROR") || !d.wasClosed() {
+		t.Fatalf("client not kicked on explicit reconnect: %v closed=%v", sentCommands(d), d.wasClosed())
+	}
+	if tok, _ := db.ResumeToken(ctx, id); tok != "" {
+		t.Fatalf("stored resume token not cleared: %q", tok)
+	}
+	s.mu.Lock()
+	resuming, held := s.resuming, s.resumeTokenHeld
+	s.mu.Unlock()
+	if resuming || held {
+		t.Fatalf("session still resumable after explicit reconnect: resuming=%v tokenHeld=%v", resuming, held)
+	}
+}
