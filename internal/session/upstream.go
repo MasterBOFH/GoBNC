@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -1079,9 +1080,19 @@ func (s *Session) HandleMessage(msg irc.Message) {
 // for why storing the resolved value rather than the sequence of
 // transitions is the deliberate exception to keeping raw wire bytes).
 func (s *Session) blobCapsValue() []byte {
+	// The uplink's actual enabled set — not caps.Offered (the client-facing
+	// offer), which drops every uplink-only cap. draft/resume-0.5 is one:
+	// encoded as the offer, a brain resumed from this blob had no record
+	// of it, judged the next drop non-resumable, and kicked its clients.
 	s.mu.RLock()
-	names := caps.Offered(s.upCaps)
+	names := make([]string, 0, len(s.upCaps))
+	for name, on := range s.upCaps {
+		if on {
+			names = append(names, name)
+		}
+	}
 	s.mu.RUnlock()
+	sort.Strings(names)
 	b, _ := json.Marshal(names) // []string; json.Marshal never errors on one
 	return b
 }
