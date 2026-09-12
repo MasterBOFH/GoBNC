@@ -214,7 +214,7 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 func (s *Session) resumeSuppressibleLocked(msg irc.Message) bool {
 	switch strings.ToUpper(msg.Command) {
 	case "001", "002", "003", "004", "005",
-		"251", "252", "253", "254", "255", "256", "257", "258", "259",
+		"250", "251", "252", "253", "254", "255", "256", "257", "258", "259",
 		"265", "266", "375", "372", "376", "377", "378", "422",
 		"221", "396", "900":
 		return true

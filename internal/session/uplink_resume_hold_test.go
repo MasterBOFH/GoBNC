@@ -475,3 +475,23 @@ func TestSeedFromBlobHonoursResumableMarker(t *testing.T) {
 		t.Fatal("resume cap not restored from the resumable marker")
 	}
 }
+
+// 250 (RPL_STATSCONN, "Highest connection count") is LUSERS preamble like
+// 251..259 and must not be re-shown to a held client on resume.
+func TestHeldResumeSuppresses250(t *testing.T) {
+	s, d := resumableSession(t, true)
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	d.clearSent()
+	feed := func(line string) {
+		msg, _ := irc.Parse(line)
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":srv 250 me :Highest connection count: 6 (5 clients)")
+	feed(":srv 376 me :End of MOTD")
+	if hasCmd(d, "250") {
+		t.Fatalf("250 leaked to held client: %v", sentCommands(d))
+	}
+}
