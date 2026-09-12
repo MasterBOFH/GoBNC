@@ -457,3 +457,21 @@ func TestCapsBlobRoundTripsResumeCapAcrossReload(t *testing.T) {
 		t.Fatalf("reloaded brain kicked a client on a resumable drop: %v", sentCommands(d))
 	}
 }
+
+// A keeper holding a caps blob from before it carried uplink-only caps
+// still has the "resumable" marker pushed on the resume cap's ACK; the
+// seed must honour it so the first reload onto the fixed build doesn't
+// still kick on its next drop.
+func TestSeedFromBlobHonoursResumableMarker(t *testing.T) {
+	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	s.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "caps", Values: [][]byte{[]byte(`["away-notify"]`)}}, // old-format blob: no resume cap
+		{Key: keeper.BlobKeyResumable, Values: [][]byte{[]byte("1")}},
+	})
+	s.mu.Lock()
+	got := s.upCaps[registration.ResumeCap]
+	s.mu.Unlock()
+	if !got {
+		t.Fatal("resume cap not restored from the resumable marker")
+	}
+}
