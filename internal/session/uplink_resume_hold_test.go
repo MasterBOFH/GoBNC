@@ -278,19 +278,29 @@ func TestHeldResumeSuppressesPreWelcomeNotices(t *testing.T) {
 			t.Fatalf("parse %q: %v", line, err)
 		}
 		s.applyState(msg)
-		s.HandleRegistrationLine(msg)
+		if s.Registered() {
+			s.HandleMessage(msg)
+		} else {
+			s.HandleRegistrationLine(msg)
+		}
 	}
 	feed("NOTICE AUTH :*** Looking up your hostname")
 	feed("NOTICE AUTH :*** Found your hostname")
 	feed(":srv RESUME SUCCESS :me")
 	feed(":srv 001 me :Welcome")
+	feed(":srv 255 me :I have 5 clients and 0 servers")
+	feed(":srv NOTICE me :Highest connection count: 6 (5 clients)") // ircu: server NOTICE after LUSERS
 	feed(":NickServ!s@services NOTICE me :You are now identified")
 	feed(":srv 376 me :End of MOTD")
+	feed(":srv NOTICE me :after the welcome, a server notice is real traffic")
 
 	for _, m := range d.snapshot() {
-		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), "hostname") {
-			t.Fatalf("pre-welcome NOTICE AUTH leaked to held client: %+v", m)
+		if m.Command == "NOTICE" && (strings.Contains(m.Trailing(), "hostname") || strings.Contains(m.Trailing(), "Highest connection")) {
+			t.Fatalf("welcome-preamble NOTICE leaked to held client: %+v", m)
 		}
+	}
+	if n := countNotices(d, "after the welcome"); n != 1 {
+		t.Fatalf("post-376 server NOTICE relayed %d times, want 1", n)
 	}
 	found := false
 	for _, m := range d.snapshot() {
@@ -649,4 +659,14 @@ func TestDisconnectForReconnectKicksClientsAndClearsToken(t *testing.T) {
 	if resuming || held {
 		t.Fatalf("session still resumable after explicit reconnect: resuming=%v tokenHeld=%v", resuming, held)
 	}
+}
+
+func countNotices(d *fakeDL, substr string) int {
+	n := 0
+	for _, m := range d.snapshot() {
+		if m.Command == "NOTICE" && strings.Contains(m.Trailing(), substr) {
+			n++
+		}
+	}
+	return n
 }

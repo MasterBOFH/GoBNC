@@ -235,13 +235,19 @@ func (s *Session) resumeSuppressibleLocked(msg irc.Message) bool {
 		}
 		return ok && old == cur
 	case "NOTICE":
-		// Before 001 the only NOTICEs are the ircd's connection preamble
-		// ("*** Looking up your hostname", "*** Found your hostname", the
-		// ident check) — a held client already saw them on the original
-		// connection, and seeing them again mid-session reads as a
-		// reconnect. Anything after 001 (services, server notices during
-		// the burst) is real traffic and relays.
-		return !s.gotWelcome
+		// The ircd's own notices during the welcome are preamble a held
+		// client already saw on the original connection: before 001 the
+		// sourceless "NOTICE AUTH :*** Looking up your hostname" family,
+		// and between 001 and 376 server-sourced lines like ircu's
+		// "Highest connection count: …" after LUSERS. The discriminator
+		// is the source, not the text: a server speaks as a bare server
+		// name (or nothing at all), anything a held client must still
+		// see — NickServ, ChanServ, a memo — speaks as nick!user@host.
+		// After 376 the window is closed and everything relays.
+		if !s.gotWelcome {
+			return true
+		}
+		return !strings.Contains(msg.Source, "!")
 	case "MODE":
 		// A channel MODE is a real change and must relay. The client's own
 		// umode line is suppressed only when its umodes are unchanged from
