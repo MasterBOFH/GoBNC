@@ -289,6 +289,14 @@ func (s *Session) completeRegistration() {
 	}
 	prevOffer := caps.Offered(nil) // a fresh registration always starts from an empty upCaps (see HandleDisconnect)
 	s.registered = true
+	if s.bouncerSASLPending && s.resumedThisReg {
+		// A resume never runs SASL — the ircd hands the old, already
+		// authenticated session back. The ACK of sasl during CAP
+		// negotiation marked the bouncer's attempt pending as usual, but
+		// no attempt was made and none failed: leave the bouncer owning
+		// sasl, or clients get a spurious CAP NEW sasl on every resume.
+		s.bouncerSASLPending = false
+	}
 	if s.bouncerSASLPending {
 		// sasl was ACK'd for the bouncer but no outcome ever came:
 		// registration.startSASL found no mechanism it could use and

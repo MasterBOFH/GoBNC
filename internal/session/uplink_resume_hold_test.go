@@ -495,3 +495,36 @@ func TestHeldResumeSuppresses250(t *testing.T) {
 		t.Fatalf("250 leaked to held client: %v", sentCommands(d))
 	}
 }
+
+// A resume never runs SASL: the sasl ACK during CAP negotiation marks the
+// bouncer's attempt pending as usual, but no attempt happens and none
+// fails. completeRegistration must not treat that as a failed bouncer
+// attempt and hand sasl to clients (a spurious CAP NEW sasl on every
+// resume); the resumed session is the old, already-authenticated one.
+func TestResumedRegistrationKeepsBouncerSASLOwnership(t *testing.T) {
+	s, d := resumableSession(t, true)
+	s.Network.SASL = true
+	d.caps["cap-notify"] = true
+	s.HandleDisconnect(irc.ErrLineTooLong)
+	d.clearSent()
+	feed := func(line string) {
+		msg, _ := irc.Parse(line)
+		s.applyState(msg)
+		s.HandleRegistrationLine(msg)
+	}
+	feed(":srv CAP me ACK :sasl=plain,external " + registration.ResumeCap)
+	feed(":srv RESUME SUCCESS :me")
+	feed(":srv 001 me :Welcome")
+	feed(":srv 376 me :End of MOTD")
+	s.mu.Lock()
+	failed, pending := s.bouncerSASLFailed, s.bouncerSASLPending
+	s.mu.Unlock()
+	if failed || pending {
+		t.Fatalf("after a resume: bouncerSASLFailed=%v bouncerSASLPending=%v, want both false", failed, pending)
+	}
+	for _, m := range d.snapshot() {
+		if m.Command == "CAP" && strings.Contains(m.Trailing(), "sasl") {
+			t.Fatalf("spurious CAP sasl notification to held client after resume: %+v", m)
+		}
+	}
+}
