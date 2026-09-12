@@ -407,3 +407,53 @@ func TestSeedFromBlobRestoresResumeTokenHeld(t *testing.T) {
 		t.Fatal("session not marked resuming after drop with a stored token")
 	}
 }
+
+// The caps blob must carry the uplink's real enabled set, resume cap
+// included — it's what a reloaded brain restores upCaps from. Encoded as
+// the client-facing offer (which has no uplink-only caps) the resume cap
+// was lost on every reload, and the next drop kicked instead of held.
+func TestCapsBlobRoundTripsResumeCapAcrossReload(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	id, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "me", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetResumeToken(ctx, id, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Brain A: the uplink ACKs the resume cap; the blob it pushes is what
+	// the keeper hands brain B.
+	a := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, nil, nil, nil)
+	a.handleCAPLine(irc.Message{Command: "CAP", Params: []string{"me", "ACK", "away-notify " + registration.ResumeCap}}, false)
+	blob := a.blobCapsValue()
+
+	// Brain B: reloaded, seeded from that blob and the store.
+	b := New(store.Network{ID: id, Name: "n", Nick: "me"}, db, nil, nil, nil)
+	b.SeedFromBlob([]keeper.BlobEntry{
+		{Key: "self-nick", Values: [][]byte{[]byte("me")}},
+		{Key: "caps", Values: [][]byte{blob}},
+	})
+	b.mu.Lock()
+	b.registered = true
+	hasResume := b.upCaps[registration.ResumeCap]
+	b.mu.Unlock()
+	if !hasResume {
+		t.Fatalf("resume cap not restored from caps blob %s", blob)
+	}
+
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := b.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	d.clearSent()
+	b.HandleDisconnect(irc.ErrLineTooLong)
+	if hasCmd(d, "ERROR") || d.wasClosed() {
+		t.Fatalf("reloaded brain kicked a client on a resumable drop: %v", sentCommands(d))
+	}
+}
