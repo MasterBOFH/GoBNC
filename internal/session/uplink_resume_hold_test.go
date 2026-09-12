@@ -528,3 +528,50 @@ func TestResumedRegistrationKeepsBouncerSASLOwnership(t *testing.T) {
 		}
 	}
 }
+
+// ircu sends the client's own umode line after the end of MOTD, past the
+// point where the resume window closes. A held client whose umodes are
+// unchanged must not see it; a changed set must relay; and only that one
+// line is held back — the next self-MODE is a real change.
+func TestHeldResumeSuppressesPost376SelfUModeOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		line      string
+		wantRelay bool
+	}{
+		{"unchanged", ":me MODE me :+iw", false},
+		{"changed", ":me MODE me :+iwx", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, d := resumableSession(t, true)
+			s.mu.Lock()
+			s.self.UModes = map[byte]bool{'i': true, 'w': true}
+			s.mu.Unlock()
+			s.HandleDisconnect(irc.ErrLineTooLong)
+			d.clearSent()
+			feed := func(line string) {
+				msg, _ := irc.Parse(line)
+				s.applyState(msg)
+				if s.Registered() {
+					s.HandleMessage(msg)
+				} else {
+					s.HandleRegistrationLine(msg)
+				}
+			}
+			feed(":srv RESUME SUCCESS :me")
+			feed(":srv 001 me :Welcome")
+			feed(":srv 376 me :End of MOTD")
+			d.clearSent()
+			feed(tc.line) // ircu's post-MOTD umode line
+			if got := hasCmd(d, "MODE"); got != tc.wantRelay {
+				t.Fatalf("post-376 self-MODE relayed=%v, want %v: %v", got, tc.wantRelay, sentCommands(d))
+			}
+			// One-shot: a later self-MODE always relays, even a no-op one.
+			d.clearSent()
+			feed(":me MODE me :+iw")
+			if !hasCmd(d, "MODE") {
+				t.Fatal("second self-MODE after resume was suppressed; hold must be one-shot")
+			}
+		})
+	}
+}

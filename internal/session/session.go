@@ -160,6 +160,10 @@ type Session struct {
 	// during the gap (an unchanged re-send is suppressed as no-op noise).
 	resumeTopicSnap map[string]string
 	resumeUModeSnap string
+	// postResumeUModeHold is the held-client set kept past a resumed
+	// registration's completion for the one self-MODE ircu sends after
+	// 376; nil once that line has been seen (see HandleMessage).
+	postResumeUModeHold map[ClientID]bool
 	// gotWelcome tracks 001 pre-registration, mirroring
 	// registration.State.GotWelcome — completeRegistration is only ever
 	// triggered by 376/422 after 001 has actually been seen, matching
