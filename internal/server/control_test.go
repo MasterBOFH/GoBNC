@@ -170,6 +170,11 @@ func TestControlReconnectNetwork(t *testing.T) {
 	if _, err := s.Store().UpsertNetwork(ctx, n); err != nil {
 		t.Fatal(err)
 	}
+	// A stored draft/resume-0.5 token must not survive an explicit
+	// reconnect: the redial is a fresh registration, never a resume.
+	if err := s.Store().SetResumeToken(ctx, n.ID, "tok"); err != nil {
+		t.Fatal(err)
+	}
 	if resp, err := control.Client(sock, control.CmdReconnectNetwork+" net1"); err != nil || resp != "OK" {
 		t.Fatalf("reconnect: %q %v", resp, err)
 	}
@@ -179,6 +184,9 @@ func TestControlReconnectNetwork(t *testing.T) {
 	}
 	if sess.Network.Port != 9999 {
 		t.Fatalf("config not reloaded before reconnect: port=%d", sess.Network.Port)
+	}
+	if tok, _ := s.Store().ResumeToken(ctx, n.ID); tok != "" {
+		t.Fatalf("resume token survived an explicit reconnect: %q", tok)
 	}
 }
 

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
@@ -72,4 +73,22 @@ func (s *Session) clearResumeToken() {
 	s.mu.Lock()
 	s.resumeTokenHeld = false
 	s.mu.Unlock()
+}
+
+// errReconnectRequested is the disconnect reason an operator-requested
+// reconnect hands HandleDisconnect — what clients see in their ERROR.
+var errReconnectRequested = errors.New("reconnect requested")
+
+// DisconnectForReconnect is the session half of an operator-requested
+// reconnect (BNC/CLI network reconnect): the uplink is about to be QUIT
+// and redialled fresh, deliberately. That is never a resume — the server
+// side session ends with the QUIT — so the stored token is cleared first
+// (both the store and the in-memory held flag), and HandleDisconnect then
+// takes its ordinary non-resumable path: clients get an ERROR and
+// reattach to the fresh registration with a clean burst. Called before
+// the QUIT goes out, so the cleared token is also what the caller's
+// rebuilt NetworkConfig carries into the redial.
+func (s *Session) DisconnectForReconnect() {
+	s.clearResumeToken()
+	s.HandleDisconnect(errReconnectRequested)
 }
