@@ -28,17 +28,25 @@ func stepNickError(s State, in Input) (State, []Action) {
 		return s, nil
 	}
 
+	// A pending resume makes a nick collision expected and harmless: the
+	// old session still holds our nick, and RESUME SUCCESS hands it back.
+	// Checked *before* the nick ladder, not only when the ladder is
+	// exhausted: advancing the ladder here (NICK nick_) while a resume is
+	// in flight tells the server our identity is something other than the
+	// session we're resuming, which breaks it — observed live as a 433
+	// answered with "NICK norIrM_" followed by FAIL RESUME INVALID_TOKEN,
+	// on a network with nick recovery on (the ladder had room, so the old
+	// exhaustion-only guard never fired). Remember the error in case the
+	// resume is ruled out later (see ruleOutResume), and keep registering
+	// meanwhile.
+	if resumePossible(s) {
+		s.pendingNickErr = resumeFailErr(msg.Command, msg.Params)
+		return s, nil
+	}
+
 	bad := msg.Param(1)
 	next, ok := nextLadderNick(s, bad)
 	if !ok {
-		if resumePossible(s) {
-			// Expected, not fatal: the old session still holds our
-			// nick, and RESUME SUCCESS returns it. Remember the error
-			// in case the resume is ruled out later (see
-			// ruleOutResume), and keep registering meanwhile.
-			s.pendingNickErr = resumeFailErr(msg.Command, msg.Params)
-			return s, nil
-		}
 		s.Phase = PhaseFailed
 		s.Err = fmt.Errorf("nick error: %s %v", msg.Command, msg.Params)
 		return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}
