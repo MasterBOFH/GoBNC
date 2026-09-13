@@ -136,7 +136,7 @@ func TestInlineSASLPass(t *testing.T) {
 	deps := testDeps(t, rt)
 	opts := Options{AllowInlineSASLPass: true}
 	lines, err := Run(context.Background(), deps, opts, []string{
-		"network", "add", "n1", "irc.example", "6697", "nick",
+		"network", "add", "n1", "irc.example", "6697", "--nick=nick",
 		"--sasl-user=me", "--sasl-pass=s3cret",
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func TestInlineSASLPass(t *testing.T) {
 	}
 
 	_, err = Run(context.Background(), deps, opts, []string{
-		"network", "add", "n1ext", "irc.example", "6697", "nick",
+		"network", "add", "n1ext", "irc.example", "6697", "--nick=nick",
 		"--sasl-user=MrIron",
 	})
 	if err != nil {
@@ -172,14 +172,14 @@ func TestInlineSASLPass(t *testing.T) {
 	}
 
 	_, err = Run(context.Background(), deps, opts, []string{
-		"network", "add", "n2", "irc.example", "6697", "nick", "--sasl-pass",
+		"network", "add", "n2", "irc.example", "6697", "--nick=nick", "--sasl-pass",
 	})
 	if err == nil || !strings.Contains(err.Error(), "--sasl-pass=secret") {
 		t.Fatalf("bare --sasl-pass: %v", err)
 	}
 
 	_, err = Run(context.Background(), deps, Options{}, []string{
-		"network", "add", "n3", "irc.example", "6697", "nick", "--sasl-pass=x",
+		"network", "add", "n3", "irc.example", "6697", "--nick=nick", "--sasl-pass=x",
 	})
 	if err == nil || !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("CLI inline reject: %v", err)
@@ -191,7 +191,7 @@ func TestNetworkTLSCertFlags(t *testing.T) {
 	deps := testDeps(t, rt)
 	opts := Options{AllowInlineSASLPass: true}
 	_, err := Run(context.Background(), deps, opts, []string{
-		"network", "add", "n1", "irc.example", "6697", "nick",
+		"network", "add", "n1", "irc.example", "6697", "--nick=nick",
 		"--tls-cert=certs/a.crt", "--tls-key=certs/a.key",
 	})
 	if err != nil {
@@ -224,7 +224,7 @@ func TestNetworkBindHostFlags(t *testing.T) {
 	deps := testDeps(t, rt)
 	opts := Options{AllowInlineSASLPass: true}
 	_, err := Run(context.Background(), deps, opts, []string{
-		"network", "add", "n1", "irc.example", "6697", "nick",
+		"network", "add", "n1", "irc.example", "6697", "--nick=nick",
 		"--bind-host=198.51.100.2",
 	})
 	if err != nil {
@@ -257,7 +257,7 @@ func TestNetworkSASLFlag(t *testing.T) {
 	deps := testDeps(t, rt)
 	opts := Options{AllowInlineSASLPass: true}
 	_, err := Run(context.Background(), deps, opts, []string{
-		"network", "add", "ext", "irc.example", "6697", "nick",
+		"network", "add", "ext", "irc.example", "6697", "--nick=nick",
 		"--sasl=true", "--tls-cert=certs/c.crt", "--tls-key=certs/c.key",
 	})
 	if err != nil {
@@ -289,7 +289,7 @@ func TestNetworkListRehash(t *testing.T) {
 	rt := &memRuntime{startOK: true}
 	deps := testDeps(t, rt)
 	_, err := Run(context.Background(), deps, Options{AllowInlineSASLPass: true}, []string{
-		"network", "add", "n1", "h", "6697", "nick",
+		"network", "add", "n1", "h", "6697", "--nick=nick",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -400,5 +400,57 @@ func TestFormatStatusVersions(t *testing.T) {
 	joined = strings.Join(lines, "\n")
 	if strings.Contains(joined, "brain") || strings.Contains(joined, "keeper") {
 		t.Fatalf("offline status should omit versions: %q", joined)
+	}
+}
+
+// network add: the port is optional and defaults by transport; the nick
+// is --nick= only, never a positional.
+func TestNetworkAddPortDefaultsAndNickFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantPort int
+		wantWS   bool
+		wantTLS  bool
+	}{
+		{"tcp tls", []string{"irc.example"}, 6697, false, true},
+		{"tcp plain", []string{"irc.example", "--tls=false"}, 6667, false, false},
+		{"wss", []string{"wss://irc.example"}, 443, true, true},
+		{"ws", []string{"ws://irc.example"}, 80, true, false},
+		{"explicit port", []string{"irc.example", "7000"}, 7000, false, true},
+		{"url port", []string{"wss://irc.example:8443/irc"}, 8443, true, true},
+		{"explicit port beats url port", []string{"wss://irc.example:8443", "9443"}, 9443, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := testDeps(t, &memRuntime{startOK: true})
+			args := append([]string{"network", "add", "n"}, tc.args...)
+			args = append(args, "--nick=me")
+			if _, err := Run(context.Background(), deps, Options{}, args); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+			n, err := deps.Store.NetworkByName(context.Background(), "n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n.Port != tc.wantPort || n.WebSocket != tc.wantWS || n.TLS != tc.wantTLS || n.Nick != "me" {
+				t.Fatalf("got port=%d ws=%v tls=%v nick=%q, want port=%d ws=%v tls=%v nick=me",
+					n.Port, n.WebSocket, n.TLS, n.Nick, tc.wantPort, tc.wantWS, tc.wantTLS)
+			}
+		})
+	}
+
+	// A bare word where the port would go is not a nick.
+	deps := testDeps(t, &memRuntime{startOK: true})
+	if _, err := Run(context.Background(), deps, Options{}, []string{"network", "add", "n", "irc.example", "somenick"}); err == nil || !strings.Contains(err.Error(), "--nick=") {
+		t.Fatalf("positional nick accepted or wrong error: %v", err)
+	}
+	// Nor after the port.
+	if _, err := Run(context.Background(), deps, Options{}, []string{"network", "add", "n", "irc.example", "6697", "somenick"}); err == nil || !strings.Contains(err.Error(), "--nick=") {
+		t.Fatalf("positional nick after port accepted or wrong error: %v", err)
+	}
+	// Without --nick= and no default_nick, it's an error that names the flag.
+	deps.Nick = ""
+	if _, err := Run(context.Background(), deps, Options{}, []string{"network", "add", "n", "irc.example"}); err == nil || !strings.Contains(err.Error(), "--nick=") {
+		t.Fatalf("missing nick: %v", err)
 	}
 }

@@ -61,7 +61,7 @@ func Help() string {
   die
   reconnect [<name>]
   disconnect [<name>]
-  network add <name> <host|ws://host|wss://host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host|ws://host|wss://host> [port] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
@@ -243,9 +243,25 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	}
 }
 
+// defaultPort is the port `network add` uses when none was given — by
+// transport, once the host scheme and flags are known: 6697 for TLS over
+// TCP, 6667 plain TCP, 443 for wss://, 80 for ws://.
+func defaultPort(n store.Network) int {
+	switch {
+	case n.WebSocket && n.TLS:
+		return 443
+	case n.WebSocket:
+		return 80
+	case n.TLS:
+		return 6697
+	default:
+		return 6667
+	}
+}
+
 func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
-	if len(args) < 4 {
-		return nil, fmt.Errorf("usage: network add <name> <host|ws://host|wss://host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+	if len(args) < 3 {
+		return nil, fmt.Errorf("usage: network add <name> <host|ws://host|wss://host> [port] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
@@ -258,11 +274,18 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	// URL; a scheme sets WebSocket/TLS/WSPath (and port, unless the
 	// positional port below overrides it).
 	store.ApplyHost(&n, args[2])
-	fmt.Sscanf(args[3], "%d", &n.Port)
-	i := 4
-	if len(args) > 4 && !strings.HasPrefix(args[4], "-") {
-		n.Nick = args[4]
-		i = 5
+	// The port is optional: a bare number after the host. Anything else
+	// there is an error rather than a nick — the nick is --nick= only.
+	// A port of 0 after the flags are read means "default for the
+	// transport" (see defaultPort).
+	i := 3
+	explicitPort := false
+	if len(args) > 3 && !strings.HasPrefix(args[3], "-") {
+		if _, err := fmt.Sscanf(args[3], "%d", &n.Port); err != nil || n.Port <= 0 {
+			return nil, fmt.Errorf("unexpected argument %q: the port is the only positional after the host (set the nick with --nick=)", args[3])
+		}
+		explicitPort = true
+		i = 4
 	}
 	wantSASLPass := false
 	saslFlagSet := false
@@ -320,11 +343,17 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		case strings.HasPrefix(a, "--nick-recovery="):
 			n.NickRecovery = strings.TrimPrefix(a, "--nick-recovery=") != "false"
 		default:
+			if !strings.HasPrefix(a, "-") {
+				return nil, fmt.Errorf("unexpected argument %q: the nick is set with --nick=", a)
+			}
 			return nil, fmt.Errorf("unknown flag %q", a)
 		}
 	}
+	if !explicitPort && n.Port == 0 {
+		n.Port = defaultPort(n)
+	}
 	if n.Nick == "" {
-		return nil, fmt.Errorf("nick required: pass [nick] / --nick=, or set default_nick in gobnc.json")
+		return nil, fmt.Errorf("nick required: pass --nick=, or set default_nick in gobnc.json")
 	}
 	pass, err := resolveSASLPass(opts, wantSASLPass)
 	if err != nil {
