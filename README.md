@@ -9,7 +9,7 @@ make build
 cp gobnc.json.example gobnc.json
 make cert                        # prompts for hostname; or: make cert HOST=bnc.example.com
 ./bin/gobnc auth set-password    # bouncer login password (not NickServ)
-./bin/gobnc network add libera irc.libera.chat 6697 yournick --sasl-user=you --sasl-pass
+./bin/gobnc network add libera irc.libera.chat --nick=yournick --sasl-user=you --sasl-pass
 # CERTFP only: set tls_client_cert in gobnc.json, then reconnect (no --sasl)
 # SASL EXTERNAL: --sasl=true (or --sasl-user=acct) with that cert and no --sasl-pass
 ./bin/gobnc serve -config gobnc.json
@@ -81,7 +81,7 @@ Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BN
 ./bin/gobnc reload
 ./bin/gobnc die
 ./bin/gobnc network list
-./bin/gobnc network add <name> <host> <port> [nick] \
+./bin/gobnc network add <name> <host|ws://host|wss://host> [port] \
   [--nick=] [--tls=true|false] [--tls-noverify=true|false] \
   [--tls-cert=] [--tls-key=] \
   [--user=] [--realname=] \
@@ -123,7 +123,7 @@ BNC die
 
 `reload` (CLI and `BNC`) restarts the brain from the on-disk binary; the keeper holds every uplink. `stop` stops only the brain (keeper stays). `die` (CLI and `BNC`) stops the brain and the keeper (QUIT to every IRC server).
 
-Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
+`[port]` defaults by transport when omitted: 6697 (TLS), 6667 (`--tls=false`), 443 (`wss://`), 80 (`ws://`). Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
 `network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a real reconnect now — the uplink is `QUIT` and registered afresh (never resumed), and attached clients are disconnected to reattach cleanly — or starts the network if it was disconnected. `network disconnect` stops the uplink without deleting the network. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, `listen_addr`, `allowed_ips`, and `ctcp_ping`/`ctcp_version`/`ctcp_other`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
 
