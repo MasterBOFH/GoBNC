@@ -402,19 +402,21 @@ func stepCAP(s State, in Input) (State, []Action) {
 				req = append(req, want)
 			}
 		}
+		var pre []Action
 		if _, ok := s.Offered[ResumeCap]; !ok {
 			// The full offer is now known and resume isn't in it: a
-			// deferred nick-ladder failure (see stepNickError) is real.
-			var failed []Action
-			if s, failed = ruleOutResume(s, in); failed != nil {
-				return s, failed
+			// deferred nick collision (see stepNickError) is real. Fall
+			// back to the ladder (pre = NICK next) or fail if exhausted.
+			var fatal bool
+			if s, pre, fatal = ruleOutResume(s, in); fatal {
+				return s, pre
 			}
 		}
 		if len(req) == 0 {
 			s.Phase = PhaseAwaitingWelcome
-			return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
+			return s, append(pre, Action{Kind: ActionSend, Line: "CAP END", Replay: in.Replay})
 		}
-		return s, []Action{{Kind: ActionSend, Line: "CAP REQ :" + strings.Join(req, " "), Replay: in.Replay}}
+		return s, append(pre, Action{Kind: ActionSend, Line: "CAP REQ :" + strings.Join(req, " "), Replay: in.Replay})
 
 	case "ACK":
 		for _, raw := range strings.Fields(trailing) {
@@ -438,12 +440,13 @@ func stepCAP(s State, in Input) (State, []Action) {
 
 	case "NAK":
 		// Whatever was NAK'd, no resume is happening on this connection.
-		var failed []Action
-		if s, failed = ruleOutResume(s, in); failed != nil {
-			return s, failed
+		var pre []Action
+		var fatal bool
+		if s, pre, fatal = ruleOutResume(s, in); fatal {
+			return s, pre
 		}
 		s.Phase = PhaseAwaitingWelcome
-		return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
+		return s, append(pre, Action{Kind: ActionSend, Line: "CAP END", Replay: in.Replay})
 
 	default: // NEW, DEL, LIST — not registration-phase concerns
 		return s, nil

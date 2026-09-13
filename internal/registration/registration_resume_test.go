@@ -346,3 +346,79 @@ func TestResumeReplayIdenticalToLive(t *testing.T) {
 		})
 	}
 }
+
+// With nick recovery ON, the ladder has room, so a 433 during a resume
+// used to advance it (NICK dan_) instead of deferring — observed live as
+// "NICK norIrM_" mid-resume, then FAIL RESUME INVALID_TOKEN, because the
+// server was told our identity was something other than the session being
+// resumed. A pending resume must suppress the ladder entirely: no NICK
+// action, RESUME still sent on ACK, and RESUME SUCCESS keeps the original
+// nick.
+func TestResumeSuppressesNickLadderWhenRecoveryOn(t *testing.T) {
+	s := New("dan", "dan2", true, SASLConfig{}) // nickRecovery=true, ladder has room
+	s.ResumeToken = "tok"
+	s, acts := step(t, s, ":irc.example 005 dan NICKLEN=30 :are supported")
+	s, acts = step(t, s, ":irc.example 433 * dan :Nickname is already in use")
+	for _, a := range acts {
+		if a.Kind == ActionSend && strings.HasPrefix(a.Line, "NICK ") {
+			t.Fatalf("advanced the nick ladder during a resume: %q", a.Line)
+		}
+	}
+	if s.Nick != "dan" {
+		t.Fatalf("nick changed to %q during a resume, want dan", s.Nick)
+	}
+	s, acts = step(t, s, ":irc.example CAP dan LS :draft/resume-0.5")
+	s, acts = step(t, s, ":irc.example CAP dan ACK :draft/resume-0.5")
+	if got := lastSendLine(t, acts); !strings.HasPrefix(got, "RESUME tok") {
+		t.Fatalf("got %q, want RESUME after the deferred 433", got)
+	}
+	s, _ = step(t, s, ":irc.example RESUME SUCCESS dan")
+	if s.Nick != "dan" || s.Phase != PhaseAwaitingWelcome {
+		t.Fatalf("nick=%q phase=%v, want dan/awaiting_welcome", s.Nick, s.Phase)
+	}
+}
+
+// With nick recovery on, a resume that is ruled out (FAIL RESUME, or the
+// cap not offered) must fall back to the nick ladder and finish
+// registering as nick_, NOT fail: failing would redial and present a
+// token the server just rejected, drawing the same 433 and the same
+// rejection each time — a loop until the ghost holding the nick expires.
+func TestResumeFailFallsBackToNickLadderWithRecovery(t *testing.T) {
+	s := New("dan", "dan2", true, SASLConfig{}) // recovery on
+	s.ResumeToken = "tok"
+	s, _ = step(t, s, ":irc.example 005 dan NICKLEN=30 :are supported")
+	s, acts := step(t, s, ":irc.example 433 * dan :Nickname is already in use")
+	for _, a := range acts { // deferred, no ladder advance yet
+		if a.Kind == ActionSend && strings.HasPrefix(a.Line, "NICK ") {
+			t.Fatalf("advanced the ladder before the resume was ruled out: %q", a.Line)
+		}
+	}
+	s, _ = step(t, s, ":irc.example CAP dan LS :draft/resume-0.5")
+	s, _ = step(t, s, ":irc.example CAP dan ACK :draft/resume-0.5")
+	// The resume is rejected. We must now advance the ladder and keep going.
+	s, acts = step(t, s, ":irc.example FAIL RESUME INVALID_TOKEN :token is not valid")
+	if hasActionKind(acts, ActionFailed) || s.Phase == PhaseFailed {
+		t.Fatalf("failed instead of recovering via the ladder: acts=%+v phase=%v", acts, s.Phase)
+	}
+	sawNick, sawCapEnd := "", false
+	for _, a := range acts {
+		if a.Kind == ActionSend && strings.HasPrefix(a.Line, "NICK ") {
+			sawNick = a.Line
+		}
+		if a.Kind == ActionSend && a.Line == "CAP END" {
+			sawCapEnd = true
+		}
+	}
+	if sawNick != "NICK dan2" {
+		t.Fatalf("want NICK dan2 on resume-fail recovery, got %q (acts=%+v)", sawNick, acts)
+	}
+	if !sawCapEnd {
+		t.Fatalf("want CAP END after the nick fallback, acts=%+v", acts)
+	}
+	// Registration completes as dan2, no reconnect.
+	s, _ = step(t, s, ":irc.example 001 dan2 :Welcome")
+	_, acts = step(t, s, ":irc.example 376 dan2 :End of MOTD")
+	if !hasActionKind(acts, ActionRegistered) {
+		t.Fatalf("registration did not complete after nick fallback: %+v", acts)
+	}
+}

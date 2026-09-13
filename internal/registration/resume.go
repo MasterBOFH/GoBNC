@@ -63,23 +63,39 @@ func continueRegistration(s State, in Input) (State, []Action) {
 	return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
 }
 
-// ruleOutResume marks that no resume will happen on this connection. If a
-// nick-ladder exhaustion was deferred on the strength of a possible
-// resume, it becomes the registration failure it always was — the
-// returned actions are then non-nil (an ActionFailed) and the caller must
-// return them instead of continuing. A no-op if resume was never possible.
-func ruleOutResume(s State, in Input) (State, []Action) {
+// ruleOutResume marks that no resume will happen on this connection and
+// resolves any nick collision that was deferred while a resume was still
+// possible (stepNickError). The deferred 433 is real now, so:
+//
+//   - if the nick ladder has room, advance it: the returned actions are a
+//     NICK to the next rung to be PREPENDED to continued registration, and
+//     fatal is false. Registering as nick_ beats failing and retrying with
+//     a token the server has just rejected — which, since the ghost still
+//     holds the nick, would draw the same 433 and the same rejection every
+//     time (a redial loop until the ghost expires).
+//   - if the ladder is exhausted (nick recovery off), it's the fatal
+//     registration failure it always was: actions are an ActionFailed and
+//     fatal is true, and the caller must return them instead of continuing.
+//   - if nothing was deferred, actions are nil and fatal is false.
+func ruleOutResume(s State, in Input) (State, []Action, bool) {
 	if s.resumeRuledOut {
-		return s, nil
+		return s, nil, false
 	}
 	s.resumeRuledOut = true
 	if s.pendingNickErr == nil {
-		return s, nil
+		return s, nil, false
 	}
-	s.Phase = PhaseFailed
-	s.Err = s.pendingNickErr
+	pendErr := s.pendingNickErr
 	s.pendingNickErr = nil
-	return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}
+	// s.Nick is still the rejected nick — the deferral never changed it.
+	next, ok := nextLadderNick(s, s.Nick)
+	if !ok {
+		s.Phase = PhaseFailed
+		s.Err = pendErr
+		return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}, true
+	}
+	s.Nick = next
+	return s, []Action{{Kind: ActionSend, Line: "NICK " + next, Replay: in.Replay}}, false
 }
 
 // stepResume handles the server→client RESUME message's two forms.
@@ -126,11 +142,13 @@ func stepFail(s State, in Input) (State, []Action) {
 		return s, nil
 	}
 	s.ResumeToken = "" // consumed; never re-presented on this connection
-	var failed []Action
-	if s, failed = ruleOutResume(s, in); failed != nil {
-		return s, failed
+	var pre []Action
+	var fatal bool
+	if s, pre, fatal = ruleOutResume(s, in); fatal {
+		return s, pre
 	}
-	return continueRegistration(s, in)
+	s, cont := continueRegistration(s, in)
+	return s, append(pre, cont...)
 }
 
 // resumeFailErr is the Err text a deferred nick exhaustion surfaces with —
