@@ -789,13 +789,18 @@ func TestDialWhileConnectedRejected(t *testing.T) {
 	k := newTestKeeper(t)
 	host, port := hostPort(srv.addr())
 
-	go func() { srv.accept(t) }()
+	acceptedCh := make(chan net.Conn, 1)
+	go func() { acceptedCh <- srv.accept(t) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := k.Dial(ctx, DialConfig{Host: host, Port: port}); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer k.Close()
+	// Dial completes off the kernel's listen backlog, so without this the
+	// test can return (and srv.close() the listener) before the goroutine
+	// ever reaches Accept.
+	<-acceptedCh
 
 	if err := k.Dial(ctx, DialConfig{Host: host, Port: port}); !errors.Is(err, ErrAlreadyConnected) {
 		t.Fatalf("second Dial while connected: got %v, want ErrAlreadyConnected", err)
