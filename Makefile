@@ -15,7 +15,11 @@ test-ircd:
 	docker compose -f docker/ircd/docker-compose.yml up -d --pull missing
 	@echo "waiting for ircds..."
 	@sleep 8
-	go test -tags=ircd -count=1 -timeout 180s -parallel 4 ./internal/ircdtest/
+	# -parallel must cover every server in ircdtest's matrix (interop_test.go's
+	# servers): each TestRouteRepliesNumericProbe subtest is ~65s of fixed
+	# reply-collection windows against its own container, so fewer slots
+	# means sequential waves of that and a blown -timeout.
+	go test -tags=ircd -count=1 -timeout 240s -parallel 9 ./internal/ircdtest/
 	docker compose -f docker/ircd/docker-compose.yml down
 
 # No -X version.stamp here: leaving it unset makes DisplayVersion fall
