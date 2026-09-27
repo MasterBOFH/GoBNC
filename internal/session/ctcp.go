@@ -128,6 +128,8 @@ func (s *Session) handleUplinkCTCP(msg irc.Message) bool {
 	s.mu.RLock()
 	ctcp := s.ctcp
 	s.mu.RUnlock()
+	// Every mode returns true, bypassing HandleMessage's own applyState.
+	s.applyState(msg)
 	var mode CTCPMode
 	switch upper {
 	case "PING":
@@ -144,7 +146,6 @@ func (s *Session) handleUplinkCTCP(msg irc.Message) bool {
 		s.replyCTCPEdge(msg, upper, params)
 		return true
 	default: // CTCPModeRelay
-		s.applyState(msg)
 		s.relayCTCPLive(msg)
 		return true
 	}

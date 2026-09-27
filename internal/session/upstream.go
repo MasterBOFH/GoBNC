@@ -70,20 +70,23 @@ func (s *Session) HandleLine(raw []byte, seq uint64) {
 	if msg.Command == "PING" || msg.Command == "PONG" {
 		return
 	}
-	// Safe to run unconditionally, pre- or post-registration: applyState is
-	// a pure state-cache updater with no fan-out of its own (see state.go).
-	// Feeding it every line as it arrives — rather than only snapshotting
-	// once at registration completion, the way OnRegistered used to copy
-	// from *uplink.Uplink's own incrementally-built fields — is what lets
-	// HandleRegistered below not need a registration.State parameter at
-	// all: by the time completeRegistration runs, s.isupport/s.rpl002-4/
-	// s.ircd/s.self.UModes are already exactly right.
-	s.applyState(msg)
-
 	if !s.Registered() {
+		// applyState is a pure state-cache updater with no fan-out of its
+		// own (see state.go). Feeding it every registration line as it
+		// arrives — rather than only snapshotting once at registration
+		// completion, the way OnRegistered used to copy from
+		// *uplink.Uplink's own incrementally-built fields — is what lets
+		// HandleRegistered below not need a registration.State parameter
+		// at all: by the time completeRegistration runs, s.isupport/
+		// s.rpl002-4/s.ircd/s.self.UModes are already exactly right.
+		s.applyState(msg)
 		s.HandleRegistrationLine(msg)
 		return
 	}
+	// Post-registration, HandleMessage applies state itself — and must be
+	// the only thing that does: it stores history first, and QUIT/NICK
+	// history is keyed by the channels the nick is in, which applyState
+	// would already have removed it from.
 	s.HandleMessage(msg)
 }
 

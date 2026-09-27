@@ -2172,6 +2172,32 @@ func TestMaybeStoreHistoryEvents(t *testing.T) {
 	}
 }
 
+// TestHandleLineStoresQUITAndNICKHistory drives QUIT/NICK through the real
+// uplink entry point (HandleLine), not maybeStoreHistory directly: history
+// for those two is keyed by the channels the nick is in, so it only works
+// if nothing drops the nick from s.channels before storage runs.
+func TestHandleLineStoresQUITAndNICKHistory(t *testing.T) {
+	db, hist, id := openLegacyFixture(t)
+	s := sessionWithChan(t, db, hist, id)
+	s.mu.Lock()
+	s.channels["#d"] = &ChannelState{Name: "#d", Members: map[string]struct{}{"me": {}, "alice": {}}}
+	s.mu.Unlock()
+
+	s.HandleLine([]byte("@time=2024-06-01T12:00:00.000Z :bob!u@h QUIT :bye"), 1)
+	s.HandleLine([]byte("@time=2024-06-01T12:01:00.000Z :alice!u@h NICK :alicia"), 2)
+
+	ctx := context.Background()
+	for target, want := range map[string]string{"#c": "QUIT", "#d": "NICK"} {
+		msgs, err := db.QueryMessages(ctx, store.HistoryQuery{NetworkID: id, Target: target, Latest: true, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 || msgs[0].Command != want {
+			t.Fatalf("%s history=%+v, want one %s", target, msgs, want)
+		}
+	}
+}
+
 func TestPassthroughSASLOffer(t *testing.T) {
 	s := New(store.Network{Name: "n", Nick: "me"}, nil, nil, nil, nil)
 	// No credentials: offer when uplink advertises.
