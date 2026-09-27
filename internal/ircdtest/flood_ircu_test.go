@@ -63,9 +63,22 @@ func TestIrcu2FloodRecvQ(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	attachCtx, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
-	client, err := keeper.Attach(attachCtx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
-	cancelAttach()
+	// The socket file existing doesn't mean it's accepting yet: net.Listen
+	// bind()s (creating the file) before it listen()s, and a connect in
+	// between gets ECONNREFUSED. Retry the attach rather than trusting the
+	// os.Stat above — same as internal/session's harness_test.go.
+	var client *keeper.AttachClient
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		attachCtx, cancelAttach := context.WithTimeout(context.Background(), time.Second)
+		client, err = keeper.Attach(attachCtx, sockPath, keeper.HelloMsg{Mode: keeper.ModeLive})
+		cancelAttach()
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("keeper.Attach: %v", err)
 	}
