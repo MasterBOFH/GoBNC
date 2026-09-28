@@ -21,6 +21,7 @@ import (
 // WriteResultMsg's doc comment for why that's the right analogue.
 type floodState struct {
 	bucket *flood.ByteBucket
+	lines  *flood.LinePacer
 	cancel context.CancelFunc
 
 	mu    sync.Mutex
@@ -38,14 +39,44 @@ func (d *Driver) SetMaxFloodQueue(n int) {
 	d.floodMu.Unlock()
 }
 
-// SetFloodParams configures (or reconfigures) network id's flood-pacing
-// bucket — mirrors internal/uplink.Uplink.SetNetwork's flood side effect.
-// Burst/rate <=0 disables pacing for id: WriteRaw then writes immediately,
-// unpaced, exactly like the old floodEnabled()==false path did.
-func (d *Driver) SetFloodParams(id keeper.NetworkID, burst int, rate float64) {
+// FloodParams is one network's outbound pacing.
+type FloodParams struct {
+	// Burst (bytes) and Rate (bytes/sec) configure the byte bucket;
+	// either <=0 disables it.
+	Burst int
+	Rate  float64
+	// Lines paces per line the way ircds meter clients (see
+	// flood.LinePacer) instead, and Burst/Rate are ignored.
+	Lines bool
+}
+
+// SetFloodParams configures (or reconfigures) network id's flood pacing —
+// mirrors internal/uplink.Uplink.SetNetwork's flood side effect. With
+// pacing disabled, WriteRaw writes immediately, unpaced, exactly like the
+// old floodEnabled()==false path did.
+func (d *Driver) SetFloodParams(id keeper.NetworkID, p FloodParams) {
 	fs := d.floodStateFor(id)
-	fs.bucket.Configure(burst, rate)
+	if p.Lines {
+		fs.bucket.Configure(0, 0)
+		fs.lines.Configure(true)
+	} else {
+		fs.lines.Configure(false)
+		fs.bucket.Configure(p.Burst, p.Rate)
+	}
 	d.kickFlood(fs)
+}
+
+// pacingEnabled reports whether either pacer is active for fs.
+func (fs *floodState) pacingEnabled() bool {
+	return fs.lines.Enabled() || fs.bucket.Enabled()
+}
+
+// take waits on whichever pacer is active before a line of n wire bytes.
+func (fs *floodState) take(ctx context.Context, n int) error {
+	if fs.lines.Enabled() {
+		return fs.lines.Take(ctx, n)
+	}
+	return fs.bucket.Take(ctx, n)
 }
 
 func (d *Driver) floodStateFor(id keeper.NetworkID) *floodState {
@@ -55,6 +86,7 @@ func (d *Driver) floodStateFor(id keeper.NetworkID) *floodState {
 		ctx, cancel := context.WithCancel(context.Background())
 		fs = &floodState{
 			bucket: flood.NewByteBucket(0, 0),
+			lines:  flood.NewLinePacer(),
 			cancel: cancel,
 			wake:   make(chan struct{}, 1),
 		}
@@ -74,7 +106,7 @@ func (d *Driver) floodStateFor(id keeper.NetworkID) *floodState {
 // carve-outs for PONG and the registration handshake.
 func (d *Driver) WriteRaw(id keeper.NetworkID, line string) error {
 	fs := d.floodStateFor(id)
-	if !fs.bucket.Enabled() {
+	if !fs.pacingEnabled() {
 		return d.sendLine(id, line)
 	}
 	d.floodMu.Lock()
@@ -115,7 +147,7 @@ func (d *Driver) floodDrainLoop(ctx context.Context, id keeper.NetworkID, fs *fl
 			fs.queue = fs.queue[1:]
 			fs.mu.Unlock()
 
-			if err := fs.bucket.Take(ctx, wireBytes(line)); err != nil {
+			if err := fs.take(ctx, wireBytes(line)); err != nil {
 				return
 			}
 			_ = d.sendLine(id, line) // best-effort; outcome surfaces as a later WriteResult
@@ -151,7 +183,7 @@ func (d *Driver) clearFloodQueue(id keeper.NetworkID) {
 // bounds the whole graceful-shutdown sequence with.
 func (d *Driver) WaitFloodDrained(ctx context.Context, id keeper.NetworkID) {
 	fs := d.floodStateFor(id)
-	if !fs.bucket.Enabled() {
+	if !fs.pacingEnabled() {
 		return
 	}
 	ticker := time.NewTicker(20 * time.Millisecond)

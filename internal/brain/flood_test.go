@@ -44,7 +44,7 @@ func TestDriverWriteRawPacesBurstThenWaits(t *testing.T) {
 	}
 	awaitComplete(t, driver, 10*time.Second)
 
-	driver.SetFloodParams(netID, 20, 20) // 20 bytes burst, 20 B/s
+	driver.SetFloodParams(netID, FloodParams{Burst: 20, Rate: 20}) // 20 bytes burst, 20 B/s
 
 	line1 := "PRIVMSG #c :a" // wire: 15+2=17 bytes... within one refill of headroom
 	line2 := "PRIVMSG #c :b"
@@ -65,6 +65,57 @@ func TestDriverWriteRawPacesBurstThenWaits(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
 		t.Fatalf("line2 arrived after only %s; flood pacing not applied", elapsed)
+	}
+}
+
+// TestDriverWriteRawPacesPerLine proves FloodParams.Lines routes WriteRaw
+// through flood.LinePacer, and that it overrides Burst/Rate: with a byte
+// bucket far too generous to ever wait, the first four short lines (2s of
+// charge each, 8s allowance) still arrive at once and the fifth only about
+// one line-cost later.
+func TestDriverWriteRawPacesPerLine(t *testing.T) {
+	client, _ := newAttachedLiveClientWithManager(t)
+
+	srv := newFakeIRCServer(t)
+	defer srv.close()
+	out := make(chan string, 8)
+	go srv.serveOneCaptureAfterRegistration(t, out)
+	host, port := srv.addr()
+
+	const netID keeper.NetworkID = 1
+	driver := NewDriver(client)
+	driver.RegisterNetwork(netID, NetworkConfig{PrimaryNick: "gobncbrain"})
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	go func() { _ = driver.Run(runCtx) }()
+
+	if err := driver.Dial(netID, keeper.DialConfig{Host: host, Port: port}, 0); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	awaitDialResult(t, driver, 5*time.Second)
+	if err := driver.StartRegistration(netID); err != nil {
+		t.Fatalf("StartRegistration: %v", err)
+	}
+	awaitComplete(t, driver, 10*time.Second)
+
+	driver.SetFloodParams(netID, FloodParams{Burst: 1 << 20, Rate: 1 << 20, Lines: true})
+
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		if err := driver.WriteRaw(netID, "PRIVMSG #c :line"); err != nil {
+			t.Fatalf("WriteRaw %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		awaitPRIVMSG(t, out, time.Second)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("burst of 4 took %s", elapsed)
+	}
+	awaitPRIVMSG(t, out, 4*time.Second)
+	if elapsed := time.Since(start); elapsed < 1500*time.Millisecond {
+		t.Fatalf("fifth line arrived after only %s; per-line pacing not applied", elapsed)
 	}
 }
 

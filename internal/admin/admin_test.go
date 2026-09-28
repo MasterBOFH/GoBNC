@@ -252,6 +252,46 @@ func TestNetworkBindHostFlags(t *testing.T) {
 	}
 }
 
+func TestNetworkFloodLinesFlag(t *testing.T) {
+	rt := &memRuntime{startOK: true, reloadOK: true}
+	deps := testDeps(t, rt)
+	opts := Options{AllowInlineSASLPass: true}
+	_, err := Run(context.Background(), deps, opts, []string{
+		"network", "add", "n1", "irc.example", "6667", "nick",
+		"--flood-lines=true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := deps.Store.NetworkByName(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.FloodLines {
+		t.Fatalf("add --flood-lines=true: %+v", n)
+	}
+	lines, err := Run(context.Background(), deps, opts, []string{"network", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "flood_lines=true") {
+		t.Fatalf("network list = %q, want flood_lines=true", lines)
+	}
+	_, err = Run(context.Background(), deps, opts, []string{
+		"network", "mod", "n1", "--flood-lines=false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err = deps.Store.NetworkByName(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.FloodLines {
+		t.Fatal("expected flood_lines=false after mod")
+	}
+}
+
 func TestNetworkSASLFlag(t *testing.T) {
 	rt := &memRuntime{startOK: true, reloadOK: true}
 	deps := testDeps(t, rt)

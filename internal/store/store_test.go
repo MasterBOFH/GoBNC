@@ -81,6 +81,29 @@ func TestNetworkFloodFields(t *testing.T) {
 	}
 }
 
+func TestNetworkFloodLinesField(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	base := Network{Name: "n", Host: "h", Port: 6667, Nick: "me", Enabled: true}
+	if _, err := s.UpsertNetwork(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.NetworkByName(ctx, "n"); err != nil || n.FloodLines {
+		t.Fatalf("new network FloodLines=%v err=%v, want false", n.FloodLines, err)
+	}
+	on := base
+	on.FloodLines = true
+	if _, err := s.UpsertNetwork(ctx, on); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.NetworkByName(ctx, "n"); err != nil || !n.FloodLines {
+		t.Fatalf("NetworkByName FloodLines=%v err=%v, want true", n.FloodLines, err)
+	}
+	if list, err := s.ListNetworks(ctx); err != nil || len(list) != 1 || !list[0].FloodLines {
+		t.Fatalf("ListNetworks %+v %v, want FloodLines", list, err)
+	}
+}
+
 func TestNetworkNickRecoveryFields(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

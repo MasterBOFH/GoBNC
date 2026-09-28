@@ -865,7 +865,7 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 		s.driver.RegisterNetwork(netID, s.networkConfigForLocked(n))
 	}
 	s.driver.SetChannels(netID, channelJoinsFor(chs))
-	s.driver.SetFloodParams(netID, n.FloodBurst, n.FloodRate)
+	s.driver.SetFloodParams(netID, brain.FloodParams{Burst: n.FloodBurst, Rate: n.FloodRate, Lines: n.FloodLines})
 	return sess, nil
 }
 

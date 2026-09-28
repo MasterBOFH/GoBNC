@@ -306,7 +306,7 @@ func (s *Session) ApplyNetworkConfig(n store.Network, cfg brain.NetworkConfig) {
 	if s.driver == nil {
 		return
 	}
-	s.driver.SetFloodParams(s.netID, n.FloodBurst, n.FloodRate)
+	s.driver.SetFloodParams(s.netID, brain.FloodParams{Burst: n.FloodBurst, Rate: n.FloodRate, Lines: n.FloodLines})
 	s.driver.UpdateNetworkConfig(s.netID, cfg)
 }
 

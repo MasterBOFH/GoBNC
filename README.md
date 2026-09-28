@@ -86,14 +86,14 @@ Administer the running bouncer with the CLI or the IRC `BNC` command (`/quote BN
   [--tls-cert=] [--tls-key=] \
   [--user=] [--realname=] \
   [--sasl=true|false] [--sasl-user=] [--sasl-pass] \
-  [--flood-burst=] [--flood-rate=] \
+  [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] \
   [--alt-nick=] [--nick-recovery=true|false]
 ./bin/gobnc network mod <name> \
   [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] \
   [--tls-cert=] [--tls-key=] \
   [--user=] [--realname=] \
   [--sasl=true|false] [--sasl-user=] [--sasl-pass] \
-  [--flood-burst=] [--flood-rate=] \
+  [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] \
   [--alt-nick=] [--nick-recovery=true|false]
 ./bin/gobnc network delete <name>
 ./bin/gobnc network reconnect <name>
@@ -126,6 +126,8 @@ BNC die
 Nick / identity defaults for `network add` when omitted: `default_nick` / `default_username` / `default_realname` / `default_alt_nick` in `gobnc.json`. `--tls-cert=` / `--tls-key=` override the global network client cert (`none` / `-` disables). `--bind-host=` overrides global `bind_host` (`none` / `-` uses the OS default).
 
 `network mod` updates config without dropping the connection to the IRC server (host/TLS/SASL/cert/bind_host apply on the next reconnect). `network reconnect` forces a reconnect now (or starts the network if it was disconnected). `network disconnect` stops the uplink without deleting the network. `rehash` / `SIGHUP` reloads `gobnc.json` (including global `tls_client_cert`/`tls_client_key`/`bind_host`, `log_level`, `log_file`, `listen_addr`, `allowed_ips`, and `ctcp_ping`/`ctcp_version`/`ctcp_other`) and network rows without dropping existing clients. When `listen_addr` changes, new connections use the new address; already-connected clients stay on the old socket until they disconnect. Restart required for: `db_path`, `control_socket`.
+
+Outbound flood pacing is per network and off by default. `--flood-burst=` / `--flood-rate=` pace by bytes (a burst in bytes, then a sustained rate in bytes/sec). `--flood-lines=true` instead paces per line the way ircds meter clients — ircu charges each line 2s plus 1s per 120 bytes and stops reading a client that runs 10s ahead, so a stock ircu sustains about one short line every two seconds after a few lines of burst, whatever the byte count; with it set, burst/rate are ignored. Use `--flood-lines=true` on ircu-family networks such as Undernet, where a byte rate can't avoid `Excess Flood` without also crawling on long lines.
 
 `allowed_ips` restricts which source IPs may connect at all — a list of CIDRs or bare IPs, empty (default) means unrestricted. Checked before the TLS handshake, so a rejected IP never gets far enough to do any cryptographic or IRC protocol work; logged at info level with the source IP (`connection refused: ip not allowed`) for wiring into fail2ban or similar.
 

@@ -16,8 +16,12 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/registration"
 )
 
-// ircu2 default recvq is 1024 bytes. Without pacing, dumping >1KiB quickly
-// typically gets Excess Flood / kill. With burst under recvq, we should survive.
+// A stock ircu2 charges each client line 2s + 1s per 120 bytes, stops
+// reading a client whose charge runs 10s ahead of real time, and closes the
+// link with Excess Flood once more than 1024 unread bytes (CLIENT_FLOOD)
+// pile up. A byte-rate pacer can't keep under that for short lines, so
+// this checks GoBNC's per-line pacing (brain.FloodParams.Lines) against a
+// real ircu2 built with the default CLIENT_FLOOD (docker/ircd/ircu2).
 //
 // Ported off internal/uplink (deleted in the keeper/brain cutover) onto
 // internal/brain.Driver directly — the same in-process keeper.Manager +
@@ -94,7 +98,7 @@ func TestIrcu2FloodRecvQ(t *testing.T) {
 		Username:    "gobnc",
 		Realname:    "floodtest",
 	})
-	driver.SetFloodParams(netID, 512, 256) // burst under 1024 recvq, 256 B/s sustained
+	driver.SetFloodParams(netID, brain.FloodParams{Lines: true})
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
@@ -153,8 +157,10 @@ func TestIrcu2FloodRecvQ(t *testing.T) {
 		t.Fatal("timeout waiting for registration")
 	}
 
-	// Enqueue well over recvq in one shot; pacing must keep us under 1024 on the wire.
-	const n = 40
+	// Enqueue ~1.6KB in one shot: sent unpaced, ircu parses the first few
+	// lines and the rest overflows its 1024-byte recvq. Paced per line,
+	// every line must drain (4 at once, then one per ~2s) with no drop.
+	const n = 25
 	payload := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" // 40 bytes body
 	for i := 0; i < n; i++ {
 		line := fmt.Sprintf("PRIVMSG %s :%s%d", nick, payload, i)
@@ -162,11 +168,17 @@ func TestIrcu2FloodRecvQ(t *testing.T) {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}
 	}
-	// ~40 * (~15+len(nick)+40) ≈ 3KB+ queued; at 256 B/s needs ~12s after burst.
+	drained := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(runCtx, 90*time.Second)
+		defer cancel()
+		driver.WaitFloodDrained(ctx, netID)
+		close(drained)
+	}()
 	select {
 	case err := <-disconnected:
 		t.Fatalf("uplink dropped during paced flood (likely recvq/Excess Flood): %v", err)
-	case <-time.After(20 * time.Second):
+	case <-drained:
 	}
 
 	// Still able to send after drain.

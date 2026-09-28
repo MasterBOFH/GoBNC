@@ -61,8 +61,8 @@ func Help() string {
   die
   reconnect [<name>]
   disconnect [<name>]
-  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
-  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]
+  network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] [--alt-nick=] [--nick-recovery=true|false]
+  network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass=] [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] [--alt-nick=] [--nick-recovery=true|false]
   network list
   network delete <name>
   network reconnect [<name>]
@@ -207,8 +207,8 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		}
 		lines := make([]string, 0, len(nets))
 		for _, n := range nets {
-			lines = append(lines, fmt.Sprintf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\ttls_cert=%s\tbind_host=%s\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g",
-				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.TLSCert, n.BindHost, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate))
+			lines = append(lines, fmt.Sprintf("%s\t%s:%d\ttls=%v\ttls_noverify=%v\ttls_cert=%s\tbind_host=%s\tnick=%s\talt_nick=%s\tnick_recovery=%v\tflood_burst=%d\tflood_rate=%g\tflood_lines=%v",
+				n.Name, n.Host, n.Port, n.TLS, n.TLSNoVerify, n.TLSCert, n.BindHost, n.Nick, n.AltNick, n.NickRecovery, n.FloodBurst, n.FloodRate, n.FloodLines))
 		}
 		return lines, nil
 	case "reconnect":
@@ -245,7 +245,7 @@ func runNetwork(ctx context.Context, deps Deps, opts Options, args []string) ([]
 
 func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) < 4 {
-		return nil, fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		return nil, fmt.Errorf("usage: network add <name> <host> <port> [nick] [--nick=] [--tls=true] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
@@ -307,6 +307,8 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
 		case strings.HasPrefix(a, "--flood-rate="):
 			fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
+		case strings.HasPrefix(a, "--flood-lines="):
+			n.FloodLines = strings.TrimPrefix(a, "--flood-lines=") == "true"
 		case strings.HasPrefix(a, "--alt-nick="):
 			n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
 		case strings.HasPrefix(a, "--nick-recovery="):
@@ -344,7 +346,7 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 
 func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]string, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--alt-nick=] [--nick-recovery=true|false]")
+		return nil, fmt.Errorf("usage: network mod <name> [--host=] [--port=] [--nick=] [--tls=true|false] [--tls-noverify=true|false] [--tls-cert=] [--tls-key=] [--bind-host=] [--user=] [--realname=] [--sasl=true|false] [--sasl-user=] [--sasl-pass] [--flood-burst=] [--flood-rate=] [--flood-lines=true|false] [--alt-nick=] [--nick-recovery=true|false]")
 	}
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
@@ -419,6 +421,9 @@ func networkMod(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			changed = true
 		case strings.HasPrefix(a, "--flood-rate="):
 			fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
+			changed = true
+		case strings.HasPrefix(a, "--flood-lines="):
+			n.FloodLines = strings.TrimPrefix(a, "--flood-lines=") == "true"
 			changed = true
 		case strings.HasPrefix(a, "--alt-nick="):
 			n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
