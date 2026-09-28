@@ -16,15 +16,15 @@ import (
 
 // Expected DetectIRCd result from each docker/ircd matrix banner.
 var wantIRCd = map[string]string{
-	"ircd-irc2": irc.IRCdIrc2,
-	"unreal4":   irc.IRCdUnreal,
-	"hybrid":    irc.IRCdHybrid,
-	"ircu2":     irc.IRCdIrcu,
-	"bahamut":   irc.IRCdBahamut,
-	"ngircd":    irc.IRCdNgIRCd,
-	"charybdis": irc.IRCdCharybdis,
-	"inspircd":  irc.IRCdInspIRCd,
-	"ergo":      irc.IRCdErgo,
+	"ircd-irc2":  irc.IRCdIrc2,
+	"unrealircd": irc.IRCdUnreal,
+	"hybrid":     irc.IRCdHybrid,
+	"ircu2":      irc.IRCdIrcu,
+	"bahamut":    irc.IRCdBahamut,
+	"ratbox":     irc.IRCdRatbox,
+	"solanum":    irc.IRCdSolanum,
+	"inspircd":   irc.IRCdInspIRCd,
+	"ergo":       irc.IRCdErgo,
 }
 
 func TestIRCdDetectionLive(t *testing.T) {

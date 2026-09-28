@@ -1,0 +1,15 @@
+--- a/src/s_auth.c
++++ b/src/s_auth.c
+@@ -398,9 +398,9 @@
+ 		client->localClient->lip = NULL;
+ 		ClearAuth(auth);
+ 	}
+-	auth->dns_query =
+-		lookup_ip(client->sockhost, GET_SS_FAMILY(&client->localClient->ip),
+-			  auth_dns_callback, auth);
++	/* GoBNC test image: never reverse-resolve clients; finish the DNS
++	 * step at once as a failed lookup, so the host is the bare IP. */
++	auth_dns_callback("", 0, 0, auth);
+ }
+ 
+ /*
