@@ -34,6 +34,11 @@ services:
   charybdis:
     image: irccom/charybdis:latest
     platform: linux/amd64
+    # librb spins at 100% CPU in every process (ircd, authd, ssld, …) and
+    # never answers a client when RLIMIT_NOFILE is as huge as Docker's
+    # default here (1073741816) — cap it.
+    ulimits:
+      nofile: {soft: 4096, hard: 4096}
     ports:
       - "127.0.0.1:4447:4447"
   ircd-irc2:
