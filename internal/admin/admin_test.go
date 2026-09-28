@@ -292,6 +292,33 @@ func TestNetworkFloodLinesFlag(t *testing.T) {
 	}
 }
 
+func TestNetworkAddDefaultsToFloodLines(t *testing.T) {
+	rt := &memRuntime{startOK: true, reloadOK: true}
+	deps := testDeps(t, rt)
+	opts := Options{AllowInlineSASLPass: true}
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		want  bool
+	}{
+		{"plain", nil, true},
+		{"bytes", []string{"--flood-burst=512", "--flood-rate=256"}, false},
+		{"bytes-and-lines", []string{"--flood-rate=256", "--flood-lines=true"}, true},
+	} {
+		args := append([]string{"network", "add", tc.name, "irc.example", "6667", "nick"}, tc.flags...)
+		if _, err := Run(context.Background(), deps, opts, args); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		n, err := deps.Store.NetworkByName(context.Background(), tc.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n.FloodLines != tc.want {
+			t.Errorf("%s: FloodLines=%v, want %v", tc.name, n.FloodLines, tc.want)
+		}
+	}
+}
+
 func TestNetworkSASLFlag(t *testing.T) {
 	rt := &memRuntime{startOK: true, reloadOK: true}
 	deps := testDeps(t, rt)

@@ -253,6 +253,7 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	n := store.Network{
 		Name: args[1], Host: args[2], Nick: deps.Nick, TLS: true, Enabled: true,
 		Username: deps.Username, Realname: deps.Realname, AltNick: deps.AltNick, NickRecovery: true,
+		FloodLines: true,
 	}
 	fmt.Sscanf(args[3], "%d", &n.Port)
 	i := 4
@@ -262,6 +263,7 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 	}
 	wantSASLPass := false
 	saslFlagSet := false
+	floodLinesSet, byteFloodSet := false, false
 	for ; i < len(args); i++ {
 		a := args[i]
 		if a == "-config" {
@@ -305,10 +307,13 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 			n.SASLPass = pass
 		case strings.HasPrefix(a, "--flood-burst="):
 			fmt.Sscanf(strings.TrimPrefix(a, "--flood-burst="), "%d", &n.FloodBurst)
+			byteFloodSet = true
 		case strings.HasPrefix(a, "--flood-rate="):
 			fmt.Sscanf(strings.TrimPrefix(a, "--flood-rate="), "%f", &n.FloodRate)
+			byteFloodSet = true
 		case strings.HasPrefix(a, "--flood-lines="):
 			n.FloodLines = strings.TrimPrefix(a, "--flood-lines=") == "true"
+			floodLinesSet = true
 		case strings.HasPrefix(a, "--alt-nick="):
 			n.AltNick = strings.TrimPrefix(a, "--alt-nick=")
 		case strings.HasPrefix(a, "--nick-recovery="):
@@ -316,6 +321,11 @@ func networkAdd(ctx context.Context, deps Deps, opts Options, args []string) ([]
 		default:
 			return nil, fmt.Errorf("unknown flag %q", a)
 		}
+	}
+	// Per-line pacing is the default, but it ignores burst/rate, so asking
+	// for byte pacing without --flood-lines means byte pacing.
+	if byteFloodSet && !floodLinesSet {
+		n.FloodLines = false
 	}
 	if n.Nick == "" {
 		return nil, fmt.Errorf("nick required: pass [nick] / --nick=, or set default_nick in gobnc.json")
