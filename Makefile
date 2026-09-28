@@ -11,16 +11,24 @@ test-integration:
 
 # Comprehensive parser interop against major ircds (Docker Compose).
 # Requires Docker; irccom images use linux/amd64 (QEMU on Apple Silicon).
+#
+# -parallel must cover every server in ircdtest's matrix (interop_test.go's
+# servers): each TestRouteRepliesNumericProbe subtest is ~65s of fixed
+# reply-collection windows against its own container, so fewer slots means
+# sequential waves of that and a blown -timeout.
+#
+# One shell with an EXIT trap so the containers come down whether the tests
+# pass, fail, or `up` itself fails; the recipe still exits with the failing
+# step's status.
+IRCD_COMPOSE = docker compose -f docker/ircd/docker-compose.yml
+
 test-ircd:
-	docker compose -f docker/ircd/docker-compose.yml up -d --pull missing
-	@echo "waiting for ircds..."
-	@sleep 8
-	# -parallel must cover every server in ircdtest's matrix (interop_test.go's
-	# servers): each TestRouteRepliesNumericProbe subtest is ~65s of fixed
-	# reply-collection windows against its own container, so fewer slots
-	# means sequential waves of that and a blown -timeout.
+	@set -e; \
+	trap '$(IRCD_COMPOSE) down' EXIT; \
+	$(IRCD_COMPOSE) up -d --pull missing; \
+	echo "waiting for ircds..."; \
+	sleep 8; \
 	go test -tags=ircd -count=1 -timeout 240s -parallel 9 ./internal/ircdtest/
-	docker compose -f docker/ircd/docker-compose.yml down
 
 # No -X version.stamp here: leaving it unset makes DisplayVersion fall
 # back to its own composition (Version, currently "0.2.0-dev", plus the
