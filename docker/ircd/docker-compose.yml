@@ -21,6 +21,8 @@ services:
     platform: linux/amd64
     ports:
       - "127.0.0.1:4442:4442"
+    volumes:
+      - ./hybrid/ircd.conf:/ircd-bin/etc/ircd.conf:ro
   ngircd:
     image: irccom/ngircd:latest
     platform: linux/amd64
@@ -31,6 +33,8 @@ services:
     platform: linux/amd64
     ports:
       - "127.0.0.1:4444:4444"
+    volumes:
+      - ./bahamut/ircd.conf:/ircd-bin/ircd.conf:ro
   charybdis:
     image: irccom/charybdis:latest
     platform: linux/amd64
@@ -41,11 +45,15 @@ services:
       nofile: {soft: 4096, hard: 4096}
     ports:
       - "127.0.0.1:4447:4447"
+    volumes:
+      - ./charybdis/ircd.conf:/ircd-bin/etc/ircd.conf:ro
   ircd-irc2:
     image: irccom/ircd-irc2:latest
     platform: linux/amd64
     ports:
       - "127.0.0.1:4440:4440"
+    volumes:
+      - ./ircd-irc2/iauth.conf:/ircd-bin/etc/iauth.conf:ro
   ergo:
     image: ghcr.io/ergochat/ergo:stable
     ports:
