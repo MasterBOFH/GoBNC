@@ -21,7 +21,8 @@ import (
 // link with Excess Flood once more than 1024 unread bytes (CLIENT_FLOOD)
 // pile up. A byte-rate pacer can't keep under that for short lines, so
 // this checks GoBNC's per-line pacing (brain.FloodParams.Lines) against a
-// real ircu2 built with the default CLIENT_FLOOD (docker/ircd/ircu2).
+// real ircu2 with the default CLIENT_FLOOD (test-servers' ircu2 image;
+// see docker/ircd/docker-compose.yml).
 //
 // Ported off internal/uplink (deleted in the keeper/brain cutover) onto
 // internal/brain.Driver directly — the same in-process keeper.Manager +

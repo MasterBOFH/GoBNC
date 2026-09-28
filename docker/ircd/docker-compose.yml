@@ -1,61 +1,42 @@
 # Major ircd matrix for parser interop (`make test-ircd`).
 #
-# Every server but Ergo is built here from a pinned upstream release (or,
-# for Solanum and ratbox, which don't tag releases, a pinned commit) — see
-# each directory's Dockerfile for the version. Bump a version by editing
-# its Dockerfile's ARG; `make test-ircd` rebuilds as needed.
+# Images come from github.com/MasterBOFH/test-servers, each built there from
+# a pinned upstream release and smoke-tested before it's published. Tags
+# here are those upstream versions; bump one to move GoBNC's matrix to a
+# newer release once test-servers publishes it.
 #
-# All of them have ident, proxy and DNSBL checks off: tests connect from the
-# Docker host, so the ircd sees the bridge gateway as the client, and a host
-# firewall that drops connect-backs makes every such check wait out its
-# full timeout, past the tests' registration deadlines.
+# All of them have ident, proxy/DNSBL checks and reverse DNS off, and
+# throttling off: tests connect from the Docker host, so every client
+# looks like the bridge gateway (see test-servers' DEVELOPING.md).
 services:
   ircd-irc2:
-    build: ./ircd-irc2
-    image: gobnc-test/ircd-irc2
-    ports:
-      - "127.0.0.1:4440:4440"
+    image: ghcr.io/masterbofh/test-servers/ircd-irc2:2.11.3
+    ports: ["127.0.0.1:4440:4440"]
   unrealircd:
-    build: ./unrealircd
-    image: gobnc-test/unrealircd
-    ports:
-      - "127.0.0.1:4441:4441"
+    image: ghcr.io/masterbofh/test-servers/unrealircd-6:6.2.7
+    ports: ["127.0.0.1:4441:4441"]
   hybrid:
-    build: ./hybrid
-    image: gobnc-test/hybrid
-    ports:
-      - "127.0.0.1:4442:4442"
+    image: ghcr.io/masterbofh/test-servers/ircd-hybrid-8:8.2.47
+    ports: ["127.0.0.1:4442:4442"]
+  # Default 1024-byte CLIENT_FLOOD: TestIrcu2FloodRecvQ depends on it.
   ircu2:
-    build: ./ircu2
-    image: gobnc-test/ircu2
-    ports:
-      - "127.0.0.1:4443:4443"
+    image: ghcr.io/masterbofh/test-servers/ircu2:u2.10.12.19
+    ports: ["127.0.0.1:4443:4443"]
   bahamut:
-    build: ./bahamut
-    image: gobnc-test/bahamut
-    ports:
-      - "127.0.0.1:4444:4444"
+    image: ghcr.io/masterbofh/test-servers/bahamut:2.2.4
+    ports: ["127.0.0.1:4444:4444"]
+  ngircd:
+    image: ghcr.io/masterbofh/test-servers/ngircd:28
+    ports: ["127.0.0.1:4445:4445"]
   ratbox:
-    build: ./ratbox
-    image: gobnc-test/ratbox
-    ports:
-      - "127.0.0.1:4446:4446"
+    image: ghcr.io/masterbofh/test-servers/ircd-ratbox:3.0.10
+    ports: ["127.0.0.1:4446:4446"]
   solanum:
-    build: ./solanum
-    image: gobnc-test/solanum
-    ports:
-      - "127.0.0.1:4447:4447"
+    image: ghcr.io/masterbofh/test-servers/solanum:03503ff488ea5757a0fdfd62b7509b02b41904ab
+    ports: ["127.0.0.1:4447:4447"]
   inspircd:
-    build: ./inspircd
-    image: gobnc-test/inspircd
-    ports:
-      - "127.0.0.1:4448:6667"
+    image: ghcr.io/masterbofh/test-servers/inspircd-4:4.12.1
+    ports: ["127.0.0.1:4448:4448"]
   ergo:
-    image: ghcr.io/ergochat/ergo:v2.19.1@sha256:ef885e44f7fa19101bbbc41baef11dc280dc8107465dccaf6f0860f41b48a682
-    ports:
-      - "127.0.0.1:6667:6667"
-      - "127.0.0.1:6697:6697" # TLS — self-signed, see certs/ergo.{crt,key}
-    volumes:
-      - ./ergo.yaml:/ircd.yaml:ro
-      - ./certs:/certs:ro
-    command: ["ergo", "run", "--conf", "/ircd.yaml"]
+    image: ghcr.io/masterbofh/test-servers/ergo:2.19.1
+    ports: ["127.0.0.1:4449:4449"]

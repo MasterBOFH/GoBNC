@@ -10,9 +10,10 @@ test-integration:
 	go test -tags=integration -count=1 -timeout 120s ./...
 
 # Comprehensive parser interop against major ircds (Docker Compose).
-# Requires Docker. The images build locally from docker/ircd/*/Dockerfile,
-# so the first run compiles every ircd and takes a while; later runs reuse
-# Docker's build cache.
+# Requires Docker. Pulls the prebuilt images from
+# github.com/MasterBOFH/test-servers (see docker/ircd/docker-compose.yml);
+# --pull always so a republished tag is picked up, which only downloads
+# layers that changed.
 #
 # -parallel must cover every server in ircdtest's matrix (interop_test.go's
 # servers): each TestRouteRepliesNumericProbe subtest is ~65s of fixed
@@ -27,10 +28,10 @@ IRCD_COMPOSE = docker compose -f docker/ircd/docker-compose.yml
 test-ircd:
 	@set -e; \
 	trap '$(IRCD_COMPOSE) down' EXIT; \
-	$(IRCD_COMPOSE) up -d --build --pull missing; \
+	$(IRCD_COMPOSE) up -d --pull always; \
 	echo "waiting for ircds..."; \
 	sleep 8; \
-	go test -tags=ircd -count=1 -timeout 240s -parallel 9 ./internal/ircdtest/
+	go test -tags=ircd -count=1 -timeout 240s -parallel 10 ./internal/ircdtest/
 
 # No -X version.stamp here: leaving it unset makes DisplayVersion fall
 # back to its own composition (Version, currently "0.2.0-dev", plus the

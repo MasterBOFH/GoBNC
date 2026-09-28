@@ -21,6 +21,7 @@ var wantIRCd = map[string]string{
 	"hybrid":     irc.IRCdHybrid,
 	"ircu2":      irc.IRCdIrcu,
 	"bahamut":    irc.IRCdBahamut,
+	"ngircd":     irc.IRCdNgIRCd,
 	"ratbox":     irc.IRCdRatbox,
 	"solanum":    irc.IRCdSolanum,
 	"inspircd":   irc.IRCdInspIRCd,
