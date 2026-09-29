@@ -643,3 +643,136 @@ func privmsgIDs(sent []irc.Message) []string {
 	}
 	return got
 }
+
+// hasEndTag reports whether the opening BATCH line in sent carries
+// draft/chathistory-end, the tag that marks the last page.
+func hasEndTag(t *testing.T, sent []irc.Message) bool {
+	t.Helper()
+	if len(sent) == 0 || sent[0].Command != "BATCH" || !strings.HasPrefix(sent[0].Params[0], "+") {
+		t.Fatalf("first line is not a BATCH start: %+v", sent)
+	}
+	_, ok := sent[0].Tag("draft/chathistory-end")
+	return ok
+}
+
+func privmsgTexts(sent []irc.Message) []string {
+	var out []string
+	for _, m := range sent {
+		if m.Command == "PRIVMSG" {
+			out = append(out, m.Trailing())
+		}
+	}
+	return out
+}
+
+// TestCHATHISTORYEndTag covers draft/chathistory-end
+// (ircv3.net/specs/extensions/chathistory): a valueless tag on the opening
+// BATCH when the next page would be empty. The key cases are the full pages
+// (limit == rows left, which must be tagged, and limit == rows left - 1,
+// which must not be). Only a LIMIT+1 look-ahead can tell those apart, and
+// trimming the extra row must keep the page on the correct side.
+func TestCHATHISTORYEndTag(t *testing.T) {
+	h, id, t0 := seedHistory(t) // m0..m9 at t0+0m..t0+9m
+	at := func(min int) string { return "timestamp=" + t0.Add(time.Duration(min)*time.Minute).Format(time.RFC3339Nano) }
+	run := func(caps map[string]bool, params ...string) []irc.Message {
+		t.Helper()
+		s := &fakeSender{caps: caps}
+		if err := h.HandleCHATHISTORY(s, id, irc.Message{Command: "CHATHISTORY", Params: params}); err != nil {
+			t.Fatal(err)
+		}
+		return s.sent
+	}
+	tagCaps := map[string]bool{"chathistory": true, "batch": true, "message-tags": true}
+
+	cases := []struct {
+		name    string
+		params  []string
+		wantEnd bool
+		want    string
+	}{
+		{"LATEST exhausts", []string{"LATEST", "#c", "*", "10"}, true, "m0 m1 m2 m3 m4 m5 m6 m7 m8 m9"},
+		{"LATEST more before", []string{"LATEST", "#c", "*", "9"}, false, "m1 m2 m3 m4 m5 m6 m7 m8 m9"},
+		{"BEFORE exhausts", []string{"BEFORE", "#c", at(5), "5"}, true, "m0 m1 m2 m3 m4"},
+		{"BEFORE more before", []string{"BEFORE", "#c", at(5), "4"}, false, "m1 m2 m3 m4"},
+		{"AFTER exhausts", []string{"AFTER", "#c", at(4), "5"}, true, "m5 m6 m7 m8 m9"},
+		{"AFTER more after", []string{"AFTER", "#c", at(4), "4"}, false, "m5 m6 m7 m8"},
+		{"BETWEEN exhausts", []string{"BETWEEN", "#c", at(-1), at(10), "10"}, true, "m0 m1 m2 m3 m4 m5 m6 m7 m8 m9"},
+		{"BETWEEN more in range", []string{"BETWEEN", "#c", at(-1), at(10), "9"}, false, "m0 m1 m2 m3 m4 m5 m6 m7 m8"},
+		{"AROUND never tagged", []string{"AROUND", "#c", at(5), "100"}, false, ""},
+		{"unknown msgid", []string{"BEFORE", "#c", "msgid=nope", "10"}, true, ""},
+	}
+	for _, tc := range cases {
+		sent := run(tagCaps, tc.params...)
+		if got := hasEndTag(t, sent); got != tc.wantEnd {
+			t.Errorf("%s: end tag = %v, want %v; opening %q", tc.name, got, tc.wantEnd, sent[0].Encode())
+		}
+		if tc.want != "" {
+			if got := strings.Join(privmsgTexts(sent), " "); got != tc.want {
+				t.Errorf("%s: page = %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	}
+
+	// On the wire it's a bare key, no "=".
+	sent := run(tagCaps, "LATEST", "#c", "*", "10")
+	if got := sent[0].Encode(); !strings.HasPrefix(got, "@draft/chathistory-end BATCH +") {
+		t.Errorf("opening wire = %q", got)
+	}
+
+	// Without message-tags the client can't receive tags, so the tag is left off.
+	sent = run(map[string]bool{"chathistory": true, "batch": true}, "LATEST", "#c", "*", "10")
+	if len(sent[0].Tags) != 0 {
+		t.Errorf("tags sent without message-tags: %q", sent[0].Encode())
+	}
+}
+
+// TestCHATHISTORYTargetsEndTag is TestCHATHISTORYEndTag for the
+// draft/chathistory-targets batch.
+func TestCHATHISTORYTargetsEndTag(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	netID, err := db.UpsertNetwork(ctx, store.Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db)
+	t0 := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	for i, target := range []string{"#a", "#b", "#c"} {
+		ts := t0.Add(time.Duration(i+1) * time.Minute)
+		msg := irc.Message{Source: "a!b@c", Command: "PRIVMSG", Params: []string{target, "hi"}}
+		if err := h.Store(ctx, Record{
+			NetworkID: netID, Target: target, Time: ts, Command: "PRIVMSG",
+			Source: msg.Source, Raw: msg.Encode(), Text: "hi",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caps := map[string]bool{"chathistory": true, "batch": true, "message-tags": true}
+	run := func(limit string) (bool, []string) {
+		t.Helper()
+		s := &fakeSender{caps: caps}
+		if err := h.HandleCHATHISTORY(s, netID, irc.Message{Command: "CHATHISTORY", Params: []string{"TARGETS",
+			t0.Add(10 * time.Minute).Format(time.RFC3339Nano), t0.Format(time.RFC3339Nano), limit}}); err != nil {
+			t.Fatal(err)
+		}
+		var targets []string
+		for _, m := range s.sent {
+			if m.Command == "CHATHISTORY" {
+				targets = append(targets, m.Params[1])
+			}
+		}
+		return hasEndTag(t, s.sent), targets
+	}
+
+	// Descending (newest first), so the page that doesn't exhaust must drop #a.
+	if end, got := run("3"); !end || strings.Join(got, " ") != "#c #b #a" {
+		t.Errorf("limit 3: end=%v targets=%v, want end and [#c #b #a]", end, got)
+	}
+	if end, got := run("2"); end || strings.Join(got, " ") != "#c #b" {
+		t.Errorf("limit 2: end=%v targets=%v, want no end and [#c #b]", end, got)
+	}
+}

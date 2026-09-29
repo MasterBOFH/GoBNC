@@ -124,6 +124,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	limit := 50
 	q := store.HistoryQuery{NetworkID: networkID, Target: target}
 	ctx := context.Background()
+	look := lookaheadNone
 
 	applySel := func(raw string, setBefore, setAfter, setAround bool) error {
 		sel, err := parseSelector(raw)
@@ -166,6 +167,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	case "LATEST":
 		// CHATHISTORY LATEST <target> <*|timestamp|msgid> <limit>
 		q.Latest = true
+		look = lookaheadOldest
 		if len(msg.Params) >= 4 {
 			if n, err := strconv.Atoi(msg.Params[3]); err == nil {
 				limit = n
@@ -175,18 +177,19 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			// Spec: restrict to messages after and excluding the selector.
 			if err := applySel(msg.Params[2], false, true, false); err != nil {
 				if err == errMsgIDMissing {
-					return h.sendBatch(s, target, nil)
+					return h.sendBatch(s, target, nil, true)
 				}
 				return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 			}
 		}
 	case "BEFORE":
+		look = lookaheadOldest
 		if len(msg.Params) < 3 {
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "BEFORE needs selector"}})
 		}
 		if err := applySel(msg.Params[2], true, false, false); err != nil {
 			if err == errMsgIDMissing {
-				return h.sendBatch(s, target, nil)
+				return h.sendBatch(s, target, nil, true)
 			}
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
@@ -196,12 +199,13 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			}
 		}
 	case "AFTER":
+		look = lookaheadNewest
 		if len(msg.Params) < 3 {
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", "AFTER needs selector"}})
 		}
 		if err := applySel(msg.Params[2], false, true, false); err != nil {
 			if err == errMsgIDMissing {
-				return h.sendBatch(s, target, nil)
+				return h.sendBatch(s, target, nil, true)
 			}
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
@@ -216,7 +220,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 		}
 		if err := applySel(msg.Params[2], false, false, true); err != nil {
 			if err == errMsgIDMissing {
-				return h.sendBatch(s, target, nil)
+				return h.sendBatch(s, target, nil, true)
 			}
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[2], "bad selector"}})
 		}
@@ -243,7 +247,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_PARAMS", msg.Params[3], "bad selector"}})
 		}
 		if (selA.kind == selMsgid && boundA == nil) || (selB.kind == selMsgid && boundB == nil) {
-			return h.sendBatch(s, target, nil)
+			return h.sendBatch(s, target, nil, true)
 		}
 		// Order bounds so After < Before in store order.
 		if boundA != nil && boundB != nil {
@@ -271,6 +275,7 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			q.AfterBound, q.BeforeBound = boundA, boundB
 		}
 		q.Between = true
+		look = lookaheadNewest
 		if len(msg.Params) >= 5 {
 			if n, err := strconv.Atoi(msg.Params[4]); err == nil {
 				limit = n
@@ -294,14 +299,43 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 		limit = 1
 	}
 	q.Limit = limit
+	if look != lookaheadNone {
+		q.Limit = limit + 1
+	}
 	q.Commands = historyCommandsFor(s)
 
 	msgs, err := h.db.QueryMessages(ctx, q)
 	if err != nil {
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
 	}
-	return h.sendBatch(s, target, msgs)
+	end := false
+	switch {
+	case look == lookaheadNone:
+	case len(msgs) <= limit:
+		end = true
+	case look == lookaheadOldest:
+		msgs = msgs[len(msgs)-limit:]
+	default:
+		msgs = msgs[:limit]
+	}
+	return h.sendBatch(s, target, msgs, end)
 }
+
+// lookahead says where the one extra row of a LIMIT+1 query lands in
+// QueryMessages' oldest-first result. Getting that extra row back means the
+// page didn't exhaust the selection. Not getting it means the next page would
+// be empty, so the batch gets draft/chathistory-end.
+type lookahead int
+
+const (
+	// lookaheadNone: AROUND reads both ways from its selector, so no single
+	// "next page" exists and the batch is never tagged.
+	lookaheadNone lookahead = iota
+	// lookaheadOldest: LATEST and BEFORE page backwards in time.
+	lookaheadOldest
+	// lookaheadNewest: AFTER and BETWEEN page forwards in time.
+	lookaheadNewest
+)
 
 var errMsgIDMissing = fmt.Errorf("msgid not found")
 
@@ -401,20 +435,26 @@ func (h *Store) handleTargets(s Sender, networkID int64, aRaw, bRaw, limitRaw st
 	if lo.After(hi) {
 		lo, hi = hi, lo
 	}
-	targets, err := h.db.TargetsBetween(context.Background(), networkID, lo, hi, historyCommandsFor(s), limit, desc)
+	// One extra row detects the last page, as in HandleCHATHISTORY. Rows
+	// arrive in the requested direction, so the extra one is always last.
+	targets, err := h.db.TargetsBetween(context.Background(), networkID, lo, hi, historyCommandsFor(s), limit+1, desc)
 	if err != nil {
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
 	}
-	return h.sendTargetsBatch(s, targets)
+	end := len(targets) <= limit
+	if !end {
+		targets = targets[:limit]
+	}
+	return h.sendTargetsBatch(s, targets, end)
 }
 
 // sendTargetsBatch sends the draft/chathistory-targets batch handleTargets
 // resolved to. Spec: this batch type takes no target parameter (unlike the
 // "chathistory" batch other subcommands use), and each line is
 // "CHATHISTORY TARGETS <name> <timestamp>", not a replayed message.
-func (h *Store) sendTargetsBatch(s Sender, targets []store.TargetActivity) error {
+func (h *Store) sendTargetsBatch(s Sender, targets []store.TargetActivity, end bool) error {
 	id := fmt.Sprintf("h%d", atomic.AddUint64(&h.batchSeq, 1))
-	if err := s.Send(irc.Message{Command: "BATCH", Params: []string{"+" + id, "draft/chathistory-targets"}}); err != nil {
+	if err := s.Send(batchStart(s, end, "+"+id, "draft/chathistory-targets")); err != nil {
 		return err
 	}
 	for _, t := range targets {
@@ -430,9 +470,21 @@ func (h *Store) sendTargetsBatch(s Sender, targets []store.TargetActivity) error
 	return s.Send(irc.Message{Command: "BATCH", Params: []string{"-" + id}})
 }
 
-func (h *Store) sendBatch(s Sender, target string, msgs []store.Message) error {
+// batchStart builds the opening BATCH line of a chathistory or
+// draft/chathistory-targets batch. end means the next page would be empty.
+// That's signalled by a valueless draft/chathistory-end tag on this line,
+// and only to clients that negotiated message-tags.
+func batchStart(s Sender, end bool, params ...string) irc.Message {
+	m := irc.Message{Command: "BATCH", Params: params}
+	if end && s.HasCap("message-tags") {
+		m.Tags = map[string]string{"draft/chathistory-end": ""}
+	}
+	return m
+}
+
+func (h *Store) sendBatch(s Sender, target string, msgs []store.Message, end bool) error {
 	id := fmt.Sprintf("h%d", atomic.AddUint64(&h.batchSeq, 1))
-	if err := s.Send(irc.Message{Command: "BATCH", Params: []string{"+" + id, "chathistory", target}}); err != nil {
+	if err := s.Send(batchStart(s, end, "+"+id, "chathistory", target)); err != nil {
 		return err
 	}
 	for _, m := range msgs {
