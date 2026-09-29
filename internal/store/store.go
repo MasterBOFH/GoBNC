@@ -644,10 +644,14 @@ type HistoryQuery struct {
 	BeforeBound *HistoryBound
 	AfterBound  *HistoryBound
 	AroundBound *HistoryBound
-	Between    bool // if true, require both After/AfterBound and Before/BeforeBound
-	Limit      int
-	Latest     bool     // if true, return the Limit most recent (optionally before Before)
-	Commands   []string // if non-empty, only these IRC commands
+	Between     bool // if true, require both After/AfterBound and Before/BeforeBound
+	// BetweenDesc (with Between) counts Limit back from Before/BeforeBound
+	// instead of forward from After/AfterBound, i.e. keeps the newest Limit
+	// rows in the range. Rows still come back oldest-first either way.
+	BetweenDesc bool
+	Limit       int
+	Latest      bool     // if true, return the Limit most recent (optionally before Before)
+	Commands    []string // if non-empty, only these IRC commands
 }
 
 // HistoryBound is a message position in store order (time, then id).
@@ -817,6 +821,14 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 					SELECT `+cols+`
 					FROM messages WHERE `+where+` AND `+sqlAfterBound+` AND `+sqlBeforeBound+`
 					ORDER BY time ASC, id ASC`, args...)
+			} else if q.BetweenDesc {
+				args = append(args, q.Limit)
+				rows, err = s.db.QueryContext(ctx, `
+					SELECT `+cols+` FROM (
+						SELECT `+cols+`
+						FROM messages WHERE `+where+` AND `+sqlAfterBound+` AND `+sqlBeforeBound+`
+						ORDER BY time DESC, id DESC LIMIT ?
+					) ORDER BY time ASC, id ASC`, args...)
 			} else {
 				args = append(args, q.Limit)
 				rows, err = s.db.QueryContext(ctx, `
@@ -830,6 +842,14 @@ func (s *Store) QueryMessages(ctx context.Context, q HistoryQuery) ([]Message, e
 				SELECT `+cols+`
 				FROM messages WHERE `+where+` AND time > ? AND time < ?
 				ORDER BY time ASC`, args...)
+		} else if q.BetweenDesc {
+			args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before), q.Limit)
+			rows, err = s.db.QueryContext(ctx, `
+				SELECT `+cols+` FROM (
+					SELECT `+cols+`
+					FROM messages WHERE `+where+` AND time > ? AND time < ?
+					ORDER BY time DESC, id DESC LIMIT ?
+				) ORDER BY time ASC, id ASC`, args...)
 		} else {
 			args := append(append([]any{}, baseArgs...), formatTime(*q.After), formatTime(*q.Before), q.Limit)
 			rows, err = s.db.QueryContext(ctx, `

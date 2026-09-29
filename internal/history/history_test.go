@@ -673,7 +673,9 @@ func privmsgTexts(sent []irc.Message) []string {
 // trimming the extra row must keep the page on the correct side.
 func TestCHATHISTORYEndTag(t *testing.T) {
 	h, id, t0 := seedHistory(t) // m0..m9 at t0+0m..t0+9m
-	at := func(min int) string { return "timestamp=" + t0.Add(time.Duration(min)*time.Minute).Format(time.RFC3339Nano) }
+	at := func(min int) string {
+		return "timestamp=" + t0.Add(time.Duration(min)*time.Minute).Format(time.RFC3339Nano)
+	}
 	run := func(caps map[string]bool, params ...string) []irc.Message {
 		t.Helper()
 		s := &fakeSender{caps: caps}
@@ -774,5 +776,71 @@ func TestCHATHISTORYTargetsEndTag(t *testing.T) {
 	}
 	if end, got := run("2"); end || strings.Join(got, " ") != "#c #b" {
 		t.Errorf("limit 2: end=%v targets=%v, want no end and [#c #b]", end, got)
+	}
+}
+
+// TestCHATHISTORYBetweenDirection: spec says BETWEEN's limit "MUST be
+// counted starting from and excluding the first message selector", so with
+// the later selector first a short page holds the newest rows of the range,
+// not the oldest. That has to hold for both SQL shapes (timestamp pair,
+// msgid pair) and the mixed msgid/timestamp form. The end tag follows the
+// direction too: the page that stops short of the older end is not the last
+// one.
+func TestCHATHISTORYBetweenDirection(t *testing.T) {
+	caps := map[string]bool{"chathistory": true, "batch": true, "message-tags": true}
+	run := func(h *Store, id int64, params ...string) []irc.Message {
+		t.Helper()
+		s := &fakeSender{caps: caps}
+		if err := h.HandleCHATHISTORY(s, id, irc.Message{Command: "CHATHISTORY", Params: params}); err != nil {
+			t.Fatal(err)
+		}
+		return s.sent
+	}
+
+	h, id, t0 := seedHistory(t) // m0..m9 at t0+0m..t0+9m
+	at := func(min int) string {
+		return "timestamp=" + t0.Add(time.Duration(min)*time.Minute).Format(time.RFC3339Nano)
+	}
+	cases := []struct {
+		name    string
+		a, b    string
+		limit   string
+		want    string
+		wantEnd bool
+	}{
+		{"forward short", at(-1), at(10), "3", "m0 m1 m2", false},
+		{"backward short", at(10), at(-1), "3", "m7 m8 m9", false},
+		{"backward exhausts", at(10), at(-1), "10", "m0 m1 m2 m3 m4 m5 m6 m7 m8 m9", true},
+	}
+	for _, tc := range cases {
+		sent := run(h, id, "BETWEEN", "#c", tc.a, tc.b, tc.limit)
+		if got := strings.Join(privmsgTexts(sent), " "); got != tc.want {
+			t.Errorf("timestamps %s: page = %q, want %q", tc.name, got, tc.want)
+		}
+		if got := hasEndTag(t, sent); got != tc.wantEnd {
+			t.Errorf("timestamps %s: end tag = %v, want %v", tc.name, got, tc.wantEnd)
+		}
+	}
+
+	hm, idm := seedMsgIDHistory(t) // m0..m4 at t0+0m..t0+4m
+	msgidCases := []struct {
+		name  string
+		a, b  string
+		limit string
+		want  string
+	}{
+		{"msgid forward", "msgid=m0", "msgid=m4", "2", "m1 m2"},
+		{"msgid backward", "msgid=m4", "msgid=m0", "2", "m2 m3"},
+		{"mixed backward", "msgid=m4", "timestamp=" + t0.Add(-time.Minute).Format(time.RFC3339Nano), "2", "m2 m3"},
+		{"mixed backward, timestamp first", "timestamp=" + t0.Add(10*time.Minute).Format(time.RFC3339Nano), "msgid=m0", "2", "m3 m4"},
+	}
+	for _, tc := range msgidCases {
+		sent := run(hm, idm, "BETWEEN", "#c", tc.a, tc.b, tc.limit)
+		if got := strings.Join(privmsgIDs(sent), " "); got != tc.want {
+			t.Errorf("%s: page = %q, want %q", tc.name, got, tc.want)
+		}
+		if hasEndTag(t, sent) {
+			t.Errorf("%s: short page tagged as end", tc.name)
+		}
 	}
 }

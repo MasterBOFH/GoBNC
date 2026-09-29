@@ -249,16 +249,20 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 		if (selA.kind == selMsgid && boundA == nil) || (selB.kind == selMsgid && boundB == nil) {
 			return h.sendBatch(s, target, nil, true)
 		}
-		// Order bounds so After < Before in store order.
+		// Order bounds so After < Before in store order. Spec: the limit
+		// counts from the *first* selector, so a first selector later than
+		// the second means paging backwards (BetweenDesc).
 		if boundA != nil && boundB != nil {
 			if boundA.Time.After(boundB.Time) || (boundA.Time.Equal(boundB.Time) && boundA.ID > boundB.ID) {
 				boundA, boundB = boundB, boundA
+				q.BetweenDesc = true
 			}
 			q.AfterBound, q.BeforeBound = boundA, boundB
 		} else if tsA != nil && tsB != nil {
 			a, b := *tsA, *tsB
 			if a.After(b) {
 				a, b = b, a
+				q.BetweenDesc = true
 			}
 			q.After, q.Before = &a, &b
 		} else {
@@ -271,11 +275,15 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 			}
 			if boundA.Time.After(boundB.Time) || (boundA.Time.Equal(boundB.Time) && boundA.ID > boundB.ID) {
 				boundA, boundB = boundB, boundA
+				q.BetweenDesc = true
 			}
 			q.AfterBound, q.BeforeBound = boundA, boundB
 		}
 		q.Between = true
 		look = lookaheadNewest
+		if q.BetweenDesc {
+			look = lookaheadOldest
+		}
 		if len(msg.Params) >= 5 {
 			if n, err := strconv.Atoi(msg.Params[4]); err == nil {
 				limit = n
@@ -331,9 +339,11 @@ const (
 	// lookaheadNone: AROUND reads both ways from its selector, so no single
 	// "next page" exists and the batch is never tagged.
 	lookaheadNone lookahead = iota
-	// lookaheadOldest: LATEST and BEFORE page backwards in time.
+	// lookaheadOldest: LATEST, BEFORE and a BETWEEN whose first selector is
+	// the later one page backwards in time.
 	lookaheadOldest
-	// lookaheadNewest: AFTER and BETWEEN page forwards in time.
+	// lookaheadNewest: AFTER and a BETWEEN whose first selector is the
+	// earlier one page forwards in time.
 	lookaheadNewest
 )
 
