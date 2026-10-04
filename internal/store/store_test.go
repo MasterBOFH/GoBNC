@@ -428,3 +428,26 @@ func openTemp(t *testing.T) *Store {
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
+
+// TestResolveFingerprintColons: delete-fingerprint resolves exact values and
+// unique prefixes against the stored bare hex, so the "F1:F2:E3" form (the
+// one add-fingerprint now accepts) has to resolve too, as a full value and as
+// a prefix.
+func TestResolveFingerprintColons(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	fp := "aabbccdd00112233445566778899aabbccddeeff00112233445566778899aaaa"
+	if err := s.AddFingerprint(ctx, fp, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{
+		"AA:BB:CC:DD:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:AA",
+		"AA:BB:CC:DD",
+		"aa:bb:cc",
+	} {
+		got, err := s.ResolveFingerprint(ctx, ref)
+		if err != nil || got != fp {
+			t.Errorf("ResolveFingerprint(%q) = %q, %v; want %q", ref, got, err, fp)
+		}
+	}
+}

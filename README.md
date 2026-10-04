@@ -53,7 +53,7 @@ Connect with TLS to `listen_addr` (default `127.0.0.1:6697`).
 # e.g. openssl x509 -in your-client.crt -outform DER | openssl dgst -sha256 -hex
 ```
 
-`label` is an optional note stored with the fingerprint (re-run `add-fingerprint` with the same hash to change it). `list-fingerprints` prints a 1-based index used by `delete-fingerprint #2` (or `2`).
+The fingerprint is the SHA-256 of the client certificate, pasted in either form tools print: `F1:F2:E3:…` or `f1f2e3…` (case and colons don't matter; it's stored as lowercase bare hex). `label` is an optional note stored with the fingerprint (re-run `add-fingerprint` with the same hash to change it). `list-fingerprints` prints a 1-based index used by `delete-fingerprint #2` (or `2`).
 
 Then connect with `PASS libera/` (or `libera`) and that client cert enabled.
 

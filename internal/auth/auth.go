@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -20,6 +21,31 @@ const (
 	// DefaultGeneratedPasswordBytes is entropy for GeneratePassword (URL-safe base64 ≈ 4/3 longer).
 	DefaultGeneratedPasswordBytes = 24
 )
+
+// FingerprintHexLen is the length of a bare-hex SHA-256 fingerprint.
+const FingerprintHexLen = 64
+
+// NormalizeFingerprint turns a SHA-256 cert fingerprint as tools print it
+// ("F1:F2:E3:…" from openssl and browsers, "f1f2e3…" from list-fingerprints)
+// into the lowercase bare-hex form the store holds and the downlink
+// compares against. Colons and whitespace are dropped; the result must be
+// exactly 64 hex digits, so a typo or a SHA-1 is rejected here instead of
+// being stored as a fingerprint that can never match.
+func NormalizeFingerprint(s string) (string, error) {
+	fp := strings.ToLower(strings.Map(func(r rune) rune {
+		if r == ':' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(s)))
+	if len(fp) != FingerprintHexLen {
+		return "", fmt.Errorf("fingerprint must be %d hex digits (sha256), got %d", FingerprintHexLen, len(fp))
+	}
+	if _, err := hex.DecodeString(fp); err != nil {
+		return "", fmt.Errorf("fingerprint is not hex: %v", err)
+	}
+	return fp, nil
+}
 
 // GeneratePassword returns a URL-safe random password from n random bytes (default 24 → ~32 chars).
 func GeneratePassword(n int) (string, error) {

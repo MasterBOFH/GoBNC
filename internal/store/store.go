@@ -467,7 +467,8 @@ func (s *Store) ResolveFingerprint(ctx context.Context, ref string) (string, err
 		}
 		return entries[n-1].Fingerprint, nil
 	}
-	ref = strings.ToLower(ref)
+	// Accept the colon-separated form tools print, as add-fingerprint does.
+	ref = strings.ToLower(strings.NewReplacer(":", "", " ", "").Replace(ref))
 	var matches []string
 	for _, e := range entries {
 		if e.Fingerprint == ref {

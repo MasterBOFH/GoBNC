@@ -359,7 +359,10 @@ func cmdAuth(ctx context.Context, st *store.Store, args []string) error {
 		if len(args) > 2 {
 			label = strings.Join(args[2:], " ")
 		}
-		fp := strings.ToLower(args[1])
+		fp, err := auth.NormalizeFingerprint(args[1])
+		if err != nil {
+			return err
+		}
 		if err := st.AddFingerprint(ctx, fp, label); err != nil {
 			return err
 		}
