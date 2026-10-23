@@ -167,6 +167,52 @@ token; `device_revoke` invalidates it.
 Modules are configured in `gobnc.json` and started by the brain **detached**, only if not already
 running (the `keeperboot` pattern), so a module outlives a brain reload.
 
+## Hot reload of a module
+
+`gobnc module reload <name>` (and `BNC MODULE RELOAD <name>`) replaces a running module with a new
+binary without restarting the brain, following the brain's own reload handoff
+(`daemon.SpawnReplacementForHandoff` / `Server.runReloadHandoff`):
+
+1. The brain spawns the replacement, detached, with a handoff socket.
+2. The old module passes its listening socket(s) to the replacement over the handoff socket
+   (`SCM_RIGHTS`), so there is no window in which a client's connection is refused.
+3. The replacement connects to the brain, subscribes, and confirms the handoff; only then does the
+   old module stop accepting.
+4. The old module tells each WebSocket client to reconnect (close code 1012, "service restart"),
+   drains, and exits. If the replacement never confirms, the old module keeps serving and the brain
+   kills the replacement.
+
+Live WebSocket connections are **not** carried across: their TLS state cannot be handed to another
+process, the same reason the keeper exists. Clients reconnect and resume (`after_id` in lite mode,
+the device watermark in full mode). That is cheap because the module holds no state of its own:
+everything is re-read from the brain. A module that wants zero-drop reloads for its own clients
+would need its own keeper-like split; not planned.
+
+Reload also happens on REHASH when a module's binary path or config changed.
+
+## Push notifications (iOS)
+
+The module decides when to push and encrypts the notification; the ReteCloud API only relays it to
+Apple, so neither the API nor Apple can read message content.
+
+- **Registration.** Over its authenticated WebSocket, an iOS device sends its APNs token, APNs
+  environment, and a per-device notification key it generated. The brain stores them with the
+  device (`devices` table); the key never leaves the bouncer and the device.
+- **When to push.** On a highlight or a DM line, for each device with push registered that has no
+  live connection (or reports itself backgrounded), unless that buffer is muted for that device.
+  Highlight rules are the brain's, as for `activity`. Coalesced per buffer, with a short delay, so a
+  burst becomes one notification.
+- **Payload.** The module seals `{network, buffer, sender, text, id}` with the device key
+  (AES-GCM; the exact construction is pinned together with Rete's Notification Service Extension)
+  and POSTs `{device_token, environment, ciphertext, collapse_id}` to a relay endpoint on the
+  ReteCloud API, authenticated by a relay key belonging to the bouncer owner's ReteCloud account.
+- **ReteCloud API.** A new relay endpoint sends an alert push with a generic title/body
+  ("New message") and `mutable-content`, the ciphertext as a custom field. It stores nothing, and
+  rate-limits per relay key. `push/apns.go`'s sender already sets `MutableContent`.
+- **Rete (iOS).** A Notification Service Extension decrypts and replaces the title and body; if
+  decryption fails, the generic text stays. This is a Rete change, made later with its own card.
+- **Removal.** An APNs "unregistered" answer from the relay clears the device's token in the brain.
+
 ## Build order
 
 One commit and one test per step (CLAUDE.md's revert-and-confirm discipline applies to each):
@@ -182,9 +228,16 @@ One commit and one test per step (CLAUDE.md's revert-and-confirm discipline appl
 8. `pkg/moduleapi` plus a tiny event-logger module as a smoke test.
 9. `gobnc-retecloud`: full and lite mode, deflate-stream compression. Conformance: retecloud-harness's
    protocol tests pointed at the module through a fixture adapter.
+10. Module hot reload: listener handoff, confirm-then-switch, failed-replacement rollback.
+11. Push: device registration, push decision and coalescing, sealing, the ReteCloud API relay
+    endpoint (in retecloud-api, its own commit there).
+
+## Decided
+
+- Networks are defined in `gobnc.json` only for now: full mode's session create/delete is refused
+  (`not_supported`); connect, disconnect and reconnect work.
 
 ## Open questions
 
-- Full mode's session create/delete over REST: map to GoBNC network add/remove, or leave networks
-  to `gobnc.json` and refuse?
-- Push notifications for iOS (later): a module-side APNs path fed by highlight events.
+- Relay key: issued how on the ReteCloud side (account setting, admin API)?
+- Mute rules for push: per device per buffer in the brain, or follow the device's open set?
