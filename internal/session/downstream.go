@@ -72,7 +72,9 @@ func (s *Session) HandleClientMessage(d Downlink, msg irc.Message) error {
 		return s.handleMARKREAD(d, msg)
 	case "CHATHISTORY":
 		if s.hist != nil {
-			if len(msg.Params) >= 2 {
+			// TARGETS has no target param; its Params[1] is a timestamp, and
+			// casemapping it breaks RFC 3339 parsing ("T"/"Z" -> "t"/"z").
+			if len(msg.Params) >= 2 && !strings.EqualFold(msg.Params[0], "TARGETS") {
 				msg.Params[1] = s.isupport.CaseMapping.Canonical(msg.Params[1])
 			}
 			return s.hist.HandleCHATHISTORY(d, s.Network.ID, msg)
