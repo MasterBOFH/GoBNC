@@ -234,8 +234,10 @@ One commit and one test per step (CLAUDE.md's revert-and-confirm discipline appl
 
 ## Decided
 
-- Networks are defined in `gobnc.json` only for now: full mode's session create/delete is refused
-  (`not_supported`); connect, disconnect and reconnect work.
+- Networks stay managed by GoBNC itself (SQLite `networks` table, via `gobnc network add/mod` or
+  `BNC network …`): full mode's session create/delete is refused (`not_supported`) for now; connect,
+  disconnect and reconnect work, and networks added or changed through GoBNC show up as network
+  lifecycle events.
 
 ## Open questions
 
