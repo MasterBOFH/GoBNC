@@ -13,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 	"github.com/google/uuid"
 )
 
@@ -754,10 +755,17 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	}
 	msg = ensureMessageTime(msg)
 	msg = ensureMessageID(msg)
+	// busMu from storing through applyState to the module emit, released before the downlink
+	// fan-out (see bus.go).
+	s.busMu.Lock()
 	pending, msg, selfEcho := s.consumeSelfEcho(msg)
 	if selfEcho {
-		s.maybeStoreHistory(msg, s.currentLineSeq())
+		ids := s.maybeStoreHistory(msg, s.currentLineSeq())
 		s.applyState(msg)
+		if !strings.EqualFold(msg.Command, "ACK") {
+			s.emitUplinkLineLocked(msg, ids)
+		}
+		s.busMu.Unlock()
 		if strings.EqualFold(msg.Command, "ACK") {
 			// Labeled ACK only goes to the originating client.
 			s.mu.RLock()
@@ -778,16 +786,28 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.fanoutSelfEcho(msg, pending)
 		return
 	}
-	if s.handleUplinkCTCP(msg) {
+	if ctcp, ok := s.uplinkCTCPRequest(msg); ok {
+		s.applyState(msg)
+		if ctcp.mode == CTCPModeRelay {
+			s.emitUplinkLineLocked(msg, nil)
+		}
+		s.busMu.Unlock()
+		s.actOnUplinkCTCP(msg, ctcp)
 		return
 	}
-	s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
+	ids := s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
 	s.applyState(msg)
 
 	s.mu.RLock()
 	cm := s.isupport.CaseMapping
 	s.mu.RUnlock()
 	dests := s.tracker.RouteAll(msg, cm)
+	// A solicited reply goes to its requester only, and an unmatched WHOX/WHO end to nobody:
+	// neither is a network event.
+	if len(dests) == 0 && msg.Command != "354" && msg.Command != "315" {
+		s.emitUplinkLineLocked(msg, ids)
+	}
+	s.busMu.Unlock()
 	s.flushTrackerWrites()
 	if len(dests) > 0 {
 		// Snapshot each downlink, then release s.mu before rewriteFor:
@@ -870,6 +890,14 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	s.advanceLegacyPlaybackIfDelivered(msg, legacyHit)
 	s.maybeSendMarkReadOnSelfJOIN(msg)
 	s.maybeJoinOnInvite(msg)
+}
+
+// emitUplinkLineLocked emits the module envelope for an uplink line. Caller holds busMu.
+func (s *Session) emitUplinkLineLocked(msg irc.Message, ids map[string]int64) {
+	if !s.hasSinksLocked() {
+		return
+	}
+	s.emitLineLocked(wire.LineEvent{Network: s.Network.ID, Kind: wire.LineOther, Raw: msg.Wire(), Buffers: []wire.LineBuffer{}})
 }
 
 // blobCapsValue JSON-encodes the currently enabled cap set for the "caps"

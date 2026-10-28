@@ -81,6 +81,12 @@ type Session struct {
 	// if every mode were CTCPModeRelay, matching pre-CTCP-feature behavior.
 	ctcp *CTCPConfig
 
+	// busMu serialises state changes with module event emission and snapshots; see bus.go
+	// for what it covers. Lock order: busMu before mu, never the reverse.
+	busMu  sync.Mutex
+	sinks  map[uint64]sinkEntry // guarded by busMu
+	busSeq uint64               // guarded by busMu; seq of the last emitted line event
+
 	mu       sync.RWMutex
 	self     *User
 	users    map[string]*User         // folded nick → user

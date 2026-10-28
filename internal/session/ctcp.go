@@ -103,10 +103,10 @@ func parseCTCP(text string) (verb, params string, ok bool) {
 	return inner, "", true
 }
 
-// handleUplinkCTCP processes a CTCP-framed PRIVMSG arriving from the
-// uplink per the configured mode. Returns true if the line has been fully
-// handled (edge-replied, disabled, or live-relayed) and must not fall
-// through to HandleMessage's normal history-storage/tracker/broadcast
+// uplinkCTCPRequest and actOnUplinkCTCP process a CTCP-framed PRIVMSG
+// arriving from the uplink per the configured mode. A recognised request
+// is fully handled (edge-replied, disabled, or live-relayed) and must not
+// fall through to HandleMessage's normal history-storage/tracker/broadcast
 // path — a CTCP request is never stored for chathistory/legacy replay,
 // regardless of mode, since it's transient protocol chatter rather than
 // conversation content.
@@ -116,20 +116,28 @@ func parseCTCP(text string) (verb, params string, ok bool) {
 // two cases, so no separate target check is needed. CTCP-framed NOTICE
 // (a reply, not a request) is left alone entirely and always relays
 // normally.
-func (s *Session) handleUplinkCTCP(msg irc.Message) bool {
+//
+// uplinkCTCPRequest only recognises the request and its mode; HandleMessage
+// applies its state (applyState) under busMu, then calls actOnUplinkCTCP.
+type uplinkCTCP struct {
+	verb, params string
+	mode         CTCPMode
+}
+
+// uplinkCTCPRequest reports whether msg is an incoming CTCP request (any CTCP PRIVMSG but
+// ACTION) and the configured mode for it.
+func (s *Session) uplinkCTCPRequest(msg irc.Message) (uplinkCTCP, bool) {
 	if msg.Command != "PRIVMSG" {
-		return false
+		return uplinkCTCP{}, false
 	}
 	verb, params, ok := parseCTCP(msg.Trailing())
 	if !ok || strings.EqualFold(verb, "ACTION") {
-		return false
+		return uplinkCTCP{}, false
 	}
 	upper := strings.ToUpper(verb)
 	s.mu.RLock()
 	ctcp := s.ctcp
 	s.mu.RUnlock()
-	// Every mode returns true, bypassing HandleMessage's own applyState.
-	s.applyState(msg)
 	var mode CTCPMode
 	switch upper {
 	case "PING":
@@ -139,15 +147,17 @@ func (s *Session) handleUplinkCTCP(msg irc.Message) bool {
 	default:
 		mode = ctcp.Other()
 	}
-	switch mode {
+	return uplinkCTCP{verb: upper, params: params, mode: mode}, true
+}
+
+// actOnUplinkCTCP drops, answers (edge) or relays (relay) a CTCP request.
+func (s *Session) actOnUplinkCTCP(msg irc.Message, c uplinkCTCP) {
+	switch c.mode {
 	case CTCPModeDisable:
-		return true
 	case CTCPModeEdge:
-		s.replyCTCPEdge(msg, upper, params)
-		return true
+		s.replyCTCPEdge(msg, c.verb, c.params)
 	default: // CTCPModeRelay
 		s.relayCTCPLive(msg)
-		return true
 	}
 }
 
