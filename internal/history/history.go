@@ -91,8 +91,8 @@ func (h *Store) SetMaxLimit(n int) {
 // MaxLimit returns the configured max lines per CHATHISTORY query.
 func (h *Store) MaxLimit() int { return h.maxLimit }
 
-// Store persists a record.
-func (h *Store) Store(ctx context.Context, r Record) error {
+// Store persists r and returns its messages.id (the existing row's id for a replayed keeper line).
+func (h *Store) Store(ctx context.Context, r Record) (int64, error) {
 	return h.db.InsertMessage(ctx, store.Message{
 		NetworkID: r.NetworkID,
 		Target:    r.Target,

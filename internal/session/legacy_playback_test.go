@@ -39,7 +39,7 @@ func storeLine(t *testing.T, hist *history.Store, id int64, ts time.Time, cmd, t
 			msg.Params = []string{target, text}
 		}
 	}
-	if err := hist.Store(context.Background(), history.Record{
+	if _, err := hist.Store(context.Background(), history.Record{
 		NetworkID: id, Target: target, Time: ts, Command: cmd,
 		Source: msg.Source, Raw: msg.Encode(), Text: text,
 	}); err != nil {
@@ -309,7 +309,7 @@ func TestLegacyPlaybackPartialBurstResumes(t *testing.T) {
 func TestLegacyPlaybackSkipsEmptyRaw(t *testing.T) {
 	db, hist, id := openLegacyFixture(t)
 	ts := time.Now().UTC().Add(-time.Hour)
-	if err := hist.Store(context.Background(), history.Record{
+	if _, err := hist.Store(context.Background(), history.Record{
 		NetworkID: id, Target: "#c", Time: ts, Command: "PRIVMSG",
 		Source: "bob!u@h", Raw: "", Text: "x",
 	}); err != nil {

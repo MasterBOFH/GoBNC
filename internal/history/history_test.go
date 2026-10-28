@@ -44,7 +44,7 @@ func seedHistory(t *testing.T) (*Store, int64, time.Time) {
 			Command: "PRIVMSG",
 			Params:  []string{"#c", "m" + string(rune('0'+i))},
 		}
-		if err := h.Store(ctx, Record{
+		if _, err := h.Store(ctx, Record{
 			NetworkID: id, Target: "#c", Time: ts, Command: "PRIVMSG", Source: "a!b@c",
 			Raw: msg.Encode(), Text: msg.Trailing(),
 		}); err != nil {
@@ -80,7 +80,7 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 
 	storeLine := func(i int, cmd string, raw string) {
 		ts := t0.Add(time.Duration(i) * time.Minute)
-		if err := h.Store(ctx, Record{
+		if _, err := h.Store(ctx, Record{
 			NetworkID: id, Target: "#c", Time: ts, Command: cmd, Source: "a!b@c",
 			Raw: raw, Text: "",
 		}); err != nil {
@@ -187,7 +187,7 @@ func TestCHATHISTORYMsgIDMatchesStoredWire(t *testing.T) {
 	if !strings.Contains(wire, "msgid="+wireID) {
 		t.Fatalf("wire form missing msgid: %q", wire)
 	}
-	if err := h.Store(ctx, Record{
+	if _, err := h.Store(ctx, Record{
 		NetworkID: netID, Target: "#c", Time: ts, MsgID: wireID,
 		Command: "PRIVMSG", Source: live.Source, Raw: wire, Text: "hello",
 	}); err != nil {
@@ -235,7 +235,7 @@ func TestCHATHISTORYMsgIDFromColumnWhenRawLacksTag(t *testing.T) {
 	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
 	wireID := "column-only-id"
 	// Raw without msgid tag, but column has the wire id (ingestion recorded it).
-	if err := h.Store(ctx, Record{
+	if _, err := h.Store(ctx, Record{
 		NetworkID: netID, Target: "#c", Time: ts, MsgID: wireID,
 		Command: "PRIVMSG", Source: "a!b@c",
 		Raw: ":a!b@c PRIVMSG #c :hi", Text: "hi",
@@ -343,7 +343,7 @@ func TestCHATHISTORYTargets(t *testing.T) {
 			Command: "PRIVMSG",
 			Params:  []string{target, "hi"},
 		}
-		if err := h.Store(ctx, Record{
+		if _, err := h.Store(ctx, Record{
 			NetworkID: netID, Target: target, Time: ts, Command: "PRIVMSG",
 			Source: msg.Source, Raw: msg.Encode(), Text: "hi",
 		}); err != nil {
@@ -624,7 +624,7 @@ func seedMsgIDHistory(t *testing.T) (*Store, int64) {
 			Command: "PRIVMSG",
 			Params:  []string{"#c", "line" + string(rune('0'+i))},
 		}
-		if err := h.Store(ctx, Record{
+		if _, err := h.Store(ctx, Record{
 			NetworkID: netID, Target: "#c", Time: ts, MsgID: mid,
 			Command: "PRIVMSG", Source: msg.Source, Raw: msg.Encode(), Text: msg.Trailing(),
 		}); err != nil {
@@ -746,7 +746,7 @@ func TestCHATHISTORYTargetsEndTag(t *testing.T) {
 	for i, target := range []string{"#a", "#b", "#c"} {
 		ts := t0.Add(time.Duration(i+1) * time.Minute)
 		msg := irc.Message{Source: "a!b@c", Command: "PRIVMSG", Params: []string{target, "hi"}}
-		if err := h.Store(ctx, Record{
+		if _, err := h.Store(ctx, Record{
 			NetworkID: netID, Target: target, Time: ts, Command: "PRIVMSG",
 			Source: msg.Source, Raw: msg.Encode(), Text: "hi",
 		}); err != nil {

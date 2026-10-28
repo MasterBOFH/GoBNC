@@ -32,13 +32,13 @@ func TestPruneHistoryRetention(t *testing.T) {
 	}
 	old := time.Now().UTC().Add(-48 * time.Hour)
 	recent := time.Now().UTC().Add(-time.Hour)
-	if err := s.Store().InsertMessage(ctx, store.Message{
+	if _, err := s.Store().InsertMessage(ctx, store.Message{
 		NetworkID: id, Target: "#c", Time: old, Command: "PRIVMSG",
 		Source: "a!b@c", Raw: ":a!b@c PRIVMSG #c :old", Text: "old",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Store().InsertMessage(ctx, store.Message{
+	if _, err := s.Store().InsertMessage(ctx, store.Message{
 		NetworkID: id, Target: "#c", Time: recent, Command: "PRIVMSG",
 		Source: "a!b@c", Raw: ":a!b@c PRIVMSG #c :new", Text: "new",
 	}); err != nil {

@@ -25,7 +25,7 @@ func TestQueryLegacyAfterFiltersEvents(t *testing.T) {
 	for _, cmd := range []string{"JOIN", "PRIVMSG", "NOTICE", "PART", "TAGMSG", "TOPIC"} {
 		ts := t0
 		t0 = t0.Add(time.Minute)
-		_ = h.Store(ctx, Record{
+		_, _ = h.Store(ctx, Record{
 			NetworkID: id, Target: "#c", Time: ts, Command: cmd,
 			Source: "a!b@c", Raw: ":" + "a!b@c " + cmd + " #c :x", Text: "x",
 		})
@@ -58,7 +58,7 @@ func TestQueryLegacyAfterUnlimited(t *testing.T) {
 	h := NewWithLimits(db, 100, 0) // unlimited
 	t0 := time.Now().UTC().Add(-time.Hour)
 	for i := 0; i < 5; i++ {
-		_ = h.Store(ctx, Record{
+		_, _ = h.Store(ctx, Record{
 			NetworkID: id, Target: "#c", Time: t0.Add(time.Duration(i) * time.Minute),
 			Command: "PRIVMSG", Source: "a!b@c", Raw: ":a!b@c PRIVMSG #c :x", Text: "x",
 		})

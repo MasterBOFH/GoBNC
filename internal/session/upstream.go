@@ -1003,13 +1003,13 @@ func ensureMessageID(msg irc.Message) irc.Message {
 // downstream.go's echoSelfLocally) — see store.Message.KeeperSeq's doc
 // comment for why this, not msgid, is what makes a replayed line's
 // storage idempotent.
-func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) {
+func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) map[string]int64 {
 	if s.hist == nil {
-		return
+		return nil
 	}
 	targets := s.historyTargets(msg)
 	if len(targets) == 0 {
-		return
+		return nil
 	}
 	ts := time.Now().UTC()
 	if t, ok := msg.Tag("time"); ok {
@@ -1023,8 +1023,9 @@ func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) {
 	// Wire keeps the uplink body (from Raw) and applies our tags — verbatim relay.
 	raw := msg.Wire()
 	text := msg.Trailing()
+	ids := make(map[string]int64, len(targets))
 	for _, target := range targets {
-		_ = s.hist.Store(context.Background(), history.Record{
+		id, err := s.hist.Store(context.Background(), history.Record{
 			NetworkID: s.Network.ID,
 			Target:    target,
 			Time:      ts,
@@ -1035,7 +1036,11 @@ func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) {
 			Text:      text,
 			KeeperSeq: keeperSeq,
 		})
+		if err == nil {
+			ids[target] = id
+		}
 	}
+	return ids
 }
 
 // historyTargets returns folded channel/query names this line should be stored under.

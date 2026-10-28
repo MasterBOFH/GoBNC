@@ -332,7 +332,7 @@ func TestMessagesQueryRetention(t *testing.T) {
 			MsgID: "m" + string(rune('a'+i)), Command: "PRIVMSG", Source: "a!b@c",
 			Raw: "x", Text: "msg",
 		}
-		if err := s.InsertMessage(ctx, m); err != nil {
+		if _, err := s.InsertMessage(ctx, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -449,5 +449,51 @@ func TestResolveFingerprintColons(t *testing.T) {
 		if err != nil || got != fp {
 			t.Errorf("ResolveFingerprint(%q) = %q, %v; want %q", ref, got, err, fp)
 		}
+	}
+}
+
+func TestInsertMessageReturnsIDs(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	nid, err := s.UpsertNetwork(ctx, Network{Name: "n", Host: "h", Port: 6667, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Message{NetworkID: nid, Target: "#c", Time: time.Now(), Command: "PRIVMSG", Source: "a!b@c", Raw: "x", Text: "hi", KeeperSeq: 7}
+	id1, err := s.InsertMessage(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := m
+	other.Target, other.KeeperSeq = "#other", 8
+	if _, err := s.InsertMessage(ctx, other); err != nil { // moves SQLite's last_insert_rowid on
+		t.Fatal(err)
+	}
+	id2, err := s.InsertMessage(ctx, m) // keeper replay of the same line
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == 0 || id1 != id2 {
+		t.Fatalf("duplicate keeper_seq: ids %d, %d; want the same non-zero id", id1, id2)
+	}
+	var rows int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE network_id=? AND target='#c'`, nid).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("%d rows, want 1", rows)
+	}
+
+	m.KeeperSeq = 0 // no keeper line behind it: never deduplicated
+	a, err := s.InsertMessage(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.InsertMessage(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == 0 || b == 0 || a == b || a == id1 {
+		t.Fatalf("keeper_seq 0 inserts: ids %d, %d (first %d); want two new ids", a, b, id1)
 	}
 }

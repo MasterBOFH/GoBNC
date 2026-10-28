@@ -532,13 +532,24 @@ func parseFingerprintIndex(ref string) (int, bool) {
 // reduced), safe: the caller doesn't need to know or care whether this
 // particular call is a first insert or a replay of one already stored.
 // KeeperSeq == 0 always inserts (see Message.KeeperSeq's doc comment).
-func (s *Store) InsertMessage(ctx context.Context, m Message) error {
-	_, err := s.db.ExecContext(ctx, `
+// It returns the row's id: the new row's, or for a replay the one already stored.
+func (s *Store) InsertMessage(ctx context.Context, m Message) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO messages (network_id, target, time, msgid, command, source, raw, text, keeper_seq)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(network_id, target, keeper_seq) WHERE keeper_seq != 0 DO NOTHING`,
 		m.NetworkID, m.Target, formatTime(m.Time), m.MsgID, m.Command, m.Source, m.Raw, m.Text, m.KeeperSeq)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 1 {
+		return res.LastInsertId()
+	}
+	// The keeper_seq unique index rejected a replayed line: report the row it already has.
+	var id int64
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM messages WHERE network_id=? AND target=? AND keeper_seq=?`,
+		m.NetworkID, m.Target, m.KeeperSeq).Scan(&id)
+	return id, err
 }
 
 // DistinctTargets returns every distinct target with stored history on networkID.
