@@ -33,8 +33,10 @@ type Server struct {
 	log     *slog.Logger
 	uid     int
 
-	mu  sync.Mutex
-	cfg config.ModulesConfig
+	mu     sync.Mutex
+	cfg    config.ModulesConfig
+	conns  map[uint64]*Conn
+	nextID uint64
 }
 
 // NewServer returns a server for cfg (Socket already resolved, see config.ResolvedModules).
@@ -42,7 +44,7 @@ func NewServer(cfg config.ModulesConfig, backend Backend, log *slog.Logger) *Ser
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid()}
+	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid(), conns: map[uint64]*Conn{}}
 }
 
 // SetConfig replaces the module list after a rehash. Connections already past hello keep the
@@ -125,28 +127,48 @@ func (s *Server) authorizePeer(c net.Conn) bool {
 	return true
 }
 
-func (s *Server) serveConn(ctx context.Context, c net.Conn) {
-	defer c.Close()
-	r := bufio.NewReader(c)
-	hello, err := s.handshake(r, c)
+func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
+	r := bufio.NewReader(nc)
+	hello, err := s.handshake(r, nc)
 	if err != nil {
 		s.log.Debug("module server: hello failed", "err", err)
+		_ = nc.Close()
 		return
 	}
+	s.mu.Lock()
+	s.nextID++
+	c := newConn(s.nextID, s, nc, hello.module, hello.granted)
+	s.conns[c.id] = c
+	s.mu.Unlock()
 	s.log.Info("module connected", "module", hello.module, "granted", hello.granted)
-	for {
-		f, err := wire.ReadFrame(r)
-		if err != nil {
-			if errors.Is(err, wire.ErrFrameTooLarge) {
-				writeError(c, 0, wire.CodeBadFrame, err.Error())
-			}
-			return
+	c.OnClose(func() {
+		s.mu.Lock()
+		delete(s.conns, c.id)
+		s.mu.Unlock()
+		s.log.Info("module disconnected", "module", hello.module, "overflow", c.overflowed.Load())
+	})
+	stop := context.AfterFunc(ctx, c.Close)
+	defer stop()
+	c.run(ctx, r)
+}
+
+// Conns returns the connections past hello.
+func (s *Server) Conns() []*Conn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Conn, 0, len(s.conns))
+	for _, c := range s.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
+// Broadcast sends an event to every connection granted feature.
+func (s *Server) Broadcast(feature, event string, data any) {
+	for _, c := range s.Conns() {
+		if c.Granted(feature) {
+			c.EnqueueEvent(event, data)
 		}
-		if f.Kind != wire.KindRequest {
-			writeError(c, 0, wire.CodeBadFrame, "modules send requests only")
-			return
-		}
-		writeError(c, f.Request.ID, wire.CodeUnknownMethod, f.Request.Method)
 	}
 }
 
