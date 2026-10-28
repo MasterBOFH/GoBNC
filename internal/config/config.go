@@ -8,11 +8,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/version"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // DefaultMaxClients is the default concurrent downlink connection limit.
@@ -105,6 +107,71 @@ type Config struct {
 	// for backward compatibility with existing configs. Enforced by
 	// internal/downlink before the TLS handshake, let alone any IRC line.
 	AllowedIPs []string `json:"allowed_ips,omitempty"`
+
+	// Modules configures the module socket and which modules may connect with which features
+	// (docs/module-api-design.md).
+	Modules ModulesConfig `json:"modules,omitempty"`
+}
+
+// ModulesConfig is the "modules" block: the module socket and the allowed modules.
+type ModulesConfig struct {
+	// Socket is the module unix socket; empty = gobnc-modules.sock next to the control socket
+	// (see Config.ResolvedModules).
+	Socket string         `json:"socket,omitempty"`
+	List   []ModuleConfig `json:"list,omitempty"`
+}
+
+// ModuleConfig is one allowed module: its name (as sent in hello), the features it may use,
+// and optionally how the brain starts it and the config handed to it.
+type ModuleConfig struct {
+	Name     string          `json:"name"`
+	Exec     string          `json:"exec,omitempty"`
+	Args     []string        `json:"args,omitempty"`
+	Features []string        `json:"features"`
+	Config   json.RawMessage `json:"config,omitempty"`
+}
+
+// moduleNameRE is the allowed shape of a module name.
+var moduleNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// ResolvedModules returns Modules with Socket defaulted to gobnc-modules.sock in the control
+// socket's directory.
+func (c Config) ResolvedModules() ModulesConfig {
+	m := c.Modules
+	if m.Socket == "" {
+		m.Socket = filepath.Join(filepath.Dir(c.ResolvedControlSocket()), "gobnc-modules.sock")
+	}
+	return m
+}
+
+// Module returns the configured module with this name.
+func (m ModulesConfig) Module(name string) (ModuleConfig, bool) {
+	for _, mod := range m.List {
+		if mod.Name == name {
+			return mod, true
+		}
+	}
+	return ModuleConfig{}, false
+}
+
+// validate checks module names (shape, uniqueness) and that every feature is known.
+func (m ModulesConfig) validate() error {
+	seen := map[string]bool{}
+	for _, mod := range m.List {
+		if !moduleNameRE.MatchString(mod.Name) {
+			return fmt.Errorf("module %q: invalid name (want [a-z][a-z0-9-]{0,31})", mod.Name)
+		}
+		if seen[mod.Name] {
+			return fmt.Errorf("module %q: duplicate name", mod.Name)
+		}
+		seen[mod.Name] = true
+		for _, f := range mod.Features {
+			if !wire.KnownFeature(f) {
+				return fmt.Errorf("module %q: unknown feature %q", mod.Name, f)
+			}
+		}
+	}
+	return nil
 }
 
 // DefaultUsername / DefaultRealnameFallback are used when config defaults are empty.
@@ -335,6 +402,9 @@ func LoadJSON(path string) (Config, error) {
 	}
 	if cfg.CTCPOther == "" {
 		cfg.CTCPOther = "relay"
+	}
+	if err := cfg.Modules.validate(); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }

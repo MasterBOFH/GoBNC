@@ -330,3 +330,42 @@ func TestResolvedControlSocket(t *testing.T) {
 		t.Fatalf("home fallback: got %q want %q", got, want)
 	}
 }
+
+func TestModulesDefaultSocketNextToControlSocket(t *testing.T) {
+	cfg := Default()
+	cfg.ControlSocket = "/run/gobnc/ctl.sock"
+	if got := cfg.ResolvedModules().Socket; got != "/run/gobnc/gobnc-modules.sock" {
+		t.Fatalf("default module socket = %q", got)
+	}
+	cfg.Modules.Socket = "/elsewhere/m.sock"
+	if got := cfg.ResolvedModules().Socket; got != "/elsewhere/m.sock" {
+		t.Fatalf("explicit module socket = %q", got)
+	}
+}
+
+func loadModules(t *testing.T, modules string) error {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "cfg.json")
+	if err := os.WriteFile(p, []byte(`{"modules":{"list":`+modules+`}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadJSON(p)
+	return err
+}
+
+func TestModulesValidation(t *testing.T) {
+	if err := loadModules(t, `[{"name":"retecloud","features":["events","send","devices"]}]`); err != nil {
+		t.Fatalf("valid modules rejected: %v", err)
+	}
+	err := loadModules(t, `[{"name":"a","features":[]},{"name":"a","features":[]}]`)
+	if err == nil || err.Error() != `module "a": duplicate name` {
+		t.Fatalf("duplicate name: err = %v", err)
+	}
+	err = loadModules(t, `[{"name":"x","features":["events","y"]}]`)
+	if err == nil || err.Error() != `module "x": unknown feature "y"` {
+		t.Fatalf("unknown feature: err = %v", err)
+	}
+	if err := loadModules(t, `[{"name":"Bad_Name","features":[]}]`); err == nil {
+		t.Fatal("invalid module name accepted")
+	}
+}
