@@ -807,6 +807,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	if len(dests) == 0 && msg.Command != "354" && msg.Command != "315" {
 		s.emitUplinkLineLocked(msg, ids)
 	}
+	s.emitRosterDoneLocked()
 	s.busMu.Unlock()
 	s.flushTrackerWrites()
 	if len(dests) > 0 {

@@ -99,6 +99,9 @@ type Session struct {
 	// doc comment for why the actual uplink write can't happen from
 	// SeedFromBlob itself.
 	pendingNamesRefresh []string
+	// rosterDone lists channels (folded) whose roster a 366 just confirmed, for the module
+	// state/members event (emitRosterDoneLocked).
+	rosterDone []string
 	// pendingUserHostRefresh mirrors pendingNamesRefresh for
 	// RefreshSelfUserHost — true when SeedFromBlob left self.Host unknown.
 	pendingUserHostRefresh bool

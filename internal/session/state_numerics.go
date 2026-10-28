@@ -208,7 +208,11 @@ func (s *Session) state366Locked(msg irc.Message) {
 	if len(msg.Params) < 2 {
 		return
 	}
-	if ch := s.channels[s.isupport.CaseMapping.Canonical(msg.Param(1))]; ch != nil {
+	folded := s.isupport.CaseMapping.Canonical(msg.Param(1))
+	if ch := s.channels[folded]; ch != nil {
+		if !ch.RosterKnown {
+			s.rosterDone = append(s.rosterDone, folded) // see emitRosterDoneLocked
+		}
 		ch.RosterKnown = true
 	}
 }
