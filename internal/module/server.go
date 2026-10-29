@@ -53,7 +53,8 @@ type Server struct {
 	conns  map[uint64]*Conn
 	nextID uint64
 
-	commands commandRegistry
+	commands    commandRegistry
+	onListening func()
 
 	authMu    sync.Mutex
 	authFails map[string][]time.Time // auth.check failures per remote IP (rate limit)
@@ -111,6 +112,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("module server: %w", err)
+	}
+	s.mu.Lock()
+	onListening := s.onListening
+	s.mu.Unlock()
+	if onListening != nil {
+		onListening()
 	}
 	go func() {
 		<-ctx.Done()
@@ -190,6 +197,25 @@ func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
 	stop := context.AfterFunc(ctx, c.Close)
 	defer stop()
 	c.run(ctx, r)
+}
+
+// OnListening sets f to run once Serve's socket accepts connections (call before Serve).
+func (s *Server) OnListening(f func()) {
+	s.mu.Lock()
+	s.onListening = f
+	s.mu.Unlock()
+}
+
+// Connected reports whether a module of that name is connected (past hello).
+func (s *Server) Connected(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.conns {
+		if c.module == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Conns returns the connections past hello.

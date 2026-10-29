@@ -104,11 +104,20 @@ func (s *Server) startModules(ctx context.Context) {
 	s.mu.RUnlock()
 	srv := module.NewServer(cfg, moduleBackend{s}, s.log.With("component", "modules"))
 	s.modules.Store(srv)
+	listening := make(chan struct{})
+	srv.OnListening(func() { close(listening) })
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 			s.log.Error("module socket stopped", "err", err)
+		}
+	}()
+	go func() {
+		select {
+		case <-listening:
+			s.spawnModules(cfg)
+		case <-ctx.Done():
 		}
 	}()
 }
