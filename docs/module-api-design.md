@@ -1,7 +1,7 @@
 # Module API design
 
-Status: brain side implemented (branch `module-api`); the first module, `gobnc-retecloud`, in
-progress. Spec: `specs/2026-10-23-gobnc-module-api-lite.md`.
+Status: implemented on branch `module-api`: the brain side and the first module,
+`gobnc-retecloud` (conformance below). Spec: `specs/2026-10-23-gobnc-module-api-lite.md`.
 
 A **module** is a separate process that connects to the brain over a unix socket, negotiates
 features, subscribes to per-network events with an atomic snapshot, reads history, activity and
@@ -281,6 +281,19 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   (existing) unchanged.
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
+
+## Conformance
+
+retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKEND=gobnc`
+(`docker-compose.gobnc.yml`; see the harness README). Against the pinned retecloud-api revision
+**`d016cb5`**, harness commit `890f1b2`: `test_lite_mode`, `test_lite_pipelining`,
+`test_casemapping`, `test_compression`, `test_reply_routing`, `test_history_paging`,
+`test_lite_bootstrap_cache`, `test_session_toggle` and `test_buffer_close` pass on ircu2 and solanum
+(22 passed; 4 skipped because they need full/state mode or REST).
+
+Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
+`buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
+`buffer_state`; identity `realname`, `secure`, `bot` and `oper` are not known to the brain.
 
 ## Configuration
 
