@@ -57,8 +57,9 @@ func TestReopenForMessageChangesOnlyNotOpenDevices(t *testing.T) {
 	s, nid := deviceStore(t)
 	ctx := context.Background()
 	for _, d := range []string{"open", "closed", "none"} {
-		_, _ = s.TouchDevice(ctx, d, "")
+		_ = s.SetDeviceNetwork(ctx, d, nid, true)
 	}
+	_ = s.SetDeviceNetwork(ctx, "elsewhere", nid, false) // does not follow this network
 	_ = s.SetBufferOpen(ctx, "open", nid, "bob", "bob", true, 0)
 	_ = s.SetBufferOpen(ctx, "closed", nid, "bob", "bob", false, 10)
 
@@ -100,5 +101,30 @@ func TestDeletingNetworkCascadesDeviceRows(t *testing.T) {
 	_ = s.DeleteDevice(ctx, "phone")
 	if devs, _ := s.ListDevices(ctx); len(devs) != 0 {
 		t.Fatalf("device not deleted: %v", devs)
+	}
+}
+
+func TestReopenSkipsAReplayOfALineClosedAfter(t *testing.T) {
+	s, nid := deviceStore(t)
+	ctx := context.Background()
+	_ = s.SetDeviceNetwork(ctx, "phone", nid, true)
+	_ = s.SetBufferOpen(ctx, "phone", nid, "bob", "bob", false, 100) // closed after line 100
+	if changed, _ := s.ReopenForMessage(ctx, nid, "bob", "Bob", 100); len(changed) != 0 {
+		t.Fatalf("replay of line 100 reopened %v", changed)
+	}
+	if changed, _ := s.ReopenForMessage(ctx, nid, "bob", "Bob", 101); len(changed) != 1 {
+		t.Fatalf("a new line did not reopen: %v", changed)
+	}
+}
+
+func TestDeviceSeededFlag(t *testing.T) {
+	s, nid := deviceStore(t)
+	ctx := context.Background()
+	if ok, _ := s.DeviceSeeded(ctx, "phone", nid); ok {
+		t.Fatal("seeded before marking")
+	}
+	_ = s.MarkDeviceSeeded(ctx, "phone", nid)
+	if ok, _ := s.DeviceSeeded(ctx, "phone", nid); !ok {
+		t.Fatal("not seeded after marking")
 	}
 }

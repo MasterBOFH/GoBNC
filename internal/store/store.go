@@ -166,6 +166,7 @@ func (s *Store) migrate() error {
 	// Existing DBs created before keeper_seq — must run before the unique
 	// index below, which references the column.
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN keeper_seq INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE device_networks ADD COLUMN seeded INTEGER NOT NULL DEFAULT 0`)
 	// keeper_seq is the keeper's own per-network line sequence number (see
 	// internal/keeper.LineMsg.Seq) — a stable, deterministic identity for
 	// "this exact wire line" that survives however many times a brain

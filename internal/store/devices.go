@@ -23,6 +23,7 @@ var deviceMigrations = []string{
 		client_id TEXT NOT NULL REFERENCES devices(client_id) ON DELETE CASCADE,
 		network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
 		subscribed INTEGER NOT NULL DEFAULT 0,
+		seeded INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY(client_id, network_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS open_buffers (
@@ -157,7 +158,8 @@ func (s *Store) SetBufferOpen(ctx context.Context, clientID string, networkID in
 }
 
 // ReopenForMessage is the rule "a new conversation line in a query opens it on every device":
-// for each device where the buffer is not open, insert it open — or reopen a closed row with
+// for each device following the network where the buffer is not open (and was not closed after
+// this line — a keeper replay of a stored line), insert it open — or reopen a closed row with
 // closed_at_id raised to id-1, so what was unread at the close stays dismissed but the new line
 // (id) counts. It returns the client_ids whose state changed.
 func (s *Store) ReopenForMessage(ctx context.Context, networkID int64, target, display string, id int64) ([]string, error) {
@@ -166,9 +168,13 @@ func (s *Store) ReopenForMessage(ctx context.Context, networkID int64, target, d
 		return nil, err
 	}
 	defer tx.Rollback()
+	// Devices following the network where the buffer is not open, and was not closed after this
+	// line (a replayed line must not undo a close).
 	rows, err := tx.QueryContext(ctx, `SELECT d.client_id FROM devices d
+		JOIN device_networks dn ON dn.client_id=d.client_id AND dn.network_id=? AND dn.subscribed=1
 		LEFT JOIN open_buffers b ON b.client_id=d.client_id AND b.network_id=? AND b.target=?
-		WHERE b.client_id IS NULL OR b.is_open=0 ORDER BY d.client_id`, networkID, target)
+		WHERE b.client_id IS NULL OR (b.is_open=0 AND b.closed_at_id < ?) ORDER BY d.client_id`,
+		networkID, networkID, target, id)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +202,21 @@ func (s *Store) ReopenForMessage(ctx context.Context, networkID int64, target, d
 		}
 	}
 	return changed, tx.Commit()
+}
+
+// DeviceSeeded reports whether the device's open set on a network was seeded (MarkDeviceSeeded).
+func (s *Store) DeviceSeeded(ctx context.Context, clientID string, networkID int64) (bool, error) {
+	return s.exists(ctx, `SELECT 1 FROM device_networks WHERE client_id=? AND network_id=? AND seeded=1`, clientID, networkID)
+}
+
+// MarkDeviceSeeded records that the device's open set on a network was seeded.
+func (s *Store) MarkDeviceSeeded(ctx context.Context, clientID string, networkID int64) error {
+	if err := s.ensureDevice(ctx, clientID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO device_networks (client_id, network_id, seeded) VALUES (?, ?, 1)
+		ON CONFLICT(client_id, network_id) DO UPDATE SET seeded=1`, clientID, networkID)
+	return err
 }
 
 // DeviceHasBuffers reports whether the device has any buffer row on a network.

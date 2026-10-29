@@ -114,6 +114,12 @@ floor raised to id−1) and emits `buffer_open` reason `message` before the line
 ReteCloud, only a PRIVMSG opens a query (ours included, CTCP ACTION included; notices, other CTCP,
 server lines and `$` masks never). `devices.seed` gives a new device the queries with unread lines.
 
+The rule applies to devices that follow the network (`device_networks.subscribed`), and never
+reopens a buffer closed after the line (a keeper replay of a stored line). Seeding runs once per
+device and network (`seeded`). Known limits: the reopen and seeding queries run under `busMu`
+(a transaction per stored query PRIVMSG; seeding reads every query target once), and a
+buffer_open names the query as that line spelled the nick.
+
 ### Readiness and reload
 
 The module socket starts before the networks are registered (`Server.Run` → `startModules`), so a

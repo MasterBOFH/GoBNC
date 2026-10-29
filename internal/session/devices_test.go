@@ -32,8 +32,8 @@ func eventsAround(sink *recSink, key, text string) (opens []wire.BufferOpenEvent
 func TestDMOpensQueryOnEveryDeviceBeforeItsLine(t *testing.T) {
 	s, sink := newEnvelopeSession(t) // peer already has a query in history
 	ctx := context.Background()
-	_, _ = s.store.TouchDevice(ctx, "phone", "")
-	_, _ = s.store.TouchDevice(ctx, "pad", "")
+	_ = s.store.SetDeviceNetwork(ctx, "phone", s.Network.ID, true)
+	_ = s.store.SetDeviceNetwork(ctx, "pad", s.Network.ID, true)
 	_ = s.store.SetBufferOpen(ctx, "pad", s.Network.ID, "peer", "peer", false, 1) // closed earlier
 
 	feed(s, ":peer!p@h PRIVMSG me :new dm")
@@ -54,7 +54,7 @@ func TestDMOpensQueryOnEveryDeviceBeforeItsLine(t *testing.T) {
 
 func TestNoticeAndCTCPDoNotOpenQueries(t *testing.T) {
 	s, sink := newEnvelopeSession(t)
-	_, _ = s.store.TouchDevice(context.Background(), "phone", "")
+	_ = s.store.SetDeviceNetwork(context.Background(), "phone", s.Network.ID, true)
 	feed(s, ":bob!b@h NOTICE me :a notice", ":carol!c@h PRIVMSG me :\x01VERSION\x01",
 		":srv.example PRIVMSG me :from the server", ":peer!p@h PRIVMSG #a :channel line")
 	for _, ev := range sink.events() {
@@ -88,5 +88,23 @@ func TestSeedDeviceOpensQueriesWithUnreadLines(t *testing.T) {
 	}
 	if again, _ := s.SeedDevice("fresh"); len(again) != 0 {
 		t.Fatalf("second seed opened %v", again)
+	}
+}
+
+func TestSeedSkipsStatusmsgMaskAndNoticeOnlyTargets(t *testing.T) {
+	s, _ := newEnvelopeSession(t)
+	feed(s, ":op!o@h PRIVMSG @#a :ops only", ":oper!o@h PRIVMSG $*.example :global",
+		":NickServ!s@services. NOTICE me :identify", ":Carol!c@h PRIVMSG me :hi")
+	_ = s.store.SetBufferOpen(context.Background(), "fresh", s.Network.ID, "carol", "Carol", true, 0) // a row first
+	seeded, err := s.SeedDevice("fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, b := range seeded {
+		got[b] = true
+	}
+	if !got["peer"] || got["op"] || got["oper"] || got["NickServ"] || len(seeded) != 2 {
+		t.Fatalf("seeded = %v, want peer and Carol only", seeded)
 	}
 }

@@ -19,9 +19,10 @@ type Activity struct {
 
 // UnreadLine is an unread PRIVMSG/NOTICE.
 type UnreadLine struct {
-	ID     int64
-	Source string
-	Text   string
+	ID      int64
+	Command string
+	Source  string
+	Text    string
 }
 
 // BufferActivity reads target's newest message and its unread lines: PRIVMSG/NOTICE with time
@@ -41,7 +42,7 @@ func (s *Store) BufferActivity(ctx context.Context, networkID int64, target stri
 	}
 	a.LastID = id.Int64
 	a.LastTime, _ = time.Parse(time.RFC3339Nano, ts.String)
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source, text FROM messages
+	rows, err := s.db.QueryContext(ctx, `SELECT id, command, source, text FROM messages
 		WHERE network_id=? AND target=? AND time>? AND id>? AND command IN ('PRIVMSG','NOTICE')
 		  AND (substr(text, 1, 1) != char(1) OR substr(text, 1, 7) = char(1) || 'ACTION')
 		ORDER BY id DESC LIMIT ?`, networkID, target, formatTime(marker), floorID, MaxActivityRows)
@@ -51,7 +52,7 @@ func (s *Store) BufferActivity(ctx context.Context, networkID int64, target stri
 	defer rows.Close()
 	for rows.Next() {
 		var l UnreadLine
-		if err := rows.Scan(&l.ID, &l.Source, &l.Text); err != nil {
+		if err := rows.Scan(&l.ID, &l.Command, &l.Source, &l.Text); err != nil {
 			return a, err
 		}
 		a.Unread = append(a.Unread, l)

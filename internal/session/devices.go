@@ -52,10 +52,10 @@ func (s *Session) reopenQueryLocked(msg irc.Message, target string, id int64) {
 	}
 }
 
-// SeedDevice gives a device its first open set on this network: when it has no buffer rows
-// here yet, every query with a conversation line after the shared read marker (not a CTCP
-// request, not server traffic) is opened and announced with buffer_open reason "seed". It
-// returns the buffers opened (none when the device already had rows).
+// SeedDevice gives a device its first open set on this network, once (DeviceSeeded): every
+// query with an unread PRIVMSG from the peer after the shared read marker (not a CTCP request,
+// not server traffic — the live rule's lines) is opened and announced with buffer_open reason
+// "seed". It returns the buffers opened.
 func (s *Session) SeedDevice(clientID string) ([]string, error) {
 	if s.store == nil || s.Network.ID == 0 {
 		return nil, nil
@@ -63,8 +63,8 @@ func (s *Session) SeedDevice(clientID string) ([]string, error) {
 	ctx := context.Background()
 	s.busMu.Lock()
 	defer s.busMu.Unlock()
-	has, err := s.store.DeviceHasBuffers(ctx, clientID, s.Network.ID)
-	if err != nil || has {
+	seeded, err := s.store.DeviceSeeded(ctx, clientID, s.Network.ID)
+	if err != nil || seeded {
 		return nil, err
 	}
 	targets, err := s.store.DistinctTargets(ctx, s.Network.ID)
@@ -72,44 +72,47 @@ func (s *Session) SeedDevice(clientID string) ([]string, error) {
 		return nil, err
 	}
 	s.mu.RLock()
-	chantypes := s.isupport.Raw["CHANTYPES"]
+	chantypes, statusmsg := s.isupport.Raw["CHANTYPES"], s.isupport.Raw["STATUSMSG"]
 	s.mu.RUnlock()
-	var seeded []string
+	var seededBufs []string
 	for _, target := range targets {
-		if target == s.Fold(wire.ServerBuffer) || isChannelTarget(target, chantypes) {
+		if target == "" || target == s.Fold(wire.ServerBuffer) || target[0] == '$' ||
+			strings.IndexByte(statusmsg, target[0]) >= 0 || isChannelTarget(target, chantypes) {
 			continue
 		}
 		var marker time.Time
 		if ts, ok, err := s.store.GetReadMarker(ctx, s.Network.ID, target); err != nil {
-			return seeded, err
+			return seededBufs, err
 		} else if ok {
 			marker, _ = parseMarkTime(ts)
 		}
 		a, err := s.store.BufferActivity(ctx, s.Network.ID, target, marker, 0)
 		if err != nil {
-			return seeded, err
+			return seededBufs, err
 		}
 		display := ""
-		for _, l := range a.Unread {
-			if !strings.Contains(l.Source, "!") {
-				continue // server-sourced
+		for _, l := range a.Unread { // newest first: the peer's current spelling
+			if l.Command != "PRIVMSG" || !strings.Contains(l.Source, "!") {
+				continue
+			}
+			if verb, _, ok := parseCTCP(l.Text); ok && !strings.EqualFold(verb, "ACTION") {
+				continue
 			}
 			if nick := sourceNickOf(l.Source); !s.isSelfNick(nick) {
 				display = nick
-			} else if display == "" {
-				display = target
+				break
 			}
 		}
 		if display == "" {
 			continue
 		}
 		if err := s.store.SetBufferOpen(ctx, clientID, s.Network.ID, target, display, true, 0); err != nil {
-			return seeded, err
+			return seededBufs, err
 		}
-		seeded = append(seeded, display)
+		seededBufs = append(seededBufs, display)
 		s.emitLocked(wire.BufferOpenEvent{Network: s.Network.ID, ClientID: clientID, Buffer: display, Key: target, Reason: wire.OpenSeed})
 	}
-	return seeded, nil
+	return seededBufs, s.store.MarkDeviceSeeded(ctx, clientID, s.Network.ID)
 }
 
 // IsChannel reports whether name is a channel on this network (ISUPPORT CHANTYPES).

@@ -62,15 +62,7 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 	chantypes := s.isupport.Raw["CHANTYPES"]
 	statusmsg := s.isupport.Raw["STATUSMSG"]
 	s.mu.RUnlock()
-	isChan := func(name string) bool {
-		if name == "" {
-			return false
-		}
-		if chantypes != "" {
-			return strings.IndexByte(chantypes, name[0]) >= 0
-		}
-		return isChannelName(name)
-	}
+	isChan := func(name string) bool { return isChannelTarget(name, chantypes) }
 	add := func(name string, storedAs ...string) {
 		key := cm.Canonical(name)
 		for _, b := range ev.Buffers {
