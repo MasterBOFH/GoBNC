@@ -6,25 +6,19 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
 )
 
-// ModuleLockPath is the lock file a running module holds (flock) so the brain never starts it
-// twice; pkg/moduleapi takes it in the module process.
-func ModuleLockPath(socket, name string) string {
-	return filepath.Join(filepath.Dir(socket), "gobnc-module-"+name+".lock")
-}
-
 // spawnModules starts each configured module with exec set that is neither connected nor
-// holding its lock — detached (own session, stdio on /dev/null) so it outlives this brain, the
+// holding its lock (moduleapi.LockPath, taken by the module process itself) — detached (own session, stdio on /dev/null) so it outlives this brain, the
 // same pattern as internal/keeperboot's keeper spawn.
 func (s *Server) spawnModules(cfg config.ModulesConfig) {
 	srv := s.modules.Load()
 	for _, m := range cfg.List {
-		if m.Exec == "" || (srv != nil && srv.Connected(m.Name)) || lockHeld(ModuleLockPath(cfg.Socket, m.Name)) {
+		if m.Exec == "" || (srv != nil && srv.Connected(m.Name)) || lockHeld(moduleapi.LockPath(cfg.Socket, m.Name)) {
 			continue
 		}
 		pid, err := spawnModule(m, cfg.Socket)
