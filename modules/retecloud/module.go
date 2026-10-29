@@ -220,7 +220,9 @@ func (n *network) isChannel(name string) bool {
 	return name != "" && strings.IndexByte(n.chantypes, name[0]) >= 0
 }
 
-func (n *network) isMe(nick string) bool { return nick != "" && n.nick != "" && n.cm.Equal(nick, n.nick) }
+func (n *network) isMe(nick string) bool {
+	return nick != "" && n.nick != "" && n.cm.Equal(nick, n.nick)
+}
 
 // brainConnected runs after every brain hello (first connect and each reconnect).
 func (m *Module) brainConnected() {
