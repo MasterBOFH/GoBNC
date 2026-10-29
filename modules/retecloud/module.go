@@ -287,9 +287,6 @@ func (m *Module) dropConn(c *wsConn) {
 	c.sessions = map[int64]*liteSession{}
 }
 
-// resume brings the module's state back in step after a brain (re)connect.
-func (m *Module) resume() {}
-
 // handle runs one client frame on the loop.
 func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 	if !m.conns[c] {

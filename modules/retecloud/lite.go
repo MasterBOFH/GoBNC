@@ -40,6 +40,7 @@ type liteSub struct {
 	name         string
 	fromSeq      uint64      // line events with seq <= this are already in the snapshot
 	historyMaxID int64       // live lines with id <= this were already sent as history
+	lastSent     int64       // newest message id sent to the connection for this buffer
 	members      membersMode // member form for buffer_state refreshes
 }
 

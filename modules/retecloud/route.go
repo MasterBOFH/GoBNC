@@ -163,6 +163,7 @@ func (m *Module) liteAllows(c *wsConn, n *network, ls *liteSession, line wire.Li
 		if line.Seq <= sub.fromSeq || (b.ID > 0 && b.ID <= sub.historyMaxID) {
 			return false // already in the subscribe's snapshot or history
 		}
+		sub.lastSent = max(sub.lastSent, b.ID)
 		return true
 	}
 	if r.activity && len(line.Buffers) > 0 {

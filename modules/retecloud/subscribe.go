@@ -75,7 +75,7 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 	if _, ok := page["has_more_after"]; !ok {
 		page["has_more_after"] = false
 	}
-	ls.subs[n.key(name)] = &liteSub{name: name, fromSeq: snap.Seq, historyMaxID: maxID, members: req.Members.mode}
+	ls.subs[n.key(name)] = &liteSub{name: name, fromSeq: snap.Seq, historyMaxID: maxID, lastSent: maxID, members: req.Members.mode}
 	data := map[string]interface{}{"buffer": name, "state": state, "messages": out, "has_more": hasMore}
 	for k, v := range page {
 		data[k] = v
