@@ -250,3 +250,48 @@ func compactMember(nick, memberModes, modes, symbols string) string {
 	b.WriteString(nick)
 	return b.String()
 }
+
+func (m *Module) handleSubscribeBuffer(c *wsConn, msg *ClientMessage) {
+	var req SubscribeBufferRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "Invalid request data"))
+		return
+	}
+	if msg.SessionID == "" {
+		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "session_id is required"))
+		return
+	}
+	n := m.networkFor(msg.SessionID)
+	if n == nil || c.sessions[n.id] == nil {
+		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "sync_session with sync_mode lite required"))
+		return
+	}
+	m.requestSubscribe(c, n, msg.RequestID, req, nil)
+}
+
+// handleUnsubscribeBuffer ends a subscription; the buffer's badge goes back to the activity
+// stream.
+func (m *Module) handleUnsubscribeBuffer(c *wsConn, msg *ClientMessage) {
+	var req SubscribeBufferRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil || strings.TrimSpace(req.Buffer) == "" {
+		c.send(errorFrame(frameUnsubscribeBuffer, msg.RequestID, "buffer is required"))
+		return
+	}
+	n := m.networkFor(msg.SessionID)
+	var ls *liteSession
+	if n != nil {
+		ls = c.sessions[n.id]
+	}
+	if ls == nil {
+		c.send(errorFrame(frameUnsubscribeBuffer, msg.RequestID, "sync_session with sync_mode lite required"))
+		return
+	}
+	key := n.key(req.Buffer)
+	delete(ls.subs, key)
+	if ls.activity[key] != nil {
+		ls.dirty[key] = true
+	}
+	c.send(ServerMessage{Type: frameUnsubscribeBuffer + "_success", RequestID: msg.RequestID, SessionID: msg.SessionID,
+		Data: map[string]interface{}{"buffer": req.Buffer}})
+	m.flushActivity(c, ls)
+}

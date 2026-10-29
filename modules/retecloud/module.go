@@ -308,6 +308,10 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		m.handleSyncSession(c, msg)
 	case "unsync_session":
 		m.handleUnsyncSession(c, msg)
+	case frameSubscribeBuffer:
+		m.handleSubscribeBuffer(c, msg)
+	case frameUnsubscribeBuffer:
+		m.handleUnsubscribeBuffer(c, msg)
 	case "create_session":
 		c.send(errorFrame("create_session", msg.RequestID, "Not supported"))
 	default:
