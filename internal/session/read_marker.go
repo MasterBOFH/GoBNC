@@ -8,6 +8,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/store"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 const readMarkerCap = "draft/read-marker"
@@ -36,7 +37,12 @@ func (s *Session) handleMARKREAD(d Downlink, msg irc.Message) error {
 	if err != nil {
 		return d.Send(failMARKREAD("INVALID_PARAMS", rawTS, "Invalid parameters"))
 	}
+	s.busMu.Lock()
 	stored, updated, err := s.setReadMarkerIfNewer(folded, norm)
+	if err == nil && updated {
+		s.emitReadMarkerLocked(display, folded, stored)
+	}
+	s.busMu.Unlock()
 	if err != nil {
 		return d.Send(failMARKREAD("INTERNAL_ERROR", display, "The read timestamp could not be set"))
 	}
@@ -46,6 +52,18 @@ func (s *Session) handleMARKREAD(d Downlink, msg irc.Message) error {
 		s.broadcastMarkRead(d.ID(), out)
 	}
 	return nil
+}
+
+// emitReadMarkerLocked tells modules a buffer's read marker moved to ts. Caller holds busMu.
+func (s *Session) emitReadMarkerLocked(display, folded, ts string) {
+	if !s.hasSinksLocked() {
+		return
+	}
+	ev := wire.ReadMarkerEvent{Network: s.Network.ID, Buffer: display, Key: folded, Time: ts}
+	if t, err := parseMarkTime(ts); err == nil && s.store != nil && s.Network.ID != 0 {
+		ev.ID, _ = s.store.IDAtOrBefore(context.Background(), s.Network.ID, folded, t)
+	}
+	s.emitLocked(ev)
 }
 
 func (s *Session) getReadMarker(foldedTarget string) (ts string, err error) {

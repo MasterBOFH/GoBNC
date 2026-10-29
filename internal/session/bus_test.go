@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
@@ -56,9 +57,13 @@ func newBusSession(t *testing.T) *Session {
 	return s
 }
 
+// feedSeq numbers fed lines like keeper seqs, unique across feed calls (history dedupes a
+// repeated (target, seq)).
+var feedSeq atomic.Uint64
+
 func feed(s *Session, lines ...string) {
-	for i, l := range lines {
-		s.HandleLine([]byte(l), uint64(100+i))
+	for _, l := range lines {
+		s.HandleLine([]byte(l), 1000+feedSeq.Add(1))
 	}
 }
 

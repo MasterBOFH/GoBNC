@@ -14,6 +14,13 @@ import (
 // subscriber, snapshot + the events delivered after it = the state that follows, with nothing
 // missed or applied twice. Never acquire busMu while holding s.mu.
 //
+// Paths holding busMu: HandleMessage (uplink lines, incl. CTCP requests and labeled
+// self-echoes), HandleLine's pre-registration applyState, HandleRegistrationLine's 001 nick,
+// handleCAPLine, completeRegistration's state flip, SeedFromBlob's seeding, echoSelfLocally
+// (local self-echo) and handleMARKREAD's set. Fan-out to downlinks and anything that may
+// re-enter one of these (flushHeldAfterRegister → HandleClientMessage) runs after busMu is
+// released.
+//
 // Emitting is a non-blocking hand-off to each sink (EventSink.Deliver); the bus never waits on
 // a module.
 

@@ -79,7 +79,9 @@ func (s *Session) HandleLine(raw []byte, seq uint64) {
 		// HandleRegistered below not need a registration.State parameter
 		// at all: by the time completeRegistration runs, s.isupport/
 		// s.rpl002-4/s.ircd/s.self.UModes are already exactly right.
+		s.busMu.Lock()
 		s.applyState(msg)
+		s.busMu.Unlock()
 		s.HandleRegistrationLine(msg)
 		return
 	}
@@ -138,6 +140,7 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 		return
 	}
 
+	s.busMu.Lock() // 001 sets our nick
 	s.mu.Lock()
 	if msg.Command == "001" && len(msg.Params) > 0 {
 		actual := msg.Params[0]
@@ -163,6 +166,7 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	}
 	gotWelcome := s.gotWelcome
 	s.mu.Unlock()
+	s.busMu.Unlock()
 
 	if visible {
 		for _, d := range targets {
@@ -212,9 +216,11 @@ func isRegistrationVisible(cmd string) bool {
 // a stray extra 376/422 (or, in principle, a duplicate call from anywhere
 // else) can't re-fire the completion side effects.
 func (s *Session) completeRegistration() {
+	s.busMu.Lock() // registered flips: the snapshot's state
 	s.mu.Lock()
 	if s.registered {
 		s.mu.Unlock()
+		s.busMu.Unlock()
 		return
 	}
 	prevOffer := caps.Offered(nil) // a fresh registration always starts from an empty upCaps (see HandleDisconnect)
@@ -239,6 +245,7 @@ func (s *Session) completeRegistration() {
 	s.regBuffer = nil
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
+	s.busMu.Unlock()
 
 	_, nowSASL := s.refreshSASLOffer()
 	s.mu.Lock()
@@ -280,6 +287,9 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 	if len(msg.Params) < 2 {
 		return
 	}
+	// CAP ACK/NEW/DEL change the caps a snapshot reports.
+	s.busMu.Lock()
+	defer s.busMu.Unlock()
 	sub := strings.ToUpper(msg.Params[1])
 	trailing := msg.Trailing()
 	switch sub {

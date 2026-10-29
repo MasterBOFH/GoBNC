@@ -512,8 +512,13 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	echo = ensureMessageID(echo)
 	// keeperSeq=0: this echo is synthesized locally for clients when the
 	// network doesn't support echo-message, not derived from any keeper
-	// line — see maybeStoreHistory's own doc comment.
-	s.maybeStoreHistory(echo, 0)
+	// line — see maybeStoreHistory's own doc comment. Stored and emitted
+	// to modules under busMu like an uplink line (see bus.go).
+	s.busMu.Lock()
+	pre := s.routingBefore(echo)
+	ids := s.maybeStoreHistory(echo, 0)
+	s.emitUplinkLineLocked(echo, ids, pre, clientLabel)
+	s.busMu.Unlock()
 
 	// Snapshot then release before rewriteFor — see HandleMessage's own
 	// comment on this pattern for why holding s.mu across a call that

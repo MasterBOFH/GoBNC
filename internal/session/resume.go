@@ -50,6 +50,7 @@ import (
 func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 	var resumedChannels []string
 
+	s.busMu.Lock()
 	s.mu.Lock()
 	// isupport first: channel case-mapping below depends on it being
 	// current. Snapshot's own first-push order already happens to put
@@ -134,6 +135,7 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 	// is the write, deferred to after LiveReady like NAMES/USERHOST.
 	s.pendingUModeRefresh = true
 	s.mu.Unlock()
+	s.busMu.Unlock()
 
 	s.completeRegistration()
 }

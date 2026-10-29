@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // MaxMessageID is the newest messages.id stored for networkID (0 when none).
@@ -23,4 +24,12 @@ func (s *Store) HasTarget(ctx context.Context, networkID int64, target string) (
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// IDAtOrBefore is the newest message id of (networkID, target) with time ≤ t (0 when none).
+func (s *Store) IDAtOrBefore(ctx context.Context, networkID int64, target string, t time.Time) (int64, error) {
+	var id sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM messages WHERE network_id=? AND target=? AND time<=?`,
+		networkID, target, formatTime(t)).Scan(&id)
+	return id.Int64, err
 }
