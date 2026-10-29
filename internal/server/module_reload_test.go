@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
-// readLines collects n line events for buffer "peer" from mod, returning their texts by id.
+// readPeerLines collects n line events for buffer "peer" from mod, returning their texts by id.
 func readPeerLines(t *testing.T, mod *modTestClient, n int) map[int64]string {
 	t.Helper()
 	got := map[int64]string{}
@@ -106,9 +107,14 @@ func TestModuleSurvivesBrainReload(t *testing.T) {
 	s1.detachFromKeeper()
 	s1.cancel()
 	for { // the old brain closes the module connection
-		if _, err := mod.read(5 * time.Second); err != nil {
-			break
+		_, err := mod.read(5 * time.Second)
+		if err == nil {
+			continue
 		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("the old brain never closed the module connection")
+		}
+		break
 	}
 	time.Sleep(50 * time.Millisecond) // the old module server's cleanup has run
 	for i := 6; i <= 10; i++ {
@@ -140,8 +146,11 @@ func TestModuleSurvivesBrainReload(t *testing.T) {
 		if werr := mod2.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: n.ID, Buffer: "peer", AfterID: &lastID, Limit: 100}, &page); werr != nil {
 			t.Fatal(werr)
 		}
-		if len(page.Messages) >= 5 || time.Now().After(deadline) {
+		if len(page.Messages) >= 5 {
 			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("history after id %d has %d lines, want the 5 sent during the reload", lastID, len(page.Messages))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

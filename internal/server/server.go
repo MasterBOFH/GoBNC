@@ -418,6 +418,7 @@ func (s *Server) bootNetworks(nets []store.Network) error {
 // keeper process itself, a separate, deliberate operator action this
 // method does not take on the caller's behalf.
 func (s *Server) detachFromKeeper() {
+	s.modulesReady.Store(false) // no networks to write to any more
 	if s.keeperClient != nil {
 		_ = s.keeperClient.Close()
 	}

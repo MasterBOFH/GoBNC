@@ -13,6 +13,9 @@ import (
 // handleEvent applies one brain event, in stream order.
 func (m *Module) handleEvent(ev wire.Event) {
 	switch ev.Event {
+	case wire.EventReady:
+		// A brain that was still booting at hello answered not_ready; follow again now.
+		m.brainConnected()
 	case wire.EventNetwork:
 		var n wire.NetworkEvent
 		if json.Unmarshal(ev.Data, &n) == nil {

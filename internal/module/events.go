@@ -42,7 +42,12 @@ func eventName(ev any) string {
 	return ""
 }
 
+// session returns a network's Session for a network-scoped method: not_ready until the brain
+// is ready (a reloaded brain registers its networks during boot), not_found for an unknown id.
 func (s *Server) session(network int64) (*session.Session, error) {
+	if !s.backend.Ready() {
+		return nil, wire.Errorf(wire.CodeNotReady, "the brain is not ready")
+	}
 	sess, ok := s.backend.Session(network)
 	if !ok || sess == nil {
 		return nil, wire.Errorf(wire.CodeNotFound, "no network %d", network)

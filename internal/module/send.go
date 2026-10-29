@@ -20,10 +20,7 @@ func handleSendLine(ctx context.Context, c *Conn, params json.RawMessage) (any, 
 	if err != nil {
 		return nil, err
 	}
-	if !c.srv.backend.Ready() {
-		return nil, wire.Errorf(wire.CodeNotReady, "the brain is not ready")
-	}
-	sess, err := c.srv.session(p.Network)
+	sess, err := c.srv.session(p.Network) // not_ready before LiveReady
 	if err != nil {
 		return nil, err
 	}

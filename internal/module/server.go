@@ -83,8 +83,9 @@ func (s *Server) config() config.ModulesConfig {
 	return s.cfg
 }
 
-// Serve listens on the module socket until ctx is canceled. A stale socket file is removed
-// first; the socket is created mode 0600 and removed on return.
+// Serve listens on the module socket until ctx is canceled. A stale socket file (or a previous
+// brain's, during a reload) is replaced; the socket is created mode 0600 and left in place on
+// return.
 func (s *Server) Serve(ctx context.Context) error {
 	path := s.config().Socket
 	if path == "" {
@@ -100,16 +101,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("module server: %w", err)
 	}
-	// On exit, remove the socket file only if it is still ours: during a reload the
-	// replacement brain may already have put its own socket at path.
+	// The socket file is left in place on exit: during a reload the replacement brain may
+	// already have put its own socket at path, and the next brain to start replaces a stale one.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
-	ours, statErr := os.Stat(path)
-	defer func() {
-		_ = ln.Close()
-		if cur, err := os.Stat(path); statErr == nil && err == nil && os.SameFile(ours, cur) {
-			_ = os.Remove(path)
-		}
-	}()
+	defer ln.Close()
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("module server: %w", err)
 	}

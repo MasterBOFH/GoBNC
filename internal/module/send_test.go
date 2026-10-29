@@ -19,7 +19,9 @@ func sendFixture(t *testing.T, echo, ready bool) (*testConn, *fakeIRCd, *session
 	_, path := startServer(t, []config.ModuleConfig{{Name: "rc", Features: []string{"events", "clients", "send"}}}, be)
 	tc := dialModule(t, path)
 	tc.hello("rc", "events", "clients", "send")
-	tc.call(wire.MethodClientsAttach, wire.ClientParams{Network: 9, Client: "ws1"}, nil)
+	if ready {
+		tc.call(wire.MethodClientsAttach, wire.ClientParams{Network: 9, Client: "ws1"}, nil)
+	}
 	return tc, ircd, sess
 }
 
@@ -74,9 +76,14 @@ func TestSendLineEchoCarriesLabelAndReachesIRCClients(t *testing.T) {
 
 func TestSendLineNotReadyBeforeLiveReady(t *testing.T) {
 	tc, _, _ := sendFixture(t, false, false)
-	code := tc.callErr(wire.MethodSendLine, wire.SendLineParams{Network: 9, Client: "ws1", Line: "PRIVMSG #c :early"})
-	if code != wire.CodeNotReady {
-		t.Fatalf("code = %q, want not_ready", code)
+	for method, params := range map[string]any{
+		wire.MethodSendLine:        wire.SendLineParams{Network: 9, Client: "ws1", Line: "PRIVMSG #c :early"},
+		wire.MethodClientsAttach:   wire.ClientParams{Network: 9, Client: "ws1"},
+		wire.MethodEventsSubscribe: wire.SubscribeParams{Network: 9},
+	} {
+		if code := tc.callErr(method, params); code != wire.CodeNotReady {
+			t.Fatalf("%s before ready: code = %q, want not_ready", method, code)
+		}
 	}
 }
 
