@@ -108,3 +108,13 @@ func TestUnsubscribeStopsEvents(t *testing.T) {
 		t.Fatalf("%d sinks after unsubscribe", n)
 	}
 }
+
+func TestNetworkControlNotReady(t *testing.T) {
+	be := &fakeBackend{ready: false, nets: []wire.NetworkInfo{{ID: 1, Name: "net"}}}
+	_, path := startServer(t, []config.ModuleConfig{{Name: "m", Features: []string{"networks"}}}, be)
+	tc := dialModule(t, path)
+	tc.hello("m", "networks")
+	if code := tc.callErr(wire.MethodNetworksReconnect, wire.NetworkParams{Network: 1}); code != wire.CodeNotReady {
+		t.Fatalf("code = %q, want not_ready", code)
+	}
+}

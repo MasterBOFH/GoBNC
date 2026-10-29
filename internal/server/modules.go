@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
@@ -41,6 +42,32 @@ func (b moduleBackend) Config() config.Config {
 	b.s.mu.RLock()
 	defer b.s.mu.RUnlock()
 	return b.s.cfg
+}
+
+func (b moduleBackend) ConnectNetwork(id int64) error {
+	return b.byName(id, b.s.StartNetworkByName)
+}
+
+func (b moduleBackend) DisconnectNetwork(id int64) error {
+	return b.byName(id, b.s.StopNetwork)
+}
+
+func (b moduleBackend) ReconnectNetwork(id int64) error {
+	return b.byName(id, b.s.ReconnectNetwork)
+}
+
+// byName runs a by-name network action for network id.
+func (b moduleBackend) byName(id int64, action func(name string) error) error {
+	nets, err := b.s.store.ListNetworks(b.s.storeCtx())
+	if err != nil {
+		return err
+	}
+	for _, n := range nets {
+		if n.ID == id {
+			return action(n.Name)
+		}
+	}
+	return fmt.Errorf("no network %d", id)
 }
 
 func (b moduleBackend) Session(id int64) (*session.Session, bool) {

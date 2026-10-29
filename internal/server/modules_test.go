@@ -182,3 +182,59 @@ func TestModuleHelloReadyWhenConnectingAfterBoot(t *testing.T) {
 		t.Fatal("unexpected frame (a second ready?) after a ready hello")
 	}
 }
+
+func networkEventMatching(id int64, change, state string) func(json.RawMessage) bool {
+	return func(d json.RawMessage) bool {
+		var ev wire.NetworkEvent
+		return json.Unmarshal(d, &ev) == nil && ev.Network == id && ev.Change == change && (state == "" || ev.State == state)
+	}
+}
+
+func TestModuleNetworkDisconnectConnect(t *testing.T) {
+	rk := startResumeTestKeeper(t)
+	s, sock := moduleTestServer(t, "networks")
+	s.startModules(s.runCtx)
+	fake := newDemuxFakeIRC(t)
+	h, p := fake.addr(t)
+	closeAfter := make(chan struct{})
+	defer close(closeAfter)
+	go func() {
+		fake.serveOne(t, "fake.example", closeAfter)
+	}()
+	if _, err := s.Store().UpsertNetwork(s.runCtx, store.Network{Name: "net1", Host: h, Port: p, Nick: "alice", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.Store().NetworkByName(s.runCtx, "net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rk.attach(t, s, []store.Network{n})
+	mod := dialTestModule(t, sock)
+	if werr := mod.call(wire.MethodHello, wire.HelloParams{API: 1, Module: "m", Features: []string{"networks"}}, nil); werr != nil {
+		t.Fatal(werr)
+	}
+	sess, err := s.Session("net1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRegistered(t, "net1", sess.Registered)
+
+	if werr := mod.call(wire.MethodNetworksDisconnect, wire.NetworkParams{Network: n.ID}, nil); werr != nil {
+		t.Fatalf("disconnect: %v", werr)
+	}
+	mod.waitEvent(wire.EventNetwork, 5*time.Second, networkEventMatching(n.ID, wire.ChangeState, wire.NetStopped))
+	if _, err := s.Session("net1"); err == nil {
+		t.Fatal("network still running after networks.disconnect")
+	}
+
+	go fake.serveOne(t, "fake.example", closeAfter) // the redial
+	if werr := mod.call(wire.MethodNetworksConnect, wire.NetworkParams{Network: n.ID}, nil); werr != nil {
+		t.Fatalf("connect: %v", werr)
+	}
+	mod.waitEvent(wire.EventNetwork, 5*time.Second, networkEventMatching(n.ID, wire.ChangeAdded, ""))
+	mod.waitEvent(wire.EventNetwork, 10*time.Second, networkEventMatching(n.ID, wire.ChangeState, wire.NetRegistered))
+
+	if werr := mod.call(wire.MethodNetworksConnect, wire.NetworkParams{Network: 999}, nil); werr == nil || werr.Code != wire.CodeNotFound {
+		t.Fatalf("unknown network: %v", werr)
+	}
+}

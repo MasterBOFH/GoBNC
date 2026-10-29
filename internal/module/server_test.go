@@ -28,6 +28,10 @@ type fakeBackend struct {
 func (b *fakeBackend) Store() *store.Store   { return b.db }
 func (b *fakeBackend) Config() config.Config { return b.cfg }
 
+func (b *fakeBackend) ConnectNetwork(int64) error    { return nil }
+func (b *fakeBackend) DisconnectNetwork(int64) error { return nil }
+func (b *fakeBackend) ReconnectNetwork(int64) error  { return nil }
+
 func (b *fakeBackend) BrainVersion() string         { return "test-brain" }
 func (b *fakeBackend) Ready() bool                  { return b.ready }
 func (b *fakeBackend) Networks() []wire.NetworkInfo { return b.nets }

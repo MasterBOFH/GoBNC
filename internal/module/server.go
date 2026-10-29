@@ -36,6 +36,10 @@ type Backend interface {
 	Store() *store.Store
 	// Config is the brain's current configuration (auth settings for auth.check).
 	Config() config.Config
+	// ConnectNetwork / DisconnectNetwork / ReconnectNetwork start, stop or redial a network.
+	ConnectNetwork(id int64) error
+	DisconnectNetwork(id int64) error
+	ReconnectNetwork(id int64) error
 }
 
 // Server accepts module connections on the module socket.
