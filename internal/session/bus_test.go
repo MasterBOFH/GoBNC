@@ -97,7 +97,7 @@ func TestBusRemovesDeadSink(t *testing.T) {
 func TestBusKindsFilter(t *testing.T) {
 	s := newBusSession(t)
 	sink := &recSink{}
-	s.Subscribe(1, sink, []string{wire.LineOther}, nil)
+	s.Subscribe(1, sink, []string{wire.LineJoin}, nil)
 	other := &recSink{}
 	s.Subscribe(2, other, []string{"no-such-kind"}, nil)
 	feed(s, ":a!u@h JOIN #c")

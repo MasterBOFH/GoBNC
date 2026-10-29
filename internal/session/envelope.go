@@ -1,0 +1,206 @@
+package session
+
+import (
+	"context"
+	"strings"
+
+	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
+)
+
+// routingState is what an envelope needs from before applyState: whether the line is ours, and
+// for user-wide lines (QUIT, NICK, AWAY, ...) the channels the user shared with us.
+type routingState struct {
+	self     bool
+	channels []string // display names
+}
+
+// userWideCommands are lines about a user rather than a target: they go to every channel the
+// user shared with us, plus their query.
+var userWideCommands = map[string]bool{
+	"QUIT": true, "NICK": true, "AWAY": true, "ACCOUNT": true, "CHGHOST": true, "SETNAME": true,
+}
+
+// routingBefore captures msg's routingState. Call before applyState, holding busMu.
+func (s *Session) routingBefore(msg irc.Message) routingState {
+	if !s.hasSinksLocked() {
+		return routingState{}
+	}
+	rs := routingState{self: s.isSelfNick(msg.Nick())}
+	if !userWideCommands[msg.Command] {
+		return rs
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	folded := s.isupport.CaseMapping.Canonical(msg.Nick())
+	for _, ch := range s.channels {
+		if _, ok := ch.Members[folded]; ok {
+			rs.channels = append(rs.channels, ch.Name)
+		}
+	}
+	return rs
+}
+
+// envelopeLocked builds the module line event for msg: kind, buffers (display name, casemapped
+// key and the history id where that buffer stored the line), source and self. Caller holds busMu.
+func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre routingState, label string) wire.LineEvent {
+	ev := wire.LineEvent{
+		Network: s.Network.ID,
+		Kind:    lineKind(msg),
+		Raw:     msg.Wire(),
+		Source:  msg.Source,
+		Nick:    msg.Nick(),
+		Self:    pre.self,
+		Label:   label,
+		Buffers: []wire.LineBuffer{},
+	}
+	ev.MsgID, _ = msg.Tag("msgid")
+	ev.Time, _ = msg.Tag("time")
+
+	s.mu.RLock()
+	cm := s.isupport.CaseMapping
+	chantypes := s.isupport.Raw["CHANTYPES"]
+	statusmsg := s.isupport.Raw["STATUSMSG"]
+	s.mu.RUnlock()
+	isChan := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		if chantypes != "" {
+			return strings.IndexByte(chantypes, name[0]) >= 0
+		}
+		return isChannelName(name)
+	}
+	add := func(name string, storedAs ...string) {
+		key := cm.Canonical(name)
+		for _, b := range ev.Buffers {
+			if b.Key == key {
+				return
+			}
+		}
+		b := wire.LineBuffer{Name: s.displayName(key, name), Key: key, ID: ids[key]}
+		for _, alt := range storedAs {
+			if b.ID == 0 {
+				b.ID = ids[cm.Canonical(alt)]
+			}
+		}
+		ev.Buffers = append(ev.Buffers, b)
+	}
+
+	switch msg.Command {
+	case "PRIVMSG", "NOTICE", "TAGMSG":
+		t := msg.Param(0)
+		switch {
+		case serverSourced(msg) || strings.HasPrefix(t, "$"):
+			add(wire.ServerBuffer)
+		case isChan(stripStatusMsg(t, statusmsg, isChan)):
+			add(stripStatusMsg(t, statusmsg, isChan), t)
+		case pre.self:
+			add(t) // our own line to someone: their query
+		default:
+			add(msg.Nick()) // to us: the sender's query
+		}
+	case "JOIN":
+		t := msg.Param(0)
+		if t == "" {
+			t = msg.Trailing()
+		}
+		if t != "" {
+			add(t)
+		}
+	case "PART", "KICK", "TOPIC":
+		if t := msg.Param(0); t != "" {
+			add(t)
+		}
+	case "MODE":
+		if t := msg.Param(0); isChan(t) {
+			add(t)
+		}
+	case "ERROR":
+		add(wire.ServerBuffer)
+	default:
+		if userWideCommands[msg.Command] {
+			for _, name := range pre.channels {
+				add(name)
+			}
+			if nick := msg.Nick(); nick != "" && !pre.self && s.hasQuery(nick) {
+				add(nick)
+			}
+			break
+		}
+		if isNumeric(msg.Command) {
+			if t := msg.Param(1); isChan(t) {
+				add(t)
+			} else {
+				add(wire.ServerBuffer)
+			}
+		}
+	}
+	return ev
+}
+
+// displayName prefers the spelling of a joined channel's own state over the line's.
+func (s *Session) displayName(key, name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if ch := s.channels[key]; ch != nil && ch.Name != "" {
+		return ch.Name
+	}
+	return name
+}
+
+// hasQuery reports whether history holds a query buffer for nick.
+func (s *Session) hasQuery(nick string) bool {
+	if s.store == nil || s.Network.ID == 0 {
+		return false
+	}
+	s.mu.RLock()
+	key := s.isupport.CaseMapping.Canonical(nick)
+	s.mu.RUnlock()
+	ok, _ := s.store.HasTarget(context.Background(), s.Network.ID, key)
+	return ok
+}
+
+// lineKind classifies msg into a wire line kind.
+func lineKind(msg irc.Message) string {
+	switch msg.Command {
+	case "PRIVMSG":
+		if verb, _, ok := parseCTCP(msg.Trailing()); ok && !strings.EqualFold(verb, "ACTION") {
+			return wire.LineCTCP
+		}
+		return wire.LineMessage
+	case "NOTICE":
+		if _, _, ok := parseCTCP(msg.Trailing()); ok {
+			return wire.LineCTCPReply
+		}
+		return wire.LineNotice
+	case "TAGMSG":
+		return wire.LineTagmsg
+	case "JOIN", "PART", "QUIT", "KICK", "NICK", "MODE", "TOPIC", "INVITE", "AWAY", "ACCOUNT", "CHGHOST", "SETNAME":
+		return strings.ToLower(msg.Command)
+	case "ERROR":
+		return wire.LineError
+	}
+	if isNumeric(msg.Command) {
+		return wire.LineNumeric
+	}
+	return wire.LineOther
+}
+
+func isNumeric(cmd string) bool {
+	return len(cmd) == 3 && cmd[0] >= '0' && cmd[0] <= '9' && cmd[1] >= '0' && cmd[1] <= '9' && cmd[2] >= '0' && cmd[2] <= '9'
+}
+
+// serverSourced: no source, or a server name (no "!", contains ".").
+func serverSourced(msg irc.Message) bool {
+	src := msg.Source
+	return src == "" || (!strings.Contains(src, "!") && !strings.Contains(src, "@") && strings.Contains(src, "."))
+}
+
+// stripStatusMsg removes ISUPPORT STATUSMSG prefixes (@#chan → #chan) from a channel target.
+func stripStatusMsg(t, statusmsg string, isChan func(string) bool) string {
+	for len(t) > 1 && strings.IndexByte(statusmsg, t[0]) >= 0 && !isChan(t) {
+		t = t[1:]
+	}
+	return t
+}

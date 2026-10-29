@@ -13,3 +13,14 @@ func (s *Store) MaxMessageID(ctx context.Context, networkID int64) (int64, error
 	}
 	return id.Int64, nil
 }
+
+// HasTarget reports whether any message is stored for (networkID, target); target is the
+// folded name historyTargets stores under.
+func (s *Store) HasTarget(ctx context.Context, networkID int64, target string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE network_id=? AND target=? LIMIT 1`, networkID, target).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}

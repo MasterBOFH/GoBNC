@@ -13,7 +13,6 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
-	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 	"github.com/google/uuid"
 )
 
@@ -759,11 +758,12 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	// fan-out (see bus.go).
 	s.busMu.Lock()
 	pending, msg, selfEcho := s.consumeSelfEcho(msg)
+	pre := s.routingBefore(msg)
 	if selfEcho {
 		ids := s.maybeStoreHistory(msg, s.currentLineSeq())
 		s.applyState(msg)
 		if !strings.EqualFold(msg.Command, "ACK") {
-			s.emitUplinkLineLocked(msg, ids)
+			s.emitUplinkLineLocked(msg, ids, pre, pending.Label)
 		}
 		s.busMu.Unlock()
 		if strings.EqualFold(msg.Command, "ACK") {
@@ -789,7 +789,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	if ctcp, ok := s.uplinkCTCPRequest(msg); ok {
 		s.applyState(msg)
 		if ctcp.mode == CTCPModeRelay {
-			s.emitUplinkLineLocked(msg, nil)
+			s.emitUplinkLineLocked(msg, nil, pre, "")
 		}
 		s.busMu.Unlock()
 		s.actOnUplinkCTCP(msg, ctcp)
@@ -805,7 +805,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	// A solicited reply goes to its requester only, and an unmatched WHOX/WHO end to nobody:
 	// neither is a network event.
 	if len(dests) == 0 && msg.Command != "354" && msg.Command != "315" {
-		s.emitUplinkLineLocked(msg, ids)
+		s.emitUplinkLineLocked(msg, ids, pre, "")
 	}
 	s.emitRosterDoneLocked()
 	s.busMu.Unlock()
@@ -894,11 +894,11 @@ func (s *Session) HandleMessage(msg irc.Message) {
 }
 
 // emitUplinkLineLocked emits the module envelope for an uplink line. Caller holds busMu.
-func (s *Session) emitUplinkLineLocked(msg irc.Message, ids map[string]int64) {
+func (s *Session) emitUplinkLineLocked(msg irc.Message, ids map[string]int64, pre routingState, label string) {
 	if !s.hasSinksLocked() {
 		return
 	}
-	s.emitLineLocked(wire.LineEvent{Network: s.Network.ID, Kind: wire.LineOther, Raw: msg.Wire(), Buffers: []wire.LineBuffer{}})
+	s.emitLineLocked(s.envelopeLocked(msg, ids, pre, label))
 }
 
 // blobCapsValue JSON-encodes the currently enabled cap set for the "caps"
