@@ -141,6 +141,7 @@ func (s *Store) migrate() error {
 			UNIQUE(network_id, target)
 		)`,
 	}
+	stmts = append(stmts, deviceMigrations...)
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("migrate: %w\nquery: %s", err, q)
