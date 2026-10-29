@@ -142,6 +142,7 @@ func (s *Store) migrate() error {
 		)`,
 	}
 	stmts = append(stmts, deviceMigrations...)
+	stmts = append(stmts, moduleKVMigrations...)
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("migrate: %w\nquery: %s", err, q)

@@ -6,10 +6,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
@@ -236,5 +239,68 @@ func TestModuleNetworkDisconnectConnect(t *testing.T) {
 
 	if werr := mod.call(wire.MethodNetworksConnect, wire.NetworkParams{Network: 999}, nil); werr == nil || werr.Code != wire.CodeNotFound {
 		t.Fatalf("unknown network: %v", werr)
+	}
+}
+
+// answerCommands replies to every command event on mod with "<args joined>" until done.
+func answerCommands(t *testing.T, mod *modTestClient, done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		f, err := mod.read(200 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		if f.Kind != wire.KindEvent || f.Event.Event != wire.EventCommand {
+			continue
+		}
+		var ev wire.CommandEvent
+		_ = json.Unmarshal(f.Event.Data, &ev)
+		b, _ := json.Marshal(wire.CommandReplyParams{InvocationID: ev.InvocationID, Lines: []string{ev.Origin + ":" + strings.Join(ev.Args, ",")}})
+		mod.nextID++
+		_ = wire.WriteFrame(mod.c, wire.Request{ID: mod.nextID, Method: wire.MethodCommandsReply, Params: b})
+	}
+}
+
+func TestModuleCommandFromBNCAndControl(t *testing.T) {
+	s, sock := moduleTestServer(t, "commands")
+	s.startModules(s.runCtx)
+	mod := dialTestModule(t, sock)
+	if werr := mod.call(wire.MethodHello, wire.HelloParams{API: 1, Module: "m", Features: []string{"commands"}}, nil); werr != nil {
+		t.Fatal(werr)
+	}
+	if werr := mod.call(wire.MethodCommandsRegister, wire.CommandRegisterParams{Name: "devices", Help: "devices"}, nil); werr != nil {
+		t.Fatal(werr)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go answerCommands(t, mod, done)
+
+	if got := s.moduleControlReply([]string{"devices", "list"}); got != `OK ["cli:list"]` {
+		t.Fatalf("control MODULE reply = %q", got)
+	}
+	if got := s.moduleControlReply([]string{"nosuch"}); !strings.HasPrefix(got, "ERR unknown command") {
+		t.Fatalf("unknown command reply = %q", got)
+	}
+
+	sess := session.New(store.Network{ID: 1, Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	sess.SetRegisteredForTest(true)
+	s.attachAdmin(sess)
+	dl := newFakeServerDL("c1")
+	msg, _ := irc.Parse("BNC devices list")
+	if err := sess.HandleClientMessage(dl, msg); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range dl.snapshot() {
+		if m.Command == "NOTICE" && m.Trailing() == "bnc:list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("BNC devices list: client got %+v", dl.snapshot())
 	}
 }

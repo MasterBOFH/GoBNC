@@ -53,6 +53,8 @@ type Server struct {
 	conns  map[uint64]*Conn
 	nextID uint64
 
+	commands commandRegistry
+
 	authMu    sync.Mutex
 	authFails map[string][]time.Time // auth.check failures per remote IP (rate limit)
 	now       func() time.Time

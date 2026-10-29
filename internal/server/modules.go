@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -141,4 +142,36 @@ func (s *Server) notifyNetwork(n store.Network, sess *session.Session, change st
 // watchSessionState forwards sess's state changes to modules as network events.
 func (s *Server) watchSessionState(sess *session.Session, n store.Network) {
 	sess.SetStateHook(func(string) { s.notifyNetwork(n, sess, wire.ChangeState) })
+}
+
+// moduleCommand runs args[0] as a module command when a module registered it (BNC <name> ... or
+// gobnc <name> ...); handled is false otherwise.
+func (s *Server) moduleCommand(args []string, origin string) (lines []string, handled bool, err error) {
+	m := s.modules.Load()
+	if m == nil || len(args) == 0 {
+		return nil, false, nil
+	}
+	return m.RunCommand(args[0], args[1:], origin)
+}
+
+// moduleControlReply answers the control socket's MODULE <name> <args...>.
+func (s *Server) moduleControlReply(args []string) string {
+	if len(args) == 0 {
+		return "ERR usage: MODULE <command> [args...]"
+	}
+	lines, handled, err := s.moduleCommand(args, wire.OriginCLI)
+	switch {
+	case !handled:
+		return fmt.Sprintf("ERR unknown command %q", args[0])
+	case err != nil:
+		return "ERR " + err.Error()
+	}
+	if lines == nil {
+		lines = []string{}
+	}
+	b, err := json.Marshal(lines)
+	if err != nil {
+		return "ERR " + err.Error()
+	}
+	return "OK " + string(b)
 }

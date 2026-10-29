@@ -23,16 +23,23 @@ const (
 	CmdDie              = "DIE"               // stop brain and keeper (QUIT every uplink)
 	CmdShutdown         = "SHUTDOWN"          // graceful brain stop (same as SIGTERM); keeper stays
 	CmdStatus           = "STATUS"            // live daemon/network status (OK <json>)
+	CmdModule           = "MODULE"            // MODULE <command> <args...>: run a module's command (OK <json lines>)
 )
 
 // Client sends a single command to a running daemon and returns the reply line.
 func Client(socketPath, line string) (string, error) {
+	return ClientTimeout(socketPath, line, 5*time.Second)
+}
+
+// ClientTimeout is Client waiting up to timeout for the reply (module commands may take their
+// full answer timeout).
+func ClientTimeout(socketPath, line string, timeout time.Duration) (string, error) {
 	c, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(timeout))
 	if !strings.HasSuffix(line, "\n") {
 		line += "\n"
 	}

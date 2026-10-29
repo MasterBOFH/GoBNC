@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,6 +37,15 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		default:
+			// Not a built-in verb or a flag: a command a module registered with the running brain.
+			if !strings.HasPrefix(os.Args[1], "-") {
+				if err := runModuleCommand(os.Args[1:]); err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+				return
+			}
 		}
 	}
 	runServe()

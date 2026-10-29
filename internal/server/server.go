@@ -581,6 +581,8 @@ func (s *Server) handleControl(c net.Conn) {
 			go func() { _ = s.RequestDie() }()
 		case control.CmdStatus:
 			reply = statusControlReply(s)
+		case control.CmdModule:
+			reply = s.moduleControlReply(parts[1:])
 		}
 	}
 	_, _ = c.Write([]byte(reply + "\n"))

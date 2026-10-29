@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -467,4 +468,41 @@ func promptSecret(prompt string) (string, error) {
 		return "", fmt.Errorf("empty password")
 	}
 	return s, nil
+}
+
+// runModuleCommand sends `gobnc <command> <args...>` for a command a module registered to the
+// running brain (control socket MODULE) and prints the module's reply lines.
+func runModuleCommand(args []string) error {
+	cfgPath, args := splitConfigFlag(args)
+	cfg, err := config.LoadJSON(cfgPath)
+	if err != nil {
+		return err
+	}
+	resp, err := control.ClientTimeout(cfg.ResolvedControlSocket(), control.CmdModule+" "+strings.Join(args, " "), 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("unknown command %q (and no running gobnc to ask its modules: %v)", args[0], err)
+	}
+	lines, err := parseModuleReply(resp)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return nil
+}
+
+// parseModuleReply decodes a MODULE control reply: "OK <json lines>" or "ERR <text>".
+func parseModuleReply(resp string) ([]string, error) {
+	switch {
+	case strings.HasPrefix(resp, "ERR "):
+		return nil, errors.New(strings.TrimPrefix(resp, "ERR "))
+	case strings.HasPrefix(resp, "OK "):
+		var lines []string
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(resp, "OK ")), &lines); err != nil {
+			return nil, fmt.Errorf("bad module reply: %w", err)
+		}
+		return lines, nil
+	}
+	return nil, fmt.Errorf("unexpected reply: %s", resp)
 }
