@@ -13,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 	"github.com/google/uuid"
 )
 
@@ -58,7 +59,17 @@ var DesiredCaps = []string{
 func (s *Session) HandleLine(raw []byte, seq uint64) {
 	s.mu.Lock()
 	s.lineSeq = seq
+	reconnecting := s.uplinkDown
 	s.mu.Unlock()
+	if reconnecting {
+		// First line from a new uplink connection.
+		s.busMu.Lock()
+		s.mu.Lock()
+		s.uplinkDown = false
+		s.mu.Unlock()
+		s.busMu.Unlock()
+		s.notifyState(wire.NetConnecting)
+	}
 	msg, err := irc.Parse(string(raw))
 	if err != nil {
 		s.log.Warn("parse error", "line", gobnclog.RedactIRC(string(raw)), "err", err)
@@ -256,6 +267,7 @@ func (s *Session) completeRegistration() {
 	s.mu.Unlock()
 
 	s.log.Info("uplink registered", "nick", nick)
+	s.notifyState(wire.NetRegistered)
 	if added := caps.Diff(prevOffer, nowOffer); len(added) > 0 {
 		s.broadcastCapNotify("NEW", added)
 	}
@@ -571,6 +583,7 @@ func (s *Session) HandleDisconnect(err error) {
 	s.log.Info("uplink down", "err", err)
 	reason := disconnectReason(err)
 
+	s.busMu.Lock() // every piece of snapshot state resets below
 	s.mu.Lock()
 	wasRegistered := s.registered
 	nickErrLine := s.lastNickErrorLine
@@ -625,7 +638,10 @@ func (s *Session) HandleDisconnect(err error) {
 	}
 	s.isupport = irc.NewISUPPORT()
 	s.tracker = NewRequestTracker()
+	s.uplinkDown = true
 	s.mu.Unlock()
+	s.busMu.Unlock()
+	s.notifyState(wire.NetDisconnected)
 
 	if wasRegistered {
 		errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}

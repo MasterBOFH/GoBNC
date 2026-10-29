@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,11 +24,13 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/downlink"
 	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
+	"github.com/MasterBOFH/GoBNC/internal/module"
 	"github.com/MasterBOFH/GoBNC/internal/keeperboot"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/version"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // Server is the bouncer process.
@@ -68,6 +71,11 @@ type Server struct {
 
 	certs *certHolder
 	dl    *downlink.Listener
+
+	// modules is the module socket server (startModules); modulesReady is set once
+	// SendLiveReady went out (markModulesReady).
+	modules      atomic.Pointer[module.Server]
+	modulesReady atomic.Bool
 
 	// shutdownKind is set by runReloadHandoff/RequestDie before canceling
 	// runCtx so cmd/gobnc knows whether to stop the keeper after Run
@@ -291,56 +299,16 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
+	s.startModules(ctx)
+
 	nets, err := s.store.ListNetworks(ctx)
 	if err != nil {
 		return err
 	}
-	// Every enabled network's Session and driver bookkeeping must exist
-	// before SendLiveReady goes out. The keeper starts streaming a
-	// resumed network's backlog the instant LiveReady arrives — if that
-	// happened before this brain had registered the network (RegisterNetwork
-	// populating brain.Driver's own tracking, sessByNetID populating the
-	// demux's routing table), the earliest replayed lines (including the
-	// original 001) would arrive at Driver.handleLine/runDemux with nowhere
-	// to go and be silently dropped, permanently stalling that Session's
-	// own self-detected registration (see upstream.go's HandleLine). Dialing
-	// a genuinely fresh network, by contrast, must happen *after*
-	// LiveReady: the keeper's serveLive doesn't read DialRequest frames —
-	// or anything else — until LiveReady is the first frame it sees.
-	type pendingNet struct {
-		n    store.Network
-		sess *session.Session
-	}
-	pending := make([]pendingNet, 0, len(nets))
-	s.mu.Lock()
-	for _, n := range nets {
-		if !n.Enabled {
-			continue
-		}
-		sess, err := s.registerNetworkLocked(n)
-		if err != nil {
-			s.mu.Unlock()
-			s.cancel()
-			return err
-		}
-		pending = append(pending, pendingNet{n: n, sess: sess})
-	}
-	s.mu.Unlock()
-
-	if err := s.keeperClient.SendLiveReady(); err != nil {
+	if err := s.bootNetworks(nets); err != nil {
 		s.cancel()
-		return fmt.Errorf("keeper SendLiveReady: %w", err)
+		return err
 	}
-
-	s.mu.Lock()
-	for _, p := range pending {
-		if err := s.dialNetworkLocked(p.n, p.sess); err != nil {
-			s.mu.Unlock()
-			s.cancel()
-			return err
-		}
-	}
-	s.mu.Unlock()
 
 	if err := s.serveControl(ctx); err != nil {
 		s.cancel()
@@ -383,6 +351,56 @@ func (s *Server) Run(ctx context.Context) error {
 		s.wg.Wait()
 		return err
 	}
+}
+
+// bootNetworks is Run's network bring-up: register every enabled network, SendLiveReady, tell
+// modules the brain is ready, then dial the networks the keeper did not already hold.
+func (s *Server) bootNetworks(nets []store.Network) error {
+	// Every enabled network's Session and driver bookkeeping must exist
+	// before SendLiveReady goes out. The keeper starts streaming a
+	// resumed network's backlog the instant LiveReady arrives — if that
+	// happened before this brain had registered the network (RegisterNetwork
+	// populating brain.Driver's own tracking, sessByNetID populating the
+	// demux's routing table), the earliest replayed lines (including the
+	// original 001) would arrive at Driver.handleLine/runDemux with nowhere
+	// to go and be silently dropped, permanently stalling that Session's
+	// own self-detected registration (see upstream.go's HandleLine). Dialing
+	// a genuinely fresh network, by contrast, must happen *after*
+	// LiveReady: the keeper's serveLive doesn't read DialRequest frames —
+	// or anything else — until LiveReady is the first frame it sees.
+	type pendingNet struct {
+		n    store.Network
+		sess *session.Session
+	}
+	pending := make([]pendingNet, 0, len(nets))
+	s.mu.Lock()
+	for _, n := range nets {
+		if !n.Enabled {
+			continue
+		}
+		sess, err := s.registerNetworkLocked(n)
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		pending = append(pending, pendingNet{n: n, sess: sess})
+	}
+	s.mu.Unlock()
+
+	if err := s.keeperClient.SendLiveReady(); err != nil {
+		return fmt.Errorf("keeper SendLiveReady: %w", err)
+	}
+	s.markModulesReady()
+
+	s.mu.Lock()
+	for _, p := range pending {
+		if err := s.dialNetworkLocked(p.n, p.sess); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // detachFromKeeper closes the shared keeper attach (unblocking
@@ -802,11 +820,17 @@ func (s *Server) StartNetworkByName(name string) error {
 		return fmt.Errorf("network %q disabled", name)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.sess[name]; ok {
+		s.mu.Unlock()
 		return fmt.Errorf("network %q already running", name)
 	}
-	return s.startNetworkLocked(n)
+	err = s.startNetworkLocked(n)
+	sess := s.sess[name]
+	s.mu.Unlock()
+	if err == nil {
+		s.notifyNetwork(n, sess, wire.ChangeAdded)
+	}
+	return err
 }
 
 // caller must hold s.mu
@@ -842,6 +866,7 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	}
 	s.sess[n.Name] = sess
 	s.sessByNetID[netID] = sess
+	s.watchSessionState(sess, n)
 
 	// A network the keeper already held live at this brain's own attach
 	// (see resumedAtBoot's doc comment, and dialNetworkLocked's use of the
@@ -961,6 +986,7 @@ func (s *Server) StopNetwork(name string) error {
 		return err
 	}
 	s.log.Info("network stopped", "name", name)
+	s.notifyNetwork(sess.Network, nil, wire.ChangeState)
 	return nil
 }
 
@@ -985,6 +1011,7 @@ func (s *Server) ReloadNetworkConfig(name string) error {
 	s.mu.RUnlock()
 	sess.ApplyNetworkConfig(n, cfg)
 	s.log.Info("network config reloaded", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
+	s.notifyNetwork(n, sess, wire.ChangeConfig)
 	return nil
 }
 
@@ -1006,11 +1033,13 @@ func (s *Server) ReconnectNetwork(name string) error {
 	sess := s.sess[name]
 	if sess == nil {
 		err := s.startNetworkLocked(n)
+		sess = s.sess[name]
 		s.mu.Unlock()
 		if err != nil {
 			return err
 		}
 		s.log.Info("network started via reconnect", "name", name, "host", n.Host, "port", n.Port, "tls", n.TLS)
+		s.notifyNetwork(n, sess, wire.ChangeAdded)
 		return nil
 	}
 	s.mu.Unlock()
@@ -1097,6 +1126,11 @@ func (s *Server) Rehash(cfgPath string) error {
 		names = append(names, name)
 	}
 	s.mu.Unlock()
+	if m := s.modules.Load(); m != nil {
+		// New grants apply to module connections made from now on; the socket path is fixed
+		// until restart.
+		m.SetConfig(newCfg.ResolvedModules())
+	}
 
 	if dl != nil {
 		dl.SetConfig(newCfg)

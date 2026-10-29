@@ -73,8 +73,11 @@ func (s *Session) snapshotLocked() wire.Snapshot {
 
 // networkStateLocked is the snapshot's network state. Caller holds s.mu.
 func (s *Session) networkStateLocked() string {
-	if s.registered {
+	switch {
+	case s.registered:
 		return wire.NetRegistered
+	case s.uplinkDown:
+		return wire.NetDisconnected
 	}
 	return wire.NetConnecting
 }

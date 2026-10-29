@@ -14,7 +14,6 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
-	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
 
@@ -135,34 +134,10 @@ func (rk *resumeTestKeeper) attach(t *testing.T, s *Server, nets []store.Network
 	go func() { _ = s.driver.Run(runCtx) }()
 	go s.runDemux(runCtx)
 
-	type pending struct {
-		n    store.Network
-		sess *session.Session
+	// Run's own bring-up: register everything, SendLiveReady, then dial.
+	if err := s.bootNetworks(nets); err != nil {
+		t.Fatalf("bootNetworks: %v", err)
 	}
-	var toDial []pending
-	s.mu.Lock()
-	for _, n := range nets {
-		sess, err := s.registerNetworkLocked(n)
-		if err != nil {
-			s.mu.Unlock()
-			t.Fatalf("registerNetworkLocked(%s): %v", n.Name, err)
-		}
-		toDial = append(toDial, pending{n: n, sess: sess})
-	}
-	s.mu.Unlock()
-
-	if err := client.SendLiveReady(); err != nil {
-		t.Fatalf("SendLiveReady: %v", err)
-	}
-
-	s.mu.Lock()
-	for _, p := range toDial {
-		if err := s.dialNetworkLocked(p.n, p.sess); err != nil {
-			s.mu.Unlock()
-			t.Fatalf("dialNetworkLocked(%s): %v", p.n.Name, err)
-		}
-	}
-	s.mu.Unlock()
 
 	return client
 }

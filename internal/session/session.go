@@ -86,6 +86,11 @@ type Session struct {
 	busMu  sync.Mutex
 	sinks  map[uint64]sinkEntry // guarded by busMu
 	busSeq uint64               // guarded by busMu; seq of the last emitted line event
+	// stateHook is told the network state (wire.NetConnecting/NetRegistered/NetDisconnected)
+	// whenever it changes; see SetStateHook. uplinkDown is true from HandleDisconnect until
+	// the next uplink line.
+	stateHook  func(state string)
+	uplinkDown bool
 
 	mu       sync.RWMutex
 	self     *User
@@ -406,6 +411,30 @@ func (s *Session) WriteMessage(msg irc.Message) error {
 		return fmt.Errorf("uplink not ready")
 	}
 	return s.driver.WriteRaw(s.netID, msg.Wire())
+}
+
+// SetStateHook installs fn to be called (outside Session's locks) with the new network state
+// each time the uplink starts connecting, finishes registration or goes down.
+func (s *Session) SetStateHook(fn func(state string)) {
+	s.mu.Lock()
+	s.stateHook = fn
+	s.mu.Unlock()
+}
+
+// State is the network's state: registered, connecting, or disconnected.
+func (s *Session) State() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.networkStateLocked()
+}
+
+func (s *Session) notifyState(state string) {
+	s.mu.RLock()
+	fn := s.stateHook
+	s.mu.RUnlock()
+	if fn != nil {
+		fn(state)
+	}
 }
 
 // SetCTCPConfig installs the shared (server-wide) CTCP relay/edge/disable

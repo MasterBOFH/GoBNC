@@ -140,9 +140,20 @@ func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
 		_ = nc.Close()
 		return
 	}
+	// Register the connection and queue the hello response under s.mu, the lock MarkReady
+	// takes: a module learns readiness exactly once, from hello or from the ready event.
 	s.mu.Lock()
 	s.nextID++
 	c := newConn(s.nextID, s, nc, hello.module, hello.granted)
+	hello.result.Ready = s.backend.Ready()
+	c.readySent = hello.result.Ready
+	resp, err := resultResponse(hello.id, hello.result)
+	if err != nil {
+		s.mu.Unlock()
+		_ = nc.Close()
+		return
+	}
+	c.Enqueue(resp)
 	s.conns[c.id] = c
 	s.mu.Unlock()
 	s.log.Info("module connected", "module", hello.module, "granted", hello.granted)
@@ -180,10 +191,25 @@ func (s *Server) Broadcast(feature, event string, data any) {
 type helloInfo struct {
 	module  string
 	granted []string
+	id      uint64 // the hello request's id
+	result  wire.HelloResult
 }
 
-// handshake reads the first frame, which must be a valid hello, and answers it. On any error
-// the error response has been written and the caller closes the connection.
+// MarkReady tells every connected module that has not yet learnt it that the brain is ready
+// (LiveReady sent). Backend.Ready must already report true.
+func (s *Server) MarkReady() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.conns {
+		if !c.readySent {
+			c.readySent = true
+			c.EnqueueEvent(wire.EventReady, wire.Empty{})
+		}
+	}
+}
+
+// handshake reads the first frame, which must be a valid hello, and returns what to answer. On
+// any error the error response has been written and the caller closes the connection.
 func (s *Server) handshake(r *bufio.Reader, c net.Conn) (helloInfo, error) {
 	f, err := wire.ReadFrame(r)
 	if err != nil {
@@ -215,11 +241,8 @@ func (s *Server) handshake(r *bufio.Reader, c net.Conn) (helloInfo, error) {
 	}
 	granted, denied := grant(p.Features, mod.Features)
 	res := wire.HelloResult{API: wire.APIVersion, BrainVersion: s.backend.BrainVersion(),
-		Granted: granted, Denied: denied, Ready: s.backend.Ready()}
-	if err := writeResult(c, req.ID, res); err != nil {
-		return helloInfo{}, err
-	}
-	return helloInfo{module: p.Module, granted: granted}, nil
+		Granted: granted, Denied: denied}
+	return helloInfo{module: p.Module, granted: granted, id: req.ID, result: res}, nil
 }
 
 // grant splits the requested features into those the module's config allows and the rest,
@@ -237,14 +260,6 @@ func grant(requested, configured []string) (granted, denied []string) {
 		}
 	}
 	return granted, denied
-}
-
-func writeResult(c net.Conn, id uint64, v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return wire.WriteFrame(c, wire.Response{ID: id, Result: b})
 }
 
 func writeError(c net.Conn, id uint64, code, msg string) {

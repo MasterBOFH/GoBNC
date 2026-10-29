@@ -37,6 +37,8 @@ type Conn struct {
 	mu      sync.Mutex
 	onClose []func()
 	subs    map[int64]bool // networks this connection subscribed to (events.subscribe)
+
+	readySent bool // guarded by Server.mu: hello said ready, or the ready event was queued
 }
 
 func newConn(id uint64, srv *Server, nc net.Conn, module string, granted []string) *Conn {
