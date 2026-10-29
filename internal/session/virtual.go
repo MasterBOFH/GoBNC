@@ -24,18 +24,11 @@ type VirtualClient struct {
 	deliver func(ev any) bool
 }
 
-// virtualCaps are the capabilities a virtual client always has.
-var virtualCaps = []string{"message-tags", "server-time", "echo-message", "labeled-response", "batch",
-	"multi-prefix", "userhost-in-names", "account-tag", "away-notify", "extended-join", "chghost",
-	"setname", "invite-notify", "cap-notify", readMarkerCap}
-
-var virtualCapSet = func() map[string]bool {
-	m := make(map[string]bool, len(virtualCaps))
-	for _, c := range virtualCaps {
-		m[c] = true
-	}
-	return m
-}()
+// virtualCapSet holds the capabilities a virtual client always has.
+var virtualCapSet = map[string]bool{"message-tags": true, "server-time": true, "echo-message": true,
+	"labeled-response": true, "batch": true, "multi-prefix": true, "userhost-in-names": true,
+	"account-tag": true, "away-notify": true, "extended-join": true, "chghost": true, "setname": true,
+	"invite-notify": true, "cap-notify": true, readMarkerCap: true}
 
 // ErrVirtualClientGone is returned by Send once the module's sink refused a frame.
 var ErrVirtualClientGone = errors.New("session: virtual client's module is gone")
@@ -85,15 +78,27 @@ func isVirtual(d Downlink) bool {
 }
 
 // AttachVirtual registers vc on this network — without Attach's connect notice and burst; the
-// module has the network's state from its snapshot.
+// module has the network's state from its snapshot. A client already attached under the same
+// ID is detached first, so its pending replies and echoes do not reach vc.
 func (s *Session) AttachVirtual(vc *VirtualClient) {
+	if s.HasDownlink(vc.ID()) {
+		s.Detach(vc.ID())
+	}
 	s.mu.Lock()
 	s.downlinks[vc.ID()] = vc
 	s.mu.Unlock()
 }
 
-// DetachVirtual removes a virtual client (and its pending solicited requests).
-func (s *Session) DetachVirtual(id ClientID) { s.Detach(id) }
+// DetachVirtual removes vc (and its pending solicited requests) if it is still the client
+// attached under its ID — not a later client of the same name from another module connection.
+func (s *Session) DetachVirtual(vc *VirtualClient) {
+	s.mu.RLock()
+	cur, ok := s.downlinks[vc.ID()]
+	s.mu.RUnlock()
+	if ok && cur == Downlink(vc) {
+		s.Detach(vc.ID())
+	}
+}
 
 // HasDownlink reports whether a client (IRC or virtual) with this id is attached.
 func (s *Session) HasDownlink(id ClientID) bool {

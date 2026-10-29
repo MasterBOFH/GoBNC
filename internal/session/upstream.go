@@ -594,11 +594,13 @@ func (s *Session) HandleDisconnect(err error) {
 	// go); only IRC clients are told and dropped.
 	clients := make([]Downlink, 0, len(s.downlinks))
 	virtual := make(map[ClientID]Downlink)
+	awaiting := make(map[ClientID]bool, len(s.downlinks))
 	for id, d := range s.downlinks {
 		if isVirtual(d) {
 			virtual[id] = d
 		} else {
 			clients = append(clients, d)
+			awaiting[id] = true
 		}
 	}
 	if wasRegistered {
@@ -606,12 +608,6 @@ func (s *Session) HandleDisconnect(err error) {
 		s.awaitingUplink = make(map[ClientID]bool)
 	} else {
 		// Stay attached and keep waiting for the next successful registration.
-		awaiting := make(map[ClientID]bool, len(s.downlinks))
-		for id, d := range s.downlinks {
-			if !isVirtual(d) {
-				awaiting[id] = true
-			}
-		}
 		s.awaitingUplink = awaiting
 	}
 	s.regBuffer = nil

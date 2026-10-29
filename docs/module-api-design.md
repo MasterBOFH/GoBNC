@@ -100,6 +100,11 @@ paths whose lines the module already has as envelopes skip virtual clients (the 
 loop, self-echo fan-outs, CTCP relay, MARKREAD broadcasts, own-umode broadcast). Virtual clients
 survive an uplink disconnect and are not counted as attached clients.
 
+Known limits of virtual clients: a line event's `label` is not tied to the client that sent it, so
+a module should use labels unique across its clients; the "uplink connection failed" notice
+before registration goes to IRC clients only; a virtual client's caps are fixed (CAP DEL arrives as
+a client_line but does not change them).
+
 ### Devices in the brain
 
 Tables `devices`, `device_networks` (the toggle) and `open_buffers` (open/closed per device, with a

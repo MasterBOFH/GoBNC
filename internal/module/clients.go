@@ -63,7 +63,7 @@ func handleClientsDetach(ctx context.Context, c *Conn, params json.RawMessage) (
 		return nil, wire.Errorf(wire.CodeNotFound, "no client %q on network %d", p.Client, p.Network)
 	}
 	if sess, ok := c.srv.backend.Session(p.Network); ok && sess != nil {
-		sess.DetachVirtual(vc.ID())
+		sess.DetachVirtual(vc)
 	}
 	return nil, nil
 }
@@ -83,7 +83,7 @@ func (c *Conn) detachAll() {
 	c.mu.Unlock()
 	for k, vc := range clients {
 		if sess, ok := c.srv.backend.Session(k.network); ok && sess != nil {
-			sess.DetachVirtual(vc.ID())
+			sess.DetachVirtual(vc)
 		}
 	}
 }
