@@ -20,16 +20,19 @@ func handleSendLine(ctx context.Context, c *Conn, params json.RawMessage) (any, 
 	if err != nil {
 		return nil, err
 	}
+	if !c.srv.backend.Ready() {
+		return nil, wire.Errorf(wire.CodeNotReady, "the brain is not ready")
+	}
 	sess, err := c.srv.session(p.Network)
 	if err != nil {
 		return nil, err
 	}
+	if !sess.Registered() {
+		return nil, wire.Errorf(wire.CodeNotReady, "network %d is not registered", p.Network)
+	}
 	vc := c.virtualClient(p.Network, p.Client)
 	if vc == nil {
 		return nil, wire.Errorf(wire.CodeNotFound, "no client %q on network %d (clients.attach first)", p.Client, p.Network)
-	}
-	if !c.srv.backend.Ready() || !sess.Registered() {
-		return nil, wire.Errorf(wire.CodeNotReady, "network %d is not ready", p.Network)
 	}
 	msg, err := irc.Parse(p.Line)
 	if err != nil || msg.Command == "" {

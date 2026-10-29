@@ -92,14 +92,22 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("module server: %w", err)
 	}
+	// A stale socket (or a previous brain's, still listening during a reload) is replaced:
+	// modules connecting from now on reach this brain.
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return fmt.Errorf("module server: %w", err)
 	}
+	// On exit, remove the socket file only if it is still ours: during a reload the
+	// replacement brain may already have put its own socket at path.
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ours, statErr := os.Stat(path)
 	defer func() {
 		_ = ln.Close()
-		_ = os.Remove(path)
+		if cur, err := os.Stat(path); statErr == nil && err == nil && os.SameFile(ours, cur) {
+			_ = os.Remove(path)
+		}
 	}()
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("module server: %w", err)

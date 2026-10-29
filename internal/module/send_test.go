@@ -78,6 +78,10 @@ func TestSendLineNotReadyBeforeLiveReady(t *testing.T) {
 	if code != wire.CodeNotReady {
 		t.Fatalf("code = %q, want not_ready", code)
 	}
+}
+
+func TestSendLineUnattachedClient(t *testing.T) {
+	tc, _, _ := sendFixture(t, false, true)
 	if code := tc.callErr(wire.MethodSendLine, wire.SendLineParams{Network: 9, Client: "nobody", Line: "PRIVMSG #c :x"}); code != wire.CodeNotFound {
 		t.Fatalf("unattached client: code %q", code)
 	}
