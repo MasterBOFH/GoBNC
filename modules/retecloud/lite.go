@@ -32,6 +32,7 @@ type liteSession struct {
 	activity   map[string]*liteActivity
 	dirty      map[string]bool
 	open       map[string]bool // the device's open buffers (keys)
+	pending    []pendingReply  // queries this connection sent whose broadcast replies are due
 	flushTimer *time.Timer
 }
 
