@@ -413,6 +413,13 @@ func (s *Session) WriteMessage(msg irc.Message) error {
 	return s.driver.WriteRaw(s.netID, msg.Wire())
 }
 
+// Fold is name under the network's CASEMAPPING — the key history and modules use for a buffer.
+func (s *Session) Fold(name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isupport.CaseMapping.Canonical(name)
+}
+
 // SetStateHook installs fn to be called (outside Session's locks) with the new network state
 // each time the uplink starts connecting, finishes registration or goes down.
 func (s *Session) SetStateHook(fn func(state string)) {

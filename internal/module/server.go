@@ -18,6 +18,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/session"
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -30,6 +31,8 @@ type Backend interface {
 	Networks() []wire.NetworkInfo
 	// Session returns a network's Session.
 	Session(id int64) (*session.Session, bool)
+	// Store is the brain's database (history, read markers, devices, module storage).
+	Store() *store.Store
 }
 
 // Server accepts module connections on the module socket.

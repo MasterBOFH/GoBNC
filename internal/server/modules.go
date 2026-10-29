@@ -34,6 +34,8 @@ func (b moduleBackend) Networks() []wire.NetworkInfo {
 	return out
 }
 
+func (b moduleBackend) Store() *store.Store { return b.s.store }
+
 func (b moduleBackend) Session(id int64) (*session.Session, bool) {
 	sess := b.s.sessionByNetwork(keeper.NetworkID(id))
 	return sess, sess != nil

@@ -13,6 +13,7 @@ import (
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/session"
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -20,7 +21,10 @@ type fakeBackend struct {
 	ready    bool
 	nets     []wire.NetworkInfo
 	sessions map[int64]*session.Session
+	db       *store.Store
 }
+
+func (b *fakeBackend) Store() *store.Store { return b.db }
 
 func (b *fakeBackend) BrainVersion() string         { return "test-brain" }
 func (b *fakeBackend) Ready() bool                  { return b.ready }
