@@ -119,9 +119,9 @@ func firstUnreadPage(ctx context.Context, c *Conn, db *store.Store, p wire.Histo
 }
 
 // closedAtFloor is the device's closed_at_id for a buffer: nothing at or below it counts as
-// unread on that device. Device state arrives with the devices feature; until then none.
+// unread on that device.
 func (s *Server) closedAtFloor(ctx context.Context, device string, network int64, key string) (int64, error) {
-	return 0, nil
+	return s.backend.Store().BufferClosedAt(ctx, device, network, key)
 }
 
 // handleHistoryActivity reports, for every buffer the device shows (joined channels, its open
@@ -165,7 +165,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 		add(ch, false)
 	}
 	for _, q := range queries {
-		add(q, true)
+		add(q, !sess.IsChannel(q))
 	}
 	add(wire.ServerBuffer, false)
 
@@ -211,10 +211,20 @@ func sourceNick(src string) string {
 	return src
 }
 
-// openQueries lists the device's open query buffers on a network. Device state arrives with
-// the devices feature; until then none.
+// openQueries lists the buffers the device keeps open on a network (queries, and channels it
+// keeps open; a joined channel shows anyway).
 func (s *Server) openQueries(ctx context.Context, device string, network int64) ([]string, error) {
-	return nil, nil
+	rows, err := s.backend.Store().ListOpenBuffers(ctx, device, network)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, b := range rows {
+		if b.Open {
+			out = append(out, b.Display)
+		}
+	}
+	return out, nil
 }
 
 func historyMessage(m store.Message, buffer string) wire.HistoryMessage {

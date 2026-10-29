@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/session"
@@ -33,6 +34,8 @@ type Backend interface {
 	Session(id int64) (*session.Session, bool)
 	// Store is the brain's database (history, read markers, devices, module storage).
 	Store() *store.Store
+	// Config is the brain's current configuration (auth settings for auth.check).
+	Config() config.Config
 }
 
 // Server accepts module connections on the module socket.
@@ -45,6 +48,10 @@ type Server struct {
 	cfg    config.ModulesConfig
 	conns  map[uint64]*Conn
 	nextID uint64
+
+	authMu    sync.Mutex
+	authFails map[string][]time.Time // auth.check failures per remote IP (rate limit)
+	now       func() time.Time
 }
 
 // NewServer returns a server for cfg (Socket already resolved, see config.ResolvedModules).
@@ -52,7 +59,7 @@ func NewServer(cfg config.ModulesConfig, backend Backend, log *slog.Logger) *Ser
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid(), conns: map[uint64]*Conn{}}
+	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid(), conns: map[uint64]*Conn{}, now: time.Now}
 }
 
 // SetConfig replaces the module list after a rehash. Connections already past hello keep the

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -111,6 +112,14 @@ func (s *Session) SeedDevice(clientID string) ([]string, error) {
 	return seeded, nil
 }
 
+// IsChannel reports whether name is a channel on this network (ISUPPORT CHANTYPES).
+func (s *Session) IsChannel(name string) bool {
+	s.mu.RLock()
+	chantypes := s.isupport.Raw["CHANTYPES"]
+	s.mu.RUnlock()
+	return isChannelTarget(name, chantypes)
+}
+
 func isChannelTarget(name, chantypes string) bool {
 	if name == "" {
 		return false
@@ -127,3 +136,50 @@ func sourceNickOf(src string) string {
 	}
 	return src
 }
+
+// OpenBufferForDevice opens buffer on one device (a user action) and emits buffer_open reason
+// "user".
+func (s *Session) OpenBufferForDevice(clientID, buffer string) error {
+	if s.store == nil || s.Network.ID == 0 {
+		return errNoStore
+	}
+	key := s.Fold(buffer)
+	s.busMu.Lock()
+	defer s.busMu.Unlock()
+	if err := s.store.SetBufferOpen(context.Background(), clientID, s.Network.ID, key, buffer, true, 0); err != nil {
+		return err
+	}
+	s.emitLocked(wire.BufferOpenEvent{Network: s.Network.ID, ClientID: clientID, Buffer: buffer, Key: key, Reason: wire.OpenUser})
+	return nil
+}
+
+// CloseBufferForDevice closes buffer on one device: its floor becomes the buffer's newest
+// message id (what is unread now stays dismissed there) and buffer_close is emitted. It returns
+// that floor.
+func (s *Session) CloseBufferForDevice(clientID, buffer string) (int64, error) {
+	if s.store == nil || s.Network.ID == 0 {
+		return 0, errNoStore
+	}
+	ctx := context.Background()
+	key := s.Fold(buffer)
+	s.busMu.Lock()
+	defer s.busMu.Unlock()
+	latest, err := s.store.MessagesLatest(ctx, s.Network.ID, key, 1)
+	if err != nil {
+		return 0, err
+	}
+	var closedAt int64
+	if len(latest) == 1 {
+		closedAt = latest[0].ID
+	}
+	if err := s.store.SetBufferOpen(ctx, clientID, s.Network.ID, key, buffer, false, closedAt); err != nil {
+		return 0, err
+	}
+	if closedAt, err = s.store.BufferClosedAt(ctx, clientID, s.Network.ID, key); err != nil {
+		return 0, err
+	}
+	s.emitLocked(wire.BufferCloseEvent{Network: s.Network.ID, ClientID: clientID, Buffer: buffer, Key: key, ClosedAtID: closedAt})
+	return closedAt, nil
+}
+
+var errNoStore = errors.New("session: no store")

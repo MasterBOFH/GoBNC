@@ -22,9 +22,11 @@ type fakeBackend struct {
 	nets     []wire.NetworkInfo
 	sessions map[int64]*session.Session
 	db       *store.Store
+	cfg      config.Config
 }
 
-func (b *fakeBackend) Store() *store.Store { return b.db }
+func (b *fakeBackend) Store() *store.Store   { return b.db }
+func (b *fakeBackend) Config() config.Config { return b.cfg }
 
 func (b *fakeBackend) BrainVersion() string         { return "test-brain" }
 func (b *fakeBackend) Ready() bool                  { return b.ready }
@@ -48,8 +50,17 @@ func shortSocketPath(t *testing.T) string {
 
 func startServer(t *testing.T, mods []config.ModuleConfig, backend Backend) (*Server, string) {
 	t.Helper()
+	return startServerWith(t, mods, backend, nil)
+}
+
+// startServerWith is startServer with setup run on the Server before it serves.
+func startServerWith(t *testing.T, mods []config.ModuleConfig, backend Backend, setup func(*Server)) (*Server, string) {
+	t.Helper()
 	path := shortSocketPath(t)
 	srv := NewServer(config.ModulesConfig{Socket: path, List: mods}, backend, nil)
+	if setup != nil {
+		setup(srv)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
@@ -73,10 +84,11 @@ func startServer(t *testing.T, mods []config.ModuleConfig, backend Backend) (*Se
 
 // testConn is a raw module connection speaking wire frames.
 type testConn struct {
-	t      *testing.T
-	c      net.Conn
-	r      *bufio.Reader
-	nextID uint64
+	t       *testing.T
+	c       net.Conn
+	r       *bufio.Reader
+	nextID  uint64
+	pending []wire.Event // events read while waiting for a response
 }
 
 func dialModule(t *testing.T, path string) *testConn {
@@ -118,6 +130,9 @@ func (tc *testConn) response(id uint64) *wire.Response {
 		}
 		if f.Kind == wire.KindResponse && f.Response.ID == id {
 			return f.Response
+		}
+		if f.Kind == wire.KindEvent {
+			tc.pending = append(tc.pending, *f.Event)
 		}
 	}
 }

@@ -17,6 +17,13 @@ import (
 // it, and a module "m" granted features.
 func historyFixture(t *testing.T, features ...string) (*testConn, *store.Store, int64, *session.Session) {
 	t.Helper()
+	return historyFixtureWith(t, nil, features...)
+}
+
+// historyFixtureWith is historyFixture with setup applied to the backend and server before the
+// server starts (so the server goroutines never race the test's writes).
+func historyFixtureWith(t *testing.T, setup func(*fakeBackend, *Server, *store.Store, int64), features ...string) (*testConn, *store.Store, int64, *session.Session) {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "gbh")
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +40,11 @@ func historyFixture(t *testing.T, features ...string) (*testConn, *store.Store, 
 	}
 	sess := registeredSessionWithStore(t, nid, db)
 	be := &fakeBackend{ready: true, db: db, sessions: map[int64]*session.Session{nid: sess}}
-	_, path := startServer(t, []config.ModuleConfig{{Name: "m", Features: features}}, be)
+	_, path := startServerWith(t, []config.ModuleConfig{{Name: "m", Features: features}}, be, func(srv *Server) {
+		if setup != nil {
+			setup(be, srv, db, nid)
+		}
+	})
 	tc := dialModule(t, path)
 	tc.hello("m", features...)
 	return tc, db, nid, sess

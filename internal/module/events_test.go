@@ -39,6 +39,12 @@ func registeredSessionWithStore(t *testing.T, id int64, db *store.Store) *sessio
 // nextEvent returns the next event frame named name.
 func (tc *testConn) nextEvent(name string) json.RawMessage {
 	tc.t.Helper()
+	for i, ev := range tc.pending {
+		if ev.Event == name {
+			tc.pending = append(tc.pending[:i:i], tc.pending[i+1:]...)
+			return ev.Data
+		}
+	}
 	for {
 		f, err := tc.read()
 		if err != nil {

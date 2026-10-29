@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	"github.com/MasterBOFH/GoBNC/internal/module"
 	"github.com/MasterBOFH/GoBNC/internal/session"
@@ -35,6 +36,12 @@ func (b moduleBackend) Networks() []wire.NetworkInfo {
 }
 
 func (b moduleBackend) Store() *store.Store { return b.s.store }
+
+func (b moduleBackend) Config() config.Config {
+	b.s.mu.RLock()
+	defer b.s.mu.RUnlock()
+	return b.s.cfg
+}
 
 func (b moduleBackend) Session(id int64) (*session.Session, bool) {
 	sess := b.s.sessionByNetwork(keeper.NetworkID(id))
