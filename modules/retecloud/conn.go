@@ -41,14 +41,16 @@ type wsConn struct {
 
 	// Loop-owned.
 	authed     bool
-	deviceID   string // authenticate's client_id
-	compress   bool   // deflate-stream accepted
-	clientName string // virtual client name on every network
+	deviceID   string                 // authenticate's client_id
+	compress   bool                   // deflate-stream accepted
+	clientName string                 // virtual client name on every network
+	sessions   map[int64]*liteSession // followed networks (sync_session lite)
 }
 
 func newWSConn(m *Module, id uint64, ws *websocket.Conn, certSHA256, remoteIP string) *wsConn {
 	return &wsConn{id: id, m: m, ws: ws, certSHA256: certSHA256, remoteIP: remoteIP,
-		out: make(chan outFrame, sendQueueSize), closed: make(chan struct{}), clientName: "ws" + itoa(id)}
+		out: make(chan outFrame, sendQueueSize), closed: make(chan struct{}), clientName: "ws" + itoa(id),
+		sessions: map[int64]*liteSession{}}
 }
 
 // send queues a frame without blocking; a full queue closes the connection (as retecloud-api).

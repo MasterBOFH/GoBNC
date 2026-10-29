@@ -240,7 +240,8 @@ func (m *Module) brainConnected() {
 			n = &network{id: info.ID, joined: map[string]string{}}
 			m.nets[info.ID] = n
 		}
-		n.name, n.state, n.followed = info.Name, info.State, false
+		// A new brain numbers its line events from scratch.
+		n.name, n.state, n.followed, n.lastSeq = info.Name, info.State, false, 0
 		if info.Nick != "" && n.nick == "" {
 			n.nick = info.Nick
 		}
@@ -271,13 +272,20 @@ func (m *Module) Accept(ws *websocket.Conn, certSHA256, remoteIP string) {
 	m.post(func() { m.dropConn(c) })
 }
 
-// dropConn forgets a closed WebSocket.
+// dropConn forgets a closed WebSocket and its virtual clients.
 func (m *Module) dropConn(c *wsConn) {
+	if !m.conns[c] {
+		return
+	}
 	delete(m.conns, c)
+	for id, ls := range c.sessions {
+		ls.stopTimer()
+		if m.brainUp {
+			_ = m.call(wire.MethodClientsDetach, wire.ClientParams{Network: id, Client: c.clientName}, nil)
+		}
+	}
+	c.sessions = map[int64]*liteSession{}
 }
-
-// handleEvent applies one brain event.
-func (m *Module) handleEvent(ev wire.Event) {}
 
 // resume brings the module's state back in step after a brain (re)connect.
 func (m *Module) resume() {}
@@ -296,6 +304,10 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		return
 	}
 	switch msg.Type {
+	case "sync_session":
+		m.handleSyncSession(c, msg)
+	case "unsync_session":
+		m.handleUnsyncSession(c, msg)
 	case "create_session":
 		c.send(errorFrame("create_session", msg.RequestID, "Not supported"))
 	default:

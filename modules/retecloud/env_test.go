@@ -145,7 +145,9 @@ func (e *testEnv) startBrain() {
 	done := make(chan struct{})
 	go func() { _ = srv.Serve(ctx); close(done) }()
 	<-listening
+	e.be.mu.Lock()
 	e.srv = srv
+	e.be.mu.Unlock()
 	var once sync.Once
 	e.stopSrv = func() { once.Do(func() { cancel(); <-done }) }
 	e.t.Cleanup(e.stopSrv)
@@ -160,6 +162,14 @@ func (e *testEnv) addNetwork(name string) int64 {
 	}
 	n, _ := e.be.db.NetworkByName(context.Background(), name)
 	sess := session.New(n, e.be.db, history.New(e.be.db), nil, nil)
+	sess.SetStateHook(func(state string) { // what internal/server does
+		e.be.mu.Lock()
+		srv := e.srv
+		e.be.mu.Unlock()
+		if srv != nil {
+			srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: name, State: state, Nick: sess.Nick(), Change: wire.ChangeState})
+		}
+	})
 	e.be.mu.Lock()
 	e.be.sessions[id] = sess
 	e.be.mu.Unlock()
