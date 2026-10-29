@@ -20,6 +20,14 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 		n.name, n.state, n.nick = ev.Name, ev.State, ev.Nick
 		m.broadcastAuthed(ServerMessage{Type: "session_created", SessionID: sid,
 			Data: map[string]interface{}{"name": ev.Name, "state": sessionState(ev.State)}})
+		// A network the brain (re)started is a new Session: follow it again where synced.
+		for c := range m.conns {
+			if c.sessions[ev.Network] != nil {
+				n.lastSeq = 0
+				m.resumeNetwork(ev.Network)
+				break
+			}
+		}
 		return
 	case wire.ChangeRemoved:
 		delete(m.nets, ev.Network)

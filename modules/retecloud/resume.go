@@ -19,20 +19,27 @@ func (m *Module) resume() {
 		}
 	}
 	for id := range followed {
-		n := m.nets[id]
-		if n == nil {
+		if m.nets[id] == nil {
 			m.dropNetwork(id)
 			continue
 		}
-		snap, err := m.snapshot(id)
-		if err != nil {
-			m.log.Warn("resume: subscribe", "network", id, "err", err)
-			continue
-		}
-		for c := range m.conns {
-			if ls := c.sessions[id]; ls != nil {
-				m.resumeConn(c, n, ls, snap)
-			}
+		m.resumeNetwork(id)
+	}
+}
+
+// resumeNetwork re-follows one network for every connection that synced it: after a brain
+// reconnect, or when the brain restarted the network (a new Session, without the module's
+// subscription and virtual clients).
+func (m *Module) resumeNetwork(id int64) {
+	n := m.nets[id]
+	snap, err := m.snapshot(id)
+	if err != nil {
+		m.log.Warn("resume: subscribe", "network", id, "err", err)
+		return
+	}
+	for c := range m.conns {
+		if ls := c.sessions[id]; ls != nil {
+			m.resumeConn(c, n, ls, snap)
 		}
 	}
 }

@@ -1,10 +1,15 @@
 package retecloud
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/internal/history"
+	"github.com/MasterBOFH/GoBNC/internal/session"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 func TestBrainReloadKeepsWebSocketAndFillsTheGap(t *testing.T) {
@@ -50,4 +55,26 @@ func TestBrainReloadKeepsWebSocketAndFillsTheGap(t *testing.T) {
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Fatalf("lines = %v, want %v once each, in order", order, want)
 	}
+}
+
+func TestRestartedNetworkIsFollowedAgain(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #c")
+	c := e.syncedClient("ios-1", "undernet", "#c")
+
+	// The brain stops and starts the network: a new Session in its place.
+	id := e.nets["undernet"]
+	n, _ := e.be.db.NetworkByName(context.Background(), "undernet")
+	fresh := session.New(n, e.be.db, history.New(e.be.db), nil, nil)
+	e.be.mu.Lock()
+	e.be.sessions[id] = fresh
+	e.be.mu.Unlock()
+	e.feed("undernet", ":srv.example 001 me :Welcome", ":srv.example 376 me :End", ":me!u@h JOIN #c")
+	mark := c.count()
+	e.srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: "undernet", State: wire.NetRegistered, Change: wire.ChangeAdded})
+	time.Sleep(300 * time.Millisecond)
+	e.feed("undernet", ":peer!p@h PRIVMSG #c :after restart")
+	c.waitFor(mark, 5*time.Second, func(f map[string]any) bool {
+		return f["type"] == "irc_line" && strings.HasSuffix(f["data"].(map[string]any)["raw"].(string), "after restart")
+	})
 }
