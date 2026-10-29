@@ -38,12 +38,15 @@ The bouncer is two processes, not one, and this shapes almost everything in `int
 - **`internal/downlink`** — accepts TLS IRC clients, authenticates them (password or cert fingerprint, `internal/auth`), and attaches them to a `Session`.
 - **`internal/server`** (`Server`) — wires `internal/store` (SQLite config/history), every network's `Session`, the one shared keeper attach/`Driver`, and the downlink listener together; owns the boot sequence and REHASH/admin plumbing.
 - **`internal/control`** — the CLI/`BNC`-command admin unix socket (start/stop/reconnect network, status, rehash).
+- **Modules** — separate processes on the brain's module socket; see `docs/module-api-design.md`.
 
 `internal/uplink` (the pre-split single-process design) no longer exists in this tree — the cutover to keeper/brain is complete; don't design around a coexistence period.
 
 ### Resume: the property most bugs in this area violate
 
 A brain restart **reattaches** to a keeper that keeps holding already-connected uplinks. `Server.Run`'s boot order matters and is enforced, not incidental: every network is registered (`registerNetworkLocked`, incl. `Session.SeedFromBlob` for a network the keeper already held) **before** `SendLiveReady`, and only dialing a genuinely new network happens **after** — the keeper's `serveLive` reads nothing at all, not even a `WriteRequest`, until `LiveReady` is the first frame it sees. Anything that needs to write to an already-resumed network's uplink (a NAMES refresh, a USERHOST query, …) has to be deferred to the post-`SendLiveReady` point (`dialNetworkLocked`'s resumed branch), never fired from inside `SeedFromBlob`/`registerNetworkLocked` itself — this has been the exact shape of more than one real bug.
+
+The module socket (`internal/module`, started by `Server.startModules`) comes up before networks are registered so modules can connect during boot, but a module is only told `ready` — and only allowed to write (`send.line`, network control) — after `SendLiveReady` (`bootNetworks` → `markModulesReady`), the same rule as above. State a module snapshot reports must change under the Session's `busMu` (see `internal/session/bus.go`).
 
 Resume is **gap-only**: a resumed attach never replays the original registration burst, only lines since the brain's own last acked seq. That means `Session` state that used to be learned by watching that burst (self-nick, cloak/host, enabled caps, channel keys, ISUPPORT) has to come from the keeper's blob store instead, and anything not explicitly pushed there is invisible to a resumed brain — a channel's member roster and nick-recovery state are known, accepted gaps for exactly this reason.
 
