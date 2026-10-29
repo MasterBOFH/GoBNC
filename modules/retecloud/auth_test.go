@@ -2,6 +2,7 @@ package retecloud
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -80,5 +81,29 @@ func TestFrameBeforeAuthenticateRejected(t *testing.T) {
 	f := c.waitFor(0, 5*time.Second, reply(rid, "sync_session_error"))
 	if f["error"] != "Not authenticated" {
 		t.Fatalf("pre-auth frame: %v", f)
+	}
+}
+
+func TestUnauthenticatedConnectionClosedAfterTimeout(t *testing.T) {
+	old := authTimeout
+	authTimeout = 200 * time.Millisecond
+	defer func() { authTimeout = old }()
+	e := newTestEnv(t, "undernet")
+	c := e.dial(false)
+	select {
+	case <-c.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("connection still open after the auth timeout")
+	}
+	if n := c.count(); n != 0 {
+		t.Fatalf("got %d frames before the close", n)
+	}
+}
+
+func TestPasswordLoginWithUnregisteredCertIsNotThrottled(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	for i := 0; i < 7; i++ { // more than the 5 failures per address the brain allows
+		c := e.dial(true) // presents a certificate the bouncer does not know
+		c.authenticate(fmt.Sprintf("ios-%d", i))
 	}
 }

@@ -38,8 +38,10 @@ func NewListener(cfg Config, log *slog.Logger, accept func(ws *websocket.Conn, c
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Listener{cfg: cfg, log: log, nets: nets, slots: make(chan struct{}, cfg.MaxConnections), accept: accept,
-		upgrade: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}, nil
+	// The Upgrader's default origin check refuses a browser page of another origin (which,
+	// in a browser holding the user's client certificate, could otherwise log in with it);
+	// native clients send no Origin and pass.
+	return &Listener{cfg: cfg, log: log, nets: nets, slots: make(chan struct{}, cfg.MaxConnections), accept: accept}, nil
 }
 
 // Serve listens on cfg.ListenAddr until ctx ends.

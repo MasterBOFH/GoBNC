@@ -28,6 +28,9 @@ type Brain interface {
 // callTimeout bounds one brain call made from the loop.
 const callTimeout = 10 * time.Second
 
+// authTimeout is how long a WebSocket may stay open without authenticating.
+var authTimeout = 30 * time.Second
+
 // Module is gobnc-retecloud's core. One loop goroutine owns all of its state: WebSocket requests
 // arrive as ops posted in order, brain events are consumed in order, and brain calls made from
 // the loop keep reading events into a backlog while they wait (see call), so the loop is the
@@ -267,6 +270,15 @@ func (m *Module) Accept(ws *websocket.Conn, certSHA256, remoteIP string) {
 		return
 	}
 	c := <-done
+	// A connection that never authenticates must not keep a slot.
+	authTimer := time.AfterFunc(authTimeout, func() {
+		m.post(func() {
+			if !c.authed {
+				c.close()
+			}
+		})
+	})
+	defer authTimer.Stop()
 	go c.writeLoop()
 	c.readLoop()
 	m.post(func() { m.dropConn(c) })

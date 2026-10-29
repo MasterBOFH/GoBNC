@@ -90,3 +90,18 @@ func TestSeventeenthConnectionGets503(t *testing.T) {
 		t.Fatalf("17th connection: err=%v status=%d, want 503", err, code)
 	}
 }
+
+func TestCrossOriginBrowserRefused(t *testing.T) {
+	fx := testutil.NewTLSFixture(t)
+	url := startListener(t, fx, 16, func(ws *websocket.Conn, fp, ip string) { ws.Close() })
+	d := websocket.Dialer{TLSClientConfig: fx.ClientTLS, HandshakeTimeout: 5 * time.Second}
+	_, resp, err := d.Dial(url, http.Header{"Origin": []string{"https://evil.example"}})
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin upgrade: err=%v resp=%v, want 403", err, resp)
+	}
+	ws, _, err := dialWS(url, fx.ClientTLS) // native client: no Origin
+	if err != nil {
+		t.Fatalf("no-Origin client refused: %v", err)
+	}
+	ws.Close()
+}

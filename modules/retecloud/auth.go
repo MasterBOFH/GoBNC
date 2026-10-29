@@ -40,17 +40,19 @@ func (m *Module) handleAuthenticate(c *wsConn, msg *ClientMessage) {
 		startCompression: start})
 }
 
-// checkCredentials tries the connection's client certificate, then the password.
+// checkCredentials checks the password when one was sent, else the connection's client
+// certificate (so a phone with an unregistered certificate installed that logs in with the
+// password does not use up its address's failed-attempt allowance).
 func (m *Module) checkCredentials(c *wsConn, password string) bool {
-	try := func(p wire.AuthCheckParams) bool {
-		p.RemoteIP = c.remoteIP
-		var res wire.AuthCheckResult
-		return m.call(wire.MethodAuthCheck, p, &res) == nil && res.OK
+	p := wire.AuthCheckParams{Password: password, RemoteIP: c.remoteIP}
+	if password == "" {
+		if c.certSHA256 == "" {
+			return false
+		}
+		p = wire.AuthCheckParams{CertSHA256: c.certSHA256, RemoteIP: c.remoteIP}
 	}
-	if c.certSHA256 != "" && try(wire.AuthCheckParams{CertSHA256: c.certSHA256}) {
-		return true
-	}
-	return password != "" && try(wire.AuthCheckParams{Password: password})
+	var res wire.AuthCheckResult
+	return m.call(wire.MethodAuthCheck, p, &res) == nil && res.OK
 }
 
 // sessionSummaries lists every network with the device's toggle.

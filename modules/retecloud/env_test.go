@@ -224,6 +224,7 @@ type wsClient struct {
 	notify chan struct{}
 	rid    int
 	pw     *io.PipeWriter // deflate stream, once binary frames start
+	done   chan struct{}  // closed when the connection ends
 	binary atomic.Int32   // binary frames seen
 	text   atomic.Int32   // text frames seen
 }
@@ -239,13 +240,14 @@ func (e *testEnv) dial(withCert bool) *wsClient {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	c := &wsClient{t: e.t, ws: ws, notify: make(chan struct{}, 1)}
+	c := &wsClient{t: e.t, ws: ws, notify: make(chan struct{}, 1), done: make(chan struct{})}
 	e.t.Cleanup(func() { ws.Close() })
 	go c.readLoop()
 	return c
 }
 
 func (c *wsClient) readLoop() {
+	defer close(c.done)
 	for {
 		kind, data, err := c.ws.ReadMessage()
 		if err != nil {
