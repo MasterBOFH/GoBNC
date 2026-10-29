@@ -73,9 +73,13 @@ type SubscribeResult struct {
 }
 
 type Snapshot struct {
-	Network  int64             `json:"network"`
-	State    string            `json:"state"`
-	LastID   int64             `json:"last_id"`
+	Network int64  `json:"network"`
+	State   string `json:"state"`
+	LastID  int64  `json:"last_id"`
+	// Seq is the seq of the last line event emitted before the snapshot: line events with a
+	// higher seq follow it. A module re-subscribing for a fresh snapshot uses it to place the
+	// snapshot in the stream it is already consuming.
+	Seq      uint64            `json:"seq"`
 	Self     Self              `json:"self"`
 	ISupport map[string]string `json:"isupport"`
 	Caps     []string          `json:"caps"`

@@ -172,11 +172,13 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 - `events.subscribe {"network", "kinds"?: [...]}` → `{"snapshot": Snapshot}`; then `line` /
   `state` events for that network. Re-subscribing replaces the previous subscription and returns a
   fresh snapshot. `events.unsubscribe {"network"}` → `{}`.
-- Snapshot: `{"network", "state", "last_id", "self": {"nick","user","host","account","umodes","away"},
+- Snapshot: `{"network", "state", "last_id", "seq", "self": {"nick","user","host","account","umodes","away"},
   "isupport": {"KEY": "value", ...}, "caps": [...], "channels": [{"name","key","topic":
   {"text","setter","time"},"modes","chankey","members_complete",
   "members": [{"nick","prefixes","user","host","account","away"}]}]}`. `last_id` = newest
-  `messages.id` of the network at snapshot time (0 if none). `members_complete` is false for a
+  `messages.id` of the network at snapshot time (0 if none). `seq` = seq of the last `line` event
+  emitted before the snapshot, so a module that re-subscribes for a fresh snapshot can place it in
+  the stream it is consuming. `members_complete` is false for a
   channel seeded from the keeper blob after a brain restart until its NAMES refresh lands, at which
   point a `state` event `{"network","kind":"members","buffer","key","members":[...],"complete":true}`
   replaces the list.

@@ -77,10 +77,10 @@ func (s *Session) Subscribers() int {
 // emitLineLocked assigns the next per-network seq and delivers ev to every sink whose kinds
 // match. Caller holds busMu.
 func (s *Session) emitLineLocked(ev wire.LineEvent) {
+	s.busSeq++
 	if len(s.sinks) == 0 {
 		return
 	}
-	s.busSeq++
 	ev.Seq = s.busSeq
 	for id, e := range s.sinks {
 		if e.kinds != nil && !e.kinds[ev.Kind] {

@@ -91,3 +91,20 @@ func TestSnapshotBlobSeededChannelCompletesOnNames(t *testing.T) {
 		t.Fatal("snapshot after 366 still incomplete")
 	}
 }
+
+func TestSnapshotSeqPlacesItInTheStream(t *testing.T) {
+	s := newBusSession(t)
+	sink := &recSink{}
+	s.SubscribeWithSnapshot(1, sink, nil, nil)
+	feed(s, ":a!u@h JOIN #c", ":b!u@h JOIN #c")
+	lines := sink.lines()
+	var snap wire.Snapshot
+	s.SubscribeWithSnapshot(1, sink, nil, func(sn wire.Snapshot) { snap = sn }) // re-subscribe: fresh snapshot
+	if snap.Seq != lines[len(lines)-1].Seq {
+		t.Fatalf("snapshot seq = %d, want the last emitted line's seq %d", snap.Seq, lines[len(lines)-1].Seq)
+	}
+	feed(s, ":c!u@h JOIN #c")
+	if after := sink.lines(); after[len(after)-1].Seq != snap.Seq+1 {
+		t.Fatalf("next line seq = %d, want %d", after[len(after)-1].Seq, snap.Seq+1)
+	}
+}

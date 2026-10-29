@@ -34,6 +34,7 @@ func (s *Session) snapshotLocked() wire.Snapshot {
 		Network:  s.Network.ID,
 		State:    s.networkStateLocked(),
 		LastID:   lastID,
+		Seq:      s.busSeq,
 		ISupport: make(map[string]string, len(s.isupport.Raw)),
 		Caps:     []string{},
 		Channels: []wire.Channel{},

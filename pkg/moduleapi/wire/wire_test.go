@@ -97,7 +97,7 @@ func golden(t *testing.T, v any, want string) {
 
 func TestSnapshotJSONNames(t *testing.T) {
 	golden(t, Snapshot{
-		Network: 1, State: NetRegistered, LastID: 42,
+		Network: 1, State: NetRegistered, LastID: 42, Seq: 7,
 		Self:     Self{Nick: "me", User: "u", Host: "h", Account: "acct", UModes: "+i", Away: false},
 		ISupport: map[string]string{"CASEMAPPING": "rfc1459"},
 		Caps:     []string{"server-time"},
@@ -106,7 +106,7 @@ func TestSnapshotJSONNames(t *testing.T) {
 			Modes: "+nt", ChanKey: "", MembersComplete: true,
 			Members: []Member{{Nick: "op", Prefixes: "@", User: "o", Host: "oh", Account: "", Away: true}},
 		}},
-	}, `{"network":1,"state":"registered","last_id":42,"self":{"nick":"me","user":"u","host":"h","account":"acct","umodes":"+i","away":false},`+
+	}, `{"network":1,"state":"registered","last_id":42,"seq":7,"self":{"nick":"me","user":"u","host":"h","account":"acct","umodes":"+i","away":false},`+
 		`"isupport":{"CASEMAPPING":"rfc1459"},"caps":["server-time"],"channels":[{"name":"#Rete","key":"#rete",`+
 		`"topic":{"text":"hi","setter":"op","time":"2026-10-23T20:00:00Z"},"modes":"+nt","chankey":"","members_complete":true,`+
 		`"members":[{"nick":"op","prefixes":"@","user":"o","host":"oh","account":"","away":true}]}]}`)
