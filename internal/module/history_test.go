@@ -92,3 +92,38 @@ func TestHistoryMessagesPagesByID(t *testing.T) {
 		t.Fatalf("after page: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
 	}
 }
+
+func TestHistoryActivityCountsUnreadAndHighlights(t *testing.T) {
+	tc, db, nid, _ := historyFixture(t, "history")
+	t0 := time.Now().Add(-time.Hour).UTC()
+	for i, l := range []struct{ src, text string }{
+		{"a!u@h", "hello all"},
+		{"a!u@h", "me: are you there?"},
+		{"me!u@h", "my own line"},
+		{"a!u@h", "\x01VERSION\x01"},
+	} {
+		if _, err := db.InsertMessage(context.Background(), store.Message{NetworkID: nid, Target: "#c",
+			Time: t0.Add(time.Duration(i) * time.Second), Command: "PRIVMSG", Source: l.src, Raw: "x", Text: l.text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var res wire.HistoryActivityResult
+	tc.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: nid, Device: "phone"}, &res)
+	var ch *wire.BufferActivity
+	names := []string{}
+	for i, b := range res.Buffers {
+		names = append(names, b.Buffer)
+		if b.Key == "#c" {
+			ch = &res.Buffers[i]
+		}
+	}
+	if ch == nil || len(res.Buffers) != 2 {
+		t.Fatalf("buffers = %v, want #c and Server", names)
+	}
+	if ch.Unread != 2 || ch.Highlights != 1 || ch.LastID == 0 || ch.LastTime == "" {
+		t.Fatalf("#c activity = %+v, want 2 unread, 1 highlight", *ch)
+	}
+	if code := tc.callErr(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: nid}); code != wire.CodeBadParams {
+		t.Fatalf("missing device: code %q", code)
+	}
+}

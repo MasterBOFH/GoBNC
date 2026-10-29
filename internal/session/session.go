@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -418,6 +419,29 @@ func (s *Session) Fold(name string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isupport.CaseMapping.Canonical(name)
+}
+
+// CaseMapping is the network's ISUPPORT CASEMAPPING.
+func (s *Session) CaseMapping() irc.CaseMapping {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isupport.CaseMapping
+}
+
+// JoinedChannels lists the channels we are in (display names), sorted by key.
+func (s *Session) JoinedChannels() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.channels))
+	for k := range s.channels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, s.channels[k].Name)
+	}
+	return out
 }
 
 // SetStateHook installs fn to be called (outside Session's locks) with the new network state

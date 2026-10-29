@@ -3,14 +3,17 @@ package module
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 func init() {
 	registerMethod(wire.MethodHistoryMessages, handleHistoryMessages, wire.FeatureHistory)
+	registerMethod(wire.MethodHistoryActivity, handleHistoryActivity, wire.FeatureHistory)
 }
 
 const (
@@ -119,6 +122,99 @@ func firstUnreadPage(ctx context.Context, c *Conn, db *store.Store, p wire.Histo
 // unread on that device. Device state arrives with the devices feature; until then none.
 func (s *Server) closedAtFloor(ctx context.Context, device string, network int64, key string) (int64, error) {
 	return 0, nil
+}
+
+// handleHistoryActivity reports, for every buffer the device shows (joined channels, its open
+// queries, Server), the newest message and the unread / highlight counts.
+func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
+	p, err := decodeParams[wire.HistoryActivityParams](params)
+	if err != nil {
+		return nil, err
+	}
+	if p.Device == "" {
+		return nil, wire.Errorf(wire.CodeBadParams, "device is required")
+	}
+	sess, err := c.srv.session(p.Network)
+	if err != nil {
+		return nil, err
+	}
+	db := c.srv.backend.Store()
+	if db == nil {
+		return nil, wire.Errorf(wire.CodeInternal, "no history store")
+	}
+	queries, err := c.srv.openQueries(ctx, p.Device, p.Network)
+	if err != nil {
+		return nil, err
+	}
+	cm := sess.CaseMapping()
+	self := sess.Nick()
+	selfKey := cm.Canonical(self)
+	type shown struct {
+		name  string
+		query bool
+	}
+	var buffers []shown
+	seen := map[string]bool{}
+	add := func(name string, query bool) {
+		if k := cm.Canonical(name); !seen[k] {
+			seen[k] = true
+			buffers = append(buffers, shown{name, query})
+		}
+	}
+	for _, ch := range sess.JoinedChannels() {
+		add(ch, false)
+	}
+	for _, q := range queries {
+		add(q, true)
+	}
+	add(wire.ServerBuffer, false)
+
+	res := wire.HistoryActivityResult{Buffers: make([]wire.BufferActivity, 0, len(buffers))}
+	for _, b := range buffers {
+		key := cm.Canonical(b.name)
+		var marker time.Time
+		if ts, ok, err := db.GetReadMarker(ctx, p.Network, key); err != nil {
+			return nil, err
+		} else if ok {
+			marker, _ = time.Parse(time.RFC3339Nano, ts)
+		}
+		floor, err := c.srv.closedAtFloor(ctx, p.Device, p.Network, key)
+		if err != nil {
+			return nil, err
+		}
+		a, err := db.BufferActivity(ctx, p.Network, key, marker, floor)
+		if err != nil {
+			return nil, err
+		}
+		ba := wire.BufferActivity{Buffer: b.name, Key: key, LastID: a.LastID}
+		if a.LastID != 0 {
+			ba.LastTime = a.LastTime.UTC().Format(time.RFC3339Nano)
+		}
+		for _, l := range a.Unread {
+			if cm.Canonical(sourceNick(l.Source)) == selfKey {
+				continue // our own lines are never unread
+			}
+			ba.Unread++
+			if b.query || session.IsHighlight(l.Text, self, cm) {
+				ba.Highlights++
+			}
+		}
+		res.Buffers = append(res.Buffers, ba)
+	}
+	return res, nil
+}
+
+func sourceNick(src string) string {
+	if i := strings.IndexByte(src, '!'); i >= 0 {
+		return src[:i]
+	}
+	return src
+}
+
+// openQueries lists the device's open query buffers on a network. Device state arrives with
+// the devices feature; until then none.
+func (s *Server) openQueries(ctx context.Context, device string, network int64) ([]string, error) {
+	return nil, nil
 }
 
 func historyMessage(m store.Message, buffer string) wire.HistoryMessage {
