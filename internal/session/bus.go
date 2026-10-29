@@ -67,6 +67,13 @@ func (s *Session) Unsubscribe(id uint64) {
 	s.busMu.Unlock()
 }
 
+// Subscribers is the number of registered sinks.
+func (s *Session) Subscribers() int {
+	s.busMu.Lock()
+	defer s.busMu.Unlock()
+	return len(s.sinks)
+}
+
 // emitLineLocked assigns the next per-network seq and delivers ev to every sink whose kinds
 // match. Caller holds busMu.
 func (s *Session) emitLineLocked(ev wire.LineEvent) {

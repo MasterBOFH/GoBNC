@@ -12,13 +12,23 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
-type fakeBackend struct{ ready bool }
+type fakeBackend struct {
+	ready    bool
+	nets     []wire.NetworkInfo
+	sessions map[int64]*session.Session
+}
 
-func (b *fakeBackend) BrainVersion() string { return "test-brain" }
-func (b *fakeBackend) Ready() bool          { return b.ready }
+func (b *fakeBackend) BrainVersion() string         { return "test-brain" }
+func (b *fakeBackend) Ready() bool                  { return b.ready }
+func (b *fakeBackend) Networks() []wire.NetworkInfo { return b.nets }
+func (b *fakeBackend) Session(id int64) (*session.Session, bool) {
+	s, ok := b.sessions[id]
+	return s, ok
+}
 
 // shortSocketPath keeps the socket path under the 104-byte sun_path limit (t.TempDir embeds
 // the test name).

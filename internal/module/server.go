@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -25,6 +26,10 @@ type Backend interface {
 	BrainVersion() string
 	// Ready reports whether the brain has sent LiveReady (writes to uplinks are possible).
 	Ready() bool
+	// Networks lists every configured network.
+	Networks() []wire.NetworkInfo
+	// Session returns a network's Session.
+	Session(id int64) (*session.Session, bool)
 }
 
 // Server accepts module connections on the module socket.
