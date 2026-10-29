@@ -839,7 +839,10 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	dests := s.tracker.RouteAll(msg, cm)
 	// A solicited reply goes to its requester only, and an unmatched WHOX/WHO end to nobody:
 	// neither is a network event.
-	if len(dests) == 0 && msg.Command != "354" && msg.Command != "315" {
+	// 354 (WHOX reply) and 315 (RPL_ENDOFWHO) only ever mean something correlated to a
+	// client-issued WHO/WHOX; an unmatched one goes to nobody (below) and is no network event.
+	unmatchedWho := msg.Command == "354" || msg.Command == "315"
+	if len(dests) == 0 && !unmatchedWho {
 		s.emitUplinkLineLocked(msg, ids, pre, "")
 	}
 	s.emitRosterDoneLocked()
@@ -903,7 +906,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	// 354 (WHOX reply) and 315 (RPL_ENDOFWHO) only ever mean something
 	// correlated to a client-issued WHO/WHOX; an unmatched one (e.g. the
 	// requester disconnected before the reply arrived) is never broadcast.
-	if msg.Command == "354" || msg.Command == "315" {
+	if unmatchedWho {
 		return
 	}
 	s.mu.RLock()

@@ -69,6 +69,19 @@ ends (`TestSubscribeAtomicWithLineStream` breaks this on purpose). Lock order is
 `s.mu`. Fan-out to downlinks, and anything that may re-enter one of these paths, runs after `busMu`
 is released. Emitting is a non-blocking enqueue; the brain never waits on a module.
 
+Known limits of the bus, from review (not needed by gobnc-retecloud, which takes fresh snapshots):
+
+- A solicited reply routed to one client emits no line, so state it changes (a client's own NAMES
+  rebuilding a roster that was already complete, WHO updating hosts, MODE nick updating umodes)
+  reaches modules only through their next snapshot. A roster that becomes complete still emits
+  `state`/`members`.
+- A CTCP request in `edge` or `disable` mode emits nothing; a host it teaches (`applyState`'s
+  prefix tracking) likewise waits for the next snapshot.
+- An uplink disconnect resets Session state under `busMu` but emits no line; modules learn it from
+  the `network` event (state `disconnected`) and should resubscribe once it is `registered` again.
+- `busMu` is held across the history insert and the keeper blob push of the line being applied,
+  so a Subscribe waits for those (never for a downlink or a module).
+
 ### Envelopes
 
 For each line the brain computes what modules would otherwise re-implement

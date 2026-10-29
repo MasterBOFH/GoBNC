@@ -204,3 +204,30 @@ func TestSubscribeAtomicWithLineStream(t *testing.T) {
 		}
 	}
 }
+
+func TestBusEmitsCTCPRequestsOnlyWhenRelayed(t *testing.T) {
+	s := newBusSession(t)
+	sink := &recSink{}
+	s.Subscribe(1, sink, nil, nil)
+	cfg := NewCTCPConfig(CTCPModeDisable, CTCPModeDisable, CTCPModeDisable)
+	s.SetCTCPConfig(cfg)
+	feed(s, ":a!u@h PRIVMSG me :\x01VERSION\x01")
+	if n := len(sink.lines()); n != 0 {
+		t.Fatalf("%d line events for a disabled CTCP request", n)
+	}
+	s.SetCTCPConfig(NewCTCPConfig(CTCPModeRelay, CTCPModeRelay, CTCPModeRelay))
+	feed(s, ":a!u@h PRIVMSG me :\x01VERSION\x01")
+	if ls := sink.lines(); len(ls) != 1 || ls[0].Kind != wire.LineCTCP {
+		t.Fatalf("relayed CTCP request: %+v", ls)
+	}
+}
+
+func TestBusSkipsUnmatchedWHOX(t *testing.T) {
+	s := newBusSession(t)
+	sink := &recSink{}
+	s.Subscribe(1, sink, nil, nil)
+	feed(s, ":srv.example 354 me 123 #c u h a :x", ":srv.example 315 me #c :End of WHO")
+	if n := len(sink.lines()); n != 0 {
+		t.Fatalf("%d line events for unmatched WHOX replies", n)
+	}
+}
