@@ -179,6 +179,27 @@ func (e *testEnv) addNetwork(name string) int64 {
 	return id
 }
 
+// addUplinkNetwork is addNetwork with a real in-process keeper + Driver and a scripted ircd
+// (answering WHOIS, echoing when echo is set), for paths that write to the uplink. Call it
+// after newTestEnv (the module learns the network from the network event).
+func (e *testEnv) addUplinkNetwork(name string, echo bool) (int64, *fakeIRCd) {
+	e.t.Helper()
+	id, err := e.be.db.UpsertNetwork(context.Background(), store.Network{Name: name, Host: "h", Port: 1, Nick: "me",
+		Username: "u", Realname: "r", Enabled: true})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	n, _ := e.be.db.NetworkByName(context.Background(), name)
+	ircd := newFakeIRCd(e.t, echo)
+	sess := uplinkSession(e.t, n, ircd, e.be.db)
+	e.be.mu.Lock()
+	e.be.sessions[id] = sess
+	e.be.mu.Unlock()
+	e.nets[name] = id
+	e.srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: name, State: wire.NetRegistered, Nick: "me", Change: wire.ChangeAdded})
+	return id, ircd
+}
+
 func (e *testEnv) session(name string) *session.Session {
 	s, _ := e.be.Session(e.nets[name])
 	return s

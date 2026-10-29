@@ -37,6 +37,10 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 		return
 	}
 	n.name = ev.Name
+	if ev.Change == wire.ChangeConfig {
+		m.configUpdate(n)
+		return
+	}
 	if ev.Change != wire.ChangeState || ev.State == n.state {
 		return
 	}

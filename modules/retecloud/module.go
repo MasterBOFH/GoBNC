@@ -312,6 +312,20 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		m.handleSubscribeBuffer(c, msg)
 	case frameUnsubscribeBuffer:
 		m.handleUnsubscribeBuffer(c, msg)
+	case "get_messages":
+		m.handleGetMessages(c, msg)
+	case "send":
+		m.handleSend(c, msg)
+	case "read_cursor":
+		m.handleReadCursor(c, msg)
+	case "open_buffer":
+		m.handleOpenBuffer(c, msg)
+	case "close_buffer":
+		m.handleCloseBuffer(c, msg)
+	case "connect_session":
+		m.handleConnectSession(c, msg)
+	case "disconnect_session":
+		m.handleDisconnectSession(c, msg)
 	case "create_session":
 		c.send(errorFrame("create_session", msg.RequestID, "Not supported"))
 	default:
