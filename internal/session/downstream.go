@@ -526,7 +526,9 @@ func (s *Session) echoSelfLocally(origin Downlink, msg irc.Message) {
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		downlinks = append(downlinks, d)
+		if !isVirtual(d) { // modules have it as an envelope
+			downlinks = append(downlinks, d)
+		}
 	}
 	s.mu.RUnlock()
 	legacyHit := false
@@ -604,7 +606,9 @@ func (s *Session) fanoutSelfEcho(msg irc.Message, pending pendingSelfEcho) {
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		downlinks = append(downlinks, d)
+		if !isVirtual(d) { // modules have it as an envelope
+			downlinks = append(downlinks, d)
+		}
 	}
 	s.mu.RUnlock()
 	legacyHit := false

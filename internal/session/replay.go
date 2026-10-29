@@ -254,7 +254,9 @@ func (s *Session) broadcastSelfUMode() {
 	msg := s.selfUModeMessageLocked()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		downlinks = append(downlinks, d)
+		if !isVirtual(d) { // modules have it as an envelope
+			downlinks = append(downlinks, d)
+		}
 	}
 	s.mu.RUnlock()
 	if msg.Command == "" {

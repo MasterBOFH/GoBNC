@@ -201,7 +201,7 @@ func (s *Session) broadcastMarkRead(except ClientID, msg irc.Message) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for id, d := range s.downlinks {
-		if id == except || !d.HasCap(readMarkerCap) {
+		if id == except || !d.HasCap(readMarkerCap) || isVirtual(d) { // modules get read_marker
 			continue
 		}
 		_ = d.Send(msg)
@@ -250,7 +250,7 @@ func (s *Session) maybeSendMarkReadOnSelfJOIN(msg irc.Message) {
 	s.mu.RLock()
 	clients := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		if d.HasCap(readMarkerCap) {
+		if d.HasCap(readMarkerCap) && !isVirtual(d) {
 			clients = append(clients, d)
 		}
 	}

@@ -195,7 +195,9 @@ func (s *Session) relayCTCPLive(msg irc.Message) {
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		downlinks = append(downlinks, d)
+		if !isVirtual(d) { // modules have it as an envelope
+			downlinks = append(downlinks, d)
+		}
 	}
 	s.mu.RUnlock()
 	for _, d := range downlinks {

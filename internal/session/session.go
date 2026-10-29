@@ -325,11 +325,18 @@ func (s *Session) ApplyNetworkConfig(n store.Network, cfg brain.NetworkConfig) {
 	s.driver.UpdateNetworkConfig(s.netID, cfg)
 }
 
-// DownlinkCount returns the number of attached clients on this network.
+// DownlinkCount returns the number of attached IRC clients on this network (module virtual
+// clients are not counted).
 func (s *Session) DownlinkCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.downlinks)
+	n := 0
+	for _, d := range s.downlinks {
+		if !isVirtual(d) {
+			n++
+		}
+	}
+	return n
 }
 
 // Registered reports whether the uplink has completed welcome (001).

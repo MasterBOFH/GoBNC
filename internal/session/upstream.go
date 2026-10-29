@@ -590,18 +590,27 @@ func (s *Session) HandleDisconnect(err error) {
 	hadNickErr := s.hasLastNickErrorLine
 	s.lastNickErrorLine = irc.Message{}
 	s.hasLastNickErrorLine = false
+	// Module virtual clients stay attached across a disconnect (the module decides when they
+	// go); only IRC clients are told and dropped.
 	clients := make([]Downlink, 0, len(s.downlinks))
-	for _, d := range s.downlinks {
-		clients = append(clients, d)
+	virtual := make(map[ClientID]Downlink)
+	for id, d := range s.downlinks {
+		if isVirtual(d) {
+			virtual[id] = d
+		} else {
+			clients = append(clients, d)
+		}
 	}
 	if wasRegistered {
-		s.downlinks = make(map[ClientID]Downlink)
+		s.downlinks = virtual
 		s.awaitingUplink = make(map[ClientID]bool)
 	} else {
 		// Stay attached and keep waiting for the next successful registration.
 		awaiting := make(map[ClientID]bool, len(s.downlinks))
-		for id := range s.downlinks {
-			awaiting[id] = true
+		for id, d := range s.downlinks {
+			if !isVirtual(d) {
+				awaiting[id] = true
+			}
 		}
 		s.awaitingUplink = awaiting
 	}
@@ -900,7 +909,9 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	s.mu.RLock()
 	downlinks := make([]Downlink, 0, len(s.downlinks))
 	for _, d := range s.downlinks {
-		downlinks = append(downlinks, d)
+		if !isVirtual(d) { // modules have it as an envelope
+			downlinks = append(downlinks, d)
+		}
 	}
 	s.mu.RUnlock()
 	legacyHit := false

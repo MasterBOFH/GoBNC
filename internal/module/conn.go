@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -36,7 +37,8 @@ type Conn struct {
 
 	mu      sync.Mutex
 	onClose []func()
-	subs    map[int64]bool // networks this connection subscribed to (events.subscribe)
+	subs    map[int64]bool                       // networks this connection subscribed to (events.subscribe)
+	clients map[clientKey]*session.VirtualClient // virtual clients it attached (clients.attach)
 
 	readySent bool // guarded by Server.mu: hello said ready, or the ready event was queued
 }
