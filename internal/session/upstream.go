@@ -1068,7 +1068,8 @@ func ensureMessageID(msg irc.Message) irc.Message {
 // from one at all, e.g. a locally-synthesized self-echo — see
 // downstream.go's echoSelfLocally) — see store.Message.KeeperSeq's doc
 // comment for why this, not msgid, is what makes a replayed line's
-// storage idempotent.
+// storage idempotent. It returns the stored id per target, and applies the
+// device rule (reopenQueryLocked) for each — so callers hold busMu.
 func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) map[string]int64 {
 	if s.hist == nil {
 		return nil
@@ -1104,6 +1105,7 @@ func (s *Session) maybeStoreHistory(msg irc.Message, keeperSeq uint64) map[strin
 		})
 		if err == nil {
 			ids[target] = id
+			s.reopenQueryLocked(msg, target, id)
 		}
 	}
 	return ids
