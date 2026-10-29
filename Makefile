@@ -45,6 +45,7 @@ test-ircd:
 build:
 	go build -o bin/gobnc ./cmd/gobnc
 	go build -o bin/gobnc-keeper ./cmd/keeper
+	go build -o bin/gobnc-retecloud ./cmd/gobnc-retecloud
 
 # Self-signed server + client leaf certs under certs/ (see scripts/gen-certs.sh).
 #   make cert                         # prompt for hostname (TTY) or localhost

@@ -83,5 +83,23 @@
   // before the TLS handshake, let alone PASS/NICK/USER; a rejected IP is
   // logged at info level ("connection refused: ip not allowed") for
   // wiring into fail2ban or similar.
-  "allowed_ips": []
+  "allowed_ips": [],
+
+  // Modules: separate processes on the module socket (docs/module-api-design.md).
+  // "socket" defaults to gobnc-modules.sock next to the control socket. Each
+  // entry names a module, the features it may use, and optionally how the
+  // brain starts it ("exec", "args") and its own "config". Uncomment to serve
+  // Rete on iOS with gobnc-retecloud (see README, Modules).
+  "modules": {
+    "list": [
+      // {
+      //   "name": "retecloud",
+      //   "exec": "/usr/local/bin/gobnc-retecloud",
+      //   "features": ["networks", "events", "history", "read_markers", "clients",
+      //                "send", "devices", "auth", "storage"],
+      //   "config": {"listen_addr": "0.0.0.0:8443",
+      //              "tls_cert": "certs/server.crt", "tls_key": "certs/server.key"}
+      // }
+    ]
+  }
 }

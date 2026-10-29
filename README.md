@@ -133,6 +133,35 @@ Outbound flood pacing is per network. `network add` defaults to `--flood-lines=t
 
 `ctcp_ping` / `ctcp_version` (`relay` / `edge` / `disable`, default `relay`) and `ctcp_other` (`relay` / `disable`, default `relay`) control how incoming CTCP requests (PING, VERSION, or anything else CTCP-framed, whether sent to the bouncer's own nick or to a channel it's in) are handled. `relay` forwards the request live to whichever downlinks are attached right now, unchanged; `edge` answers the request directly from the bouncer over the uplink instead of relaying it — "CTCP stops at the bouncer"; `disable` drops the request with no reply from anyone. `ctcp_other` has no `edge` option — the bouncer never answers on behalf of any CTCP type besides PING/VERSION. CTCP `ACTION` (`/me`) is never affected — it always relays like ordinary chat. CTCP requests are never stored for `CHATHISTORY`/legacy attach replay, regardless of mode. CTCP-framed `NOTICE` (i.e. a reply, not a request) is always relayed untouched.
 
+## Modules
+
+Modules are separate processes that use the bouncer through its module socket (`docs/module-api-design.md`). Each one is listed in `gobnc.json` with the features it may use; the brain starts the ones with an `exec` (once — a running module holds a lock) and they outlive `gobnc reload`: a module keeps its own clients connected while the brain restarts, then reconnects and catches up.
+
+The first module, `gobnc-retecloud`, lets Rete on iOS use the bouncer: it serves the ReteCloud WebSocket protocol (lite mode) for every network over one WebSocket.
+
+```json
+"modules": {
+  "list": [
+    {
+      "name": "retecloud",
+      "exec": "/usr/local/bin/gobnc-retecloud",
+      "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage"],
+      "config": {
+        "listen_addr": "0.0.0.0:8443",
+        "tls_cert": "/etc/gobnc/certs/server.crt",
+        "tls_key": "/etc/gobnc/certs/server.key"
+      }
+    }
+  ]
+}
+```
+
+`config` is the module's own: for `gobnc-retecloud`, `listen_addr` (default `127.0.0.1:8443`), `tls_cert` / `tls_key` (required; the bouncer's own `certs/server.*` work), `max_connections` (default 16), `allowed_ips`, and `compression_level` (deflate-stream; negative turns it off). `modules.socket` defaults to `gobnc-modules.sock` next to the control socket. Build it with `go build -o bin/gobnc-retecloud ./cmd/gobnc-retecloud`; `cmd/gobnc-modlog` is a small example module that prints every message.
+
+Rete on iOS logs in with the bouncer password, or with a client certificate registered with `gobnc auth add-fingerprint <sha256>` — the same credentials as an IRC client. The app shows every network with a per-device switch for which ones it follows; networks themselves stay managed with `gobnc network add` / `mod`.
+
+A module can add its own commands: `BNC <name> …` from an IRC client and `gobnc <name> …` from the CLI reach it (it has 10 seconds to answer).
+
 ## Packaging
 
 Release tags build `.deb` / macOS `.pkg` / FreeBSD `.tar.gz` — see `packaging/`.

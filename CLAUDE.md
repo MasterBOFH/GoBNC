@@ -11,7 +11,7 @@ GoBNC is a single-user IRC bouncer in Go. See `README.md` for user-facing setup,
 ```bash
 go build -o bin/gobnc ./cmd/gobnc          # bouncer binary
 go build -o bin/gobnc-keeper ./cmd/keeper  # keeper binary
-make build                                 # both, via Makefile
+make build                                 # both, plus gobnc-retecloud, via Makefile
 
 go test ./...                              # full suite
 go test ./internal/session/...             # one package
