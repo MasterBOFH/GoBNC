@@ -31,7 +31,7 @@ func historyFixture(t *testing.T, features ...string) (*testConn, *store.Store, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess := registeredSession(t, nid)
+	sess := registeredSessionWithStore(t, nid, db)
 	be := &fakeBackend{ready: true, db: db, sessions: map[int64]*session.Session{nid: sess}}
 	_, path := startServer(t, []config.ModuleConfig{{Name: "m", Features: features}}, be)
 	tc := dialModule(t, path)

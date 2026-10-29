@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/history"
 	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
@@ -15,7 +16,17 @@ import (
 // registeredSession is a Session registered as "me" in #c, fed lines directly (no uplink).
 func registeredSession(t *testing.T, id int64) *session.Session {
 	t.Helper()
-	s := session.New(store.Network{ID: id, Name: "net", Nick: "me"}, nil, nil, nil, nil)
+	return registeredSessionWithStore(t, id, nil)
+}
+
+// registeredSessionWithStore is registeredSession keeping its history and markers in db.
+func registeredSessionWithStore(t *testing.T, id int64, db *store.Store) *session.Session {
+	t.Helper()
+	var hist *history.Store
+	if db != nil {
+		hist = history.New(db)
+	}
+	s := session.New(store.Network{ID: id, Name: "net", Nick: "me"}, db, hist, nil, nil)
 	for i, l := range []string{":srv.example 001 me :Welcome", ":srv.example 376 me :End", ":me!u@h JOIN #c"} {
 		s.HandleLine([]byte(l), uint64(i+1))
 	}

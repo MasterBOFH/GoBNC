@@ -112,3 +112,12 @@ func (s *Store) FirstUnreadID(ctx context.Context, networkID int64, target strin
 		networkID, target, formatTime(marker), floorID).Scan(&id)
 	return id.Int64, err
 }
+
+// MessageByID returns one message of networkID by id (nil when none).
+func (s *Store) MessageByID(ctx context.Context, networkID, id int64) (*Message, error) {
+	ms, err := s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND id=?`, networkID, id)
+	if err != nil || len(ms) == 0 {
+		return nil, err
+	}
+	return &ms[0], nil
+}
