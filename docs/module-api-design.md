@@ -339,18 +339,26 @@ connections made afterwards.
 
 ## Next milestone: hot reload of a module
 
-`gobnc module reload <name>` (and `BNC MODULE RELOAD <name>`) replaces a running module with a new
-binary without restarting the brain, following the brain's own reload handoff
-(`daemon.SpawnReplacementForHandoff` / `Server.runReloadHandoff`):
+Planned in `specs/2026-11-01-module-hot-reload.md`. The brain's share is small and generic, so it
+can ship in the first live deploy; the reload mechanism itself lives in the module and
+`pkg/moduleapi`, so a bug in it is fixed by reloading the module, not the brain.
 
-1. The brain spawns the replacement, detached, with a handoff socket.
-2. The old module passes its listening socket(s) to the replacement (`SCM_RIGHTS`), so no client
-   connection is refused.
-3. The replacement connects to the brain, subscribes, and confirms; only then does the old module
-   stop accepting.
-4. The old module tells each WebSocket client to reconnect (close code 1012, "service restart"),
-   drains, and exits. If the replacement never confirms, the old module keeps serving and the brain
-   kills the replacement.
+- **Brain.** Hello carries the module's `pid` and whether it supports `handoff`.
+  `gobnc module list|start|stop|restart|reload <name>` (also `BNC MODULE ...`, control verb
+  `MODULECTL`). `reload` sends the module a `reload` event with its current gobnc.json entry
+  (`exec`, `args`, `config`) and waits up to 30 s for a newer connection of that name and for the
+  old one to close. A module without handoff support is restarted instead: SIGTERM the reported
+  pid, wait for its connection and lock to go (SIGKILL after 10 s), start it again. REHASH still
+  does not start or stop modules.
+- **Module.** The old process starts its own replacement, detached, passing its listening socket,
+  its module lock and a confirmation pipe as inherited file descriptors (`GOBNC_MODULE_HANDOFF`
+  names them). The replacement adopts the lock, connects to the brain, follows every network, and
+  writes `ok`; only then does it accept connections. The old process stops accepting, closes each
+  WebSocket with 1012 ("service restart"), drains, and exits without unlocking (the lock belongs to
+  the open file both processes share). If the replacement exits or does not confirm within 15 s,
+  the old process kills it and keeps serving.
+- **Virtual client names** carry the process id, so the two processes never share one during the
+  overlap.
 
 Live WebSocket connections are not carried across (TLS state cannot move between processes, the
 reason the keeper exists); clients reconnect and resume with `after_id`. That is cheap because the
