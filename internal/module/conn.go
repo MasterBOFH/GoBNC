@@ -27,6 +27,8 @@ type Conn struct {
 	id      uint64
 	srv     *Server
 	module  string
+	pid     int  // hello's pid (0 when not sent)
+	handoff bool // hello's handoff
 	granted map[string]bool
 	nc      net.Conn
 	out     chan any
@@ -43,12 +45,13 @@ type Conn struct {
 	readySent bool // guarded by Server.mu: hello said ready, or the ready event was queued
 }
 
-func newConn(id uint64, srv *Server, nc net.Conn, module string, granted []string) *Conn {
+func newConn(id uint64, srv *Server, nc net.Conn, hello helloInfo) *Conn {
+	module, granted := hello.module, hello.granted
 	g := make(map[string]bool, len(granted))
 	for _, f := range granted {
 		g[f] = true
 	}
-	return &Conn{id: id, srv: srv, module: module, granted: g, nc: nc,
+	return &Conn{id: id, srv: srv, module: module, pid: hello.pid, handoff: hello.handoff, granted: g, nc: nc,
 		out: make(chan any, QueueSize), closed: make(chan struct{})}
 }
 

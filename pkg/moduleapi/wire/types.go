@@ -1,5 +1,7 @@
 package wire
 
+import "encoding/json"
+
 // Params, results and event data of every method and event. JSON names are the wire contract;
 // a network is GoBNC's network id, a buffer a display name and a key its CASEMAPPING fold.
 
@@ -9,6 +11,10 @@ type HelloParams struct {
 	API      int      `json:"api"`
 	Module   string   `json:"module"`
 	Features []string `json:"features"`
+	// PID is the module's process id (the brain stops or restarts the module by it).
+	PID int `json:"pid,omitempty"`
+	// Handoff says the module replaces itself on a reload event.
+	Handoff bool `json:"handoff,omitempty"`
 }
 
 type HelloResult struct {
@@ -440,3 +446,13 @@ type CommandReplyParams struct {
 
 // Empty is the result of methods that return {}.
 type Empty struct{}
+
+// --- reload ---
+
+// ReloadEvent asks a module that said handoff in hello to start its replacement from its
+// current gobnc.json entry and hand over to it.
+type ReloadEvent struct {
+	Exec   string          `json:"exec"`
+	Args   []string        `json:"args,omitempty"`
+	Config json.RawMessage `json:"config,omitempty"`
+}

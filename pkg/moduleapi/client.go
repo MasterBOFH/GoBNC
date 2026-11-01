@@ -28,6 +28,8 @@ type Options struct {
 	Features []string
 	// SkipLock leaves the module lock alone (tests running several clients of one module).
 	SkipLock bool
+	// Handoff says this module can replace itself on a reload event (see Client.Handoff).
+	Handoff bool
 }
 
 // ErrAlreadyRunning is returned by Dial when another process of this module holds its lock.
@@ -118,7 +120,8 @@ func (c *Client) connect(ctx context.Context) error {
 	c.mu.Unlock()
 	go c.readLoop(conn, down)
 	var hello wire.HelloResult
-	if err := c.Call(ctx, wire.MethodHello, wire.HelloParams{API: wire.APIVersion, Module: c.opts.Module, Features: c.opts.Features}, &hello); err != nil {
+	if err := c.Call(ctx, wire.MethodHello, wire.HelloParams{API: wire.APIVersion, Module: c.opts.Module, Features: c.opts.Features,
+		PID: os.Getpid(), Handoff: c.opts.Handoff}, &hello); err != nil {
 		conn.Close()
 		<-down
 		return err

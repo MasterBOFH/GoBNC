@@ -281,4 +281,5 @@ const (
 	EventDeviceNetwork = "device_network"
 	EventCommand       = "command"
 	EventOverflow      = "overflow"
+	EventReload        = "reload"
 )

@@ -1,8 +1,11 @@
 package moduleapi
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -151,4 +154,41 @@ func TestRunReconnectsAndCallsOnConnectAgain(t *testing.T) {
 	}
 	startBrain(t, sock) // the new brain
 	waitConnect(2)
+}
+
+// TestHelloSendsPIDAndHandoff reads the raw hello a client sends.
+func TestHelloSendsPIDAndHandoff(t *testing.T) {
+	for _, handoff := range []bool{true, false} {
+		sock := sockPath(t)
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(chan []byte, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+			line, _ := bufio.NewReader(c).ReadBytes('\n')
+			got <- line
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, _ = Dial(ctx, Options{Socket: sock, Module: "mod", Handoff: handoff, SkipLock: true})
+		cancel()
+		ln.Close()
+		var req struct {
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(<-got, &req); err != nil {
+			t.Fatal(err)
+		}
+		if pid, _ := req.Params["pid"].(float64); int(pid) != os.Getpid() {
+			t.Fatalf("hello pid = %v, want %d", req.Params["pid"], os.Getpid())
+		}
+		if _, present := req.Params["handoff"]; present != handoff {
+			t.Fatalf("handoff=%v: hello params %v", handoff, req.Params)
+		}
+	}
 }

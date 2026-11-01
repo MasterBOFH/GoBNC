@@ -170,7 +170,7 @@ func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
 	// takes: a module learns readiness exactly once, from hello or from the ready event.
 	s.mu.Lock()
 	s.nextID++
-	c := newConn(s.nextID, s, nc, hello.module, hello.granted)
+	c := newConn(s.nextID, s, nc, hello)
 	hello.result.Ready = s.backend.Ready()
 	c.readySent = hello.result.Ready
 	resp, err := resultResponse(hello.id, hello.result)
@@ -182,7 +182,7 @@ func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
 	c.Enqueue(resp)
 	s.conns[c.id] = c
 	s.mu.Unlock()
-	s.log.Info("module connected", "module", hello.module, "granted", hello.granted)
+	s.log.Info("module connected", "module", hello.module, "pid", hello.pid, "handoff", hello.handoff, "granted", hello.granted)
 	c.OnClose(func() {
 		s.mu.Lock()
 		delete(s.conns, c.id)
@@ -236,6 +236,8 @@ func (s *Server) Broadcast(feature, event string, data any) {
 type helloInfo struct {
 	module  string
 	granted []string
+	pid     int
+	handoff bool
 	id      uint64 // the hello request's id
 	result  wire.HelloResult
 }
@@ -287,7 +289,7 @@ func (s *Server) handshake(r *bufio.Reader, c net.Conn) (helloInfo, error) {
 	granted, denied := grant(p.Features, mod.Features)
 	res := wire.HelloResult{API: wire.APIVersion, BrainVersion: s.backend.BrainVersion(),
 		Granted: granted, Denied: denied}
-	return helloInfo{module: p.Module, granted: granted, id: req.ID, result: res}, nil
+	return helloInfo{module: p.Module, granted: granted, pid: p.PID, handoff: p.Handoff, id: req.ID, result: res}, nil
 }
 
 // grant splits the requested features into those the module's config allows and the rest,

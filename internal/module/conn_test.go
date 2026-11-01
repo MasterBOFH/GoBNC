@@ -34,7 +34,7 @@ func TestOverflowClosesWithoutBlocking(t *testing.T) {
 	brainSide, moduleSide := net.Pipe() // unbuffered: a module that never reads blocks the writer
 	defer moduleSide.Close()
 	srv := &Server{log: slog.Default(), conns: map[uint64]*Conn{}}
-	c := newConn(1, srv, brainSide, "m", nil)
+	c := newConn(1, srv, brainSide, helloInfo{module: "m"})
 	closedCB := make(chan struct{})
 	c.OnClose(func() { close(closedCB) })
 	go c.run(context.Background(), bufio.NewReader(brainSide))

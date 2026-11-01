@@ -234,3 +234,29 @@ func TestHelloGrantsConfiguredFeaturesOnly(t *testing.T) {
 		t.Fatalf("hello = %+v, want %+v", res, want)
 	}
 }
+
+// connOf returns the registered connection of module (nil when none).
+func connOf(s *Server, module string) *Conn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.conns {
+		if c.module == module {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestHelloAcceptsPIDAndHandoff(t *testing.T) {
+	srv, path := startServer(t, []config.ModuleConfig{{Name: "a"}, {Name: "b"}}, &fakeBackend{ready: true})
+	tc := dialModule(t, path)
+	var res wire.HelloResult
+	tc.call(wire.MethodHello, wire.HelloParams{API: wire.APIVersion, Module: "a", PID: 4242, Handoff: true}, &res)
+	dialModule(t, path).hello("b")
+	if c := connOf(srv, "a"); c == nil || c.pid != 4242 || !c.handoff {
+		t.Fatalf("conn a = %+v, want pid 4242 handoff", c)
+	}
+	if c := connOf(srv, "b"); c == nil || c.pid != 0 || c.handoff {
+		t.Fatalf("conn b = %+v, want pid 0, no handoff", c)
+	}
+}
