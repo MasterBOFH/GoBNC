@@ -3,6 +3,8 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"syscall"
@@ -11,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/module"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // Module process control (gobnc module list|start|stop|restart|reload). Start and stop work for
@@ -223,4 +226,74 @@ func (s *Server) waitModules(d time.Duration, cond func() bool) bool {
 			return cond()
 		}
 	}
+}
+
+// moduleReloadTimeout is how long reload waits for the replacement to take over.
+var moduleReloadTimeout = 30 * time.Second
+
+// moduleReload replaces a running module without a brain reload. A module that said handoff in
+// hello gets a reload event with its current gobnc.json entry, starts its replacement itself and
+// hands over to it; reload waits for a newer connection of that name and for the old one to
+// close. A module without handoff support is restarted instead.
+func (s *Server) moduleReload(name string) ([]string, error) {
+	done, err := s.moduleOp(name)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if !s.modulesReady.Load() {
+		return nil, errors.New("brain is not ready; try again shortly")
+	}
+	_, entry, err := s.moduleEntry(name)
+	if err != nil {
+		return nil, err
+	}
+	conns := s.moduleConns(name)
+	switch {
+	case len(conns) == 0:
+		return nil, fmt.Errorf("module %q is not running", name)
+	case len(conns) > 1:
+		return nil, fmt.Errorf("module %q has %d connections; use restart", name, len(conns))
+	}
+	old := conns[0]
+	if !old.Handoff {
+		lines, err := s.restartModuleLocked(name)
+		if err != nil {
+			return nil, err
+		}
+		lines[0] = "no handoff support; " + lines[0]
+		return lines, nil
+	}
+	cfg := []byte(entry.Config)
+	if len(cfg) == 0 || !json.Valid(cfg) {
+		cfg = []byte("{}")
+	}
+	ev := wire.ReloadEvent{Exec: entry.Exec, Args: entry.Args, Config: cfg}
+	if err := s.modules.Load().SendEvent(old.ID, wire.EventReload, ev); err != nil {
+		return nil, fmt.Errorf("module %q: %w", name, err)
+	}
+	s.log.Info("module reload requested", "module", name, "pid", old.PID)
+	var next module.ModuleConn
+	oldGone := true
+	tookOver := func() bool {
+		next, oldGone = module.ModuleConn{}, true
+		for _, c := range s.moduleConns(name) {
+			switch {
+			case c.ID == old.ID:
+				oldGone = false
+			case c.ID > old.ID && next.ID == 0:
+				next = c
+			}
+		}
+		return next.ID != 0 && oldGone
+	}
+	if s.waitModules(moduleReloadTimeout, tookOver) {
+		s.log.Info("module reloaded", "module", name, "old_pid", old.PID, "pid", next.PID)
+		return []string{fmt.Sprintf("reloaded %s: pid %d → %d", name, old.PID, next.PID)}, nil
+	}
+	if next.ID != 0 {
+		return nil, fmt.Errorf("module %q: replacement pid %d connected but pid %d did not exit", name, next.PID, old.PID)
+	}
+	return nil, fmt.Errorf("module %q: replacement did not take over within %s; pid %d still serving",
+		name, moduleReloadTimeout, old.PID)
 }

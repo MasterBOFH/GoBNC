@@ -3,8 +3,11 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/module"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // TestMain doubles as a fake module: started with GOBNC_FAKE_MODULE=1 (inherited from a test)
@@ -273,4 +277,160 @@ func waitGone(pid int) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return false
+}
+
+// rawModule is a module connection the test drives by hand.
+type rawModule struct {
+	c net.Conn
+	r *bufio.Reader
+}
+
+// dialRaw connects as module name with pid, saying handoff.
+func dialRaw(t *testing.T, sock, name string, pid int, handoff bool) *rawModule {
+	t.Helper()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	params, _ := json.Marshal(wire.HelloParams{API: wire.APIVersion, Module: name, PID: pid, Handoff: handoff})
+	if err := wire.WriteFrame(c, wire.Request{ID: 1, Method: wire.MethodHello, Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	m := &rawModule{c: c, r: bufio.NewReader(c)}
+	if f := m.next(t); f.Kind != wire.KindResponse || f.Response.Error != nil {
+		t.Fatalf("hello: %+v", f)
+	}
+	return m
+}
+
+func (m *rawModule) next(t *testing.T) wire.Frame {
+	t.Helper()
+	_ = m.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	f, err := wire.ReadFrame(m.r)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	return f
+}
+
+// reloadEvent waits for the reload event.
+func (m *rawModule) reloadEvent(t *testing.T) wire.ReloadEvent {
+	t.Helper()
+	for {
+		f := m.next(t)
+		if f.Kind == wire.KindEvent && f.Event.Event == wire.EventReload {
+			var ev wire.ReloadEvent
+			if err := json.Unmarshal(f.Event.Data, &ev); err != nil {
+				t.Fatal(err)
+			}
+			return ev
+		}
+	}
+}
+
+// reloadAsync runs moduleReload in the background.
+func reloadAsync(s *Server, name string) <-chan []any {
+	res := make(chan []any, 1)
+	go func() {
+		lines, err := s.moduleReload(name)
+		res <- []any{lines, err}
+	}()
+	return res
+}
+
+func readyControlServer(t *testing.T, entries ...config.ModuleConfig) (*Server, string) {
+	s, sock := controlTestServer(t, entries...)
+	s.modulesReady.Store(true)
+	return s, sock
+}
+
+func TestModuleReloadSendsEventAndWaitsForReplacement(t *testing.T) {
+	entry := config.ModuleConfig{Name: "a", Exec: "/opt/a", Args: []string{"-x"}, Config: []byte(`{"v":3}`)}
+	s, sock := readyControlServer(t, entry)
+	a := dialRaw(t, sock, "a", 111, true)
+	waitConnected(t, s, "a")
+	res := reloadAsync(s, "a")
+	ev := a.reloadEvent(t)
+	if ev.Exec != "/opt/a" || len(ev.Args) != 1 || ev.Args[0] != "-x" || string(ev.Config) != `{"v":3}` {
+		t.Fatalf("reload event = %+v", ev)
+	}
+	dialRaw(t, sock, "a", 222, true)
+	a.c.Close()
+	r := <-res
+	if lines, err := r[0].([]string), r[1]; err != nil || len(lines) != 1 || lines[0] != "reloaded a: pid 111 → 222" {
+		t.Fatalf("reload = %q, %v", lines, err)
+	}
+}
+
+func TestModuleReloadTimeoutKeepsOld(t *testing.T) {
+	s, sock := readyControlServer(t, config.ModuleConfig{Name: "a", Exec: "/opt/a"})
+	old := moduleReloadTimeout
+	moduleReloadTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { moduleReloadTimeout = old })
+	a := dialRaw(t, sock, "a", 111, true)
+	waitConnected(t, s, "a")
+	res := reloadAsync(s, "a")
+	if ev := a.reloadEvent(t); string(ev.Config) != "{}" {
+		t.Fatalf("config = %s, want {}", ev.Config)
+	}
+	r := <-res
+	err, _ := r[1].(error)
+	if err == nil || !strings.Contains(err.Error(), "replacement did not take over within 300ms; pid 111 still serving") {
+		t.Fatalf("reload = %v, %v", r[0], err)
+	}
+	if len(s.moduleConns("a")) != 1 {
+		t.Fatal("old connection gone")
+	}
+}
+
+func TestModuleReloadOldDidNotExit(t *testing.T) {
+	s, sock := readyControlServer(t, config.ModuleConfig{Name: "a", Exec: "/opt/a"})
+	old := moduleReloadTimeout
+	moduleReloadTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { moduleReloadTimeout = old })
+	a := dialRaw(t, sock, "a", 111, true)
+	waitConnected(t, s, "a")
+	res := reloadAsync(s, "a")
+	a.reloadEvent(t)
+	dialRaw(t, sock, "a", 222, true)
+	r := <-res
+	err, _ := r[1].(error)
+	if err == nil || err.Error() != `module "a": replacement pid 222 connected but pid 111 did not exit` {
+		t.Fatalf("reload = %v, %v", r[0], err)
+	}
+}
+
+func TestModuleReloadFallsBackToRestart(t *testing.T) {
+	s, sock := readyControlServer(t)
+	out := filepath.Join(filepath.Dir(sock), "a.out")
+	setEntries(s, fakeEntry("a", out))
+	if _, err := s.moduleStart("a"); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := waitStarted(t, out, 1)
+	waitConnected(t, s, "a")
+	lines, err := s.moduleReload("a")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	second, _ := waitStarted(t, out, 2)
+	if want := fmt.Sprintf("no handoff support; restarted a: pid %d → %d", first, second); len(lines) != 1 || lines[0] != want {
+		t.Fatalf("reload = %q, want %q", lines, want)
+	}
+}
+
+func TestModuleReloadRefusedBeforeReady(t *testing.T) {
+	s, sock := controlTestServer(t, config.ModuleConfig{Name: "a", Exec: "/opt/a"})
+	dialRaw(t, sock, "a", 111, true)
+	waitConnected(t, s, "a")
+	if _, err := s.moduleReload("a"); err == nil || err.Error() != "brain is not ready; try again shortly" {
+		t.Fatalf("reload before ready: %v", err)
+	}
+	s.modulesReady.Store(true)
+	dialRaw(t, sock, "a", 112, true)
+	s.waitModules(2*time.Second, func() bool { return len(s.moduleConns("a")) == 2 })
+	if _, err := s.moduleReload("a"); err == nil || err.Error() != `module "a" has 2 connections; use restart` {
+		t.Fatalf("reload with two connections: %v", err)
+	}
 }
