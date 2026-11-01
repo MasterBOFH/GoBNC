@@ -76,6 +76,9 @@ type Server struct {
 	// SendLiveReady went out (markModulesReady).
 	modules      atomic.Pointer[module.Server]
 	modulesReady atomic.Bool
+	// moduleOps names modules with a start/stop/restart/reload in progress (moduleOpsMu).
+	moduleOpsMu sync.Mutex
+	moduleOps   map[string]bool
 
 	// shutdownKind is set by runReloadHandoff/RequestDie before canceling
 	// runCtx so cmd/gobnc knows whether to stop the keeper after Run
