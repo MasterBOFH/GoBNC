@@ -82,11 +82,18 @@ type testEnv struct {
 	nets    map[string]int64
 	cancel  context.CancelFunc
 	stopSrv func()
+	runErr  chan error // Run's result
 }
 
 const testPassword = "s3cret"
 
 func newTestEnv(t *testing.T, networks ...string) *testEnv {
+	t.Helper()
+	return newTestEnvWith(t, nil, networks...)
+}
+
+// newTestEnvWith is newTestEnv with setup run on the Module before Run.
+func newTestEnvWith(t *testing.T, setup func(*Module), networks ...string) *testEnv {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "grc")
 	if err != nil {
@@ -117,6 +124,9 @@ func newTestEnv(t *testing.T, networks ...string) *testEnv {
 	cfg := Config{ListenAddr: "127.0.0.1:0", TLSCert: filepath.Join(e.fx.Dir, "server.crt"),
 		TLSKey: filepath.Join(e.fx.Dir, "server.key"), MaxConnections: 16}
 	e.mod = New(cfg, brain, nil)
+	if setup != nil {
+		setup(e.mod)
+	}
 	l, err := NewListener(cfg, nil, e.mod.Accept)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +138,8 @@ func newTestEnv(t *testing.T, networks ...string) *testEnv {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel = cancel
 	done := make(chan struct{}, 2)
-	go func() { _ = e.mod.Run(ctx); done <- struct{}{} }()
+	e.runErr = make(chan error, 1)
+	go func() { e.runErr <- e.mod.Run(ctx); done <- struct{}{} }()
 	go func() { _ = l.ServeListener(ctx, ln); done <- struct{}{} }()
 	t.Cleanup(func() { cancel(); <-done; <-done })
 	e.url = "wss://" + ln.Addr().String() + "/ws"
@@ -217,16 +228,17 @@ func (e *testEnv) sid(network string) string { return sessionID(e.nets[network])
 
 // wsClient is a WebSocket client recording every frame.
 type wsClient struct {
-	t      *testing.T
-	ws     *websocket.Conn
-	mu     sync.Mutex
-	frames []map[string]any
-	notify chan struct{}
-	rid    int
-	pw     *io.PipeWriter // deflate stream, once binary frames start
-	done   chan struct{}  // closed when the connection ends
-	binary atomic.Int32   // binary frames seen
-	text   atomic.Int32   // text frames seen
+	t        *testing.T
+	ws       *websocket.Conn
+	mu       sync.Mutex
+	frames   []map[string]any
+	notify   chan struct{}
+	rid      int
+	pw       *io.PipeWriter // deflate stream, once binary frames start
+	done     chan struct{}  // closed when the connection ends
+	closeErr error          // why the connection ended (guarded by mu; set before done closes)
+	binary   atomic.Int32   // binary frames seen
+	text     atomic.Int32   // text frames seen
 }
 
 func (e *testEnv) dial(withCert bool) *wsClient {
@@ -251,6 +263,9 @@ func (c *wsClient) readLoop() {
 	for {
 		kind, data, err := c.ws.ReadMessage()
 		if err != nil {
+			c.mu.Lock()
+			c.closeErr = err
+			c.mu.Unlock()
 			if c.pw != nil {
 				c.pw.Close()
 			}

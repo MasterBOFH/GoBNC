@@ -13,6 +13,8 @@ import (
 // handleEvent applies one brain event, in stream order.
 func (m *Module) handleEvent(ev wire.Event) {
 	switch ev.Event {
+	case wire.EventReload:
+		m.onReloadEvent(ev.Data)
 	case wire.EventReady:
 		// A brain that was still booting at hello answered not_ready; follow again now.
 		m.brainConnected()

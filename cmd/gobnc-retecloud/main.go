@@ -5,14 +5,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/MasterBOFH/GoBNC/modules/retecloud"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 func main() {
@@ -30,18 +33,92 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	brain, err := moduleapi.Dial(ctx, moduleapi.Options{Features: retecloud.Features})
+	ln, handoff, err := listen(cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	brain, err := moduleapi.Dial(ctx, moduleapi.Options{Features: retecloud.Features, Handoff: true})
+	if err != nil {
+		ln.Close()
+		return err
+	}
 	m := retecloud.New(cfg, brain, log)
 	l, err := retecloud.NewListener(cfg, log, m.Accept)
 	if err != nil {
+		ln.Close()
+		brain.Close()
 		return err
 	}
+	lctx, stopListening := context.WithCancel(ctx)
+	defer stopListening()
 	errc := make(chan error, 2)
+	serve := func() {
+		go func() {
+			err := l.ServeListener(lctx, ln)
+			if ctx.Err() == nil && lctx.Err() != nil {
+				return // stopped by a handoff: Run reports how it ends
+			}
+			errc <- err
+		}()
+	}
+	if handoff {
+		// The previous process keeps serving until this one confirms: accept only after that.
+		m.OnServing(func() {
+			if err := brain.ConfirmHandoff(); err != nil {
+				errc <- err
+				return
+			}
+			log.Info("took over from the previous process")
+			serve()
+		})
+	} else {
+		serve()
+	}
+	m.OnReload(func(ev wire.ReloadEvent) error {
+		f, err := ln.(*net.TCPListener).File()
+		if err != nil {
+			return err
+		}
+		pid, err := brain.Handoff(ctx, ev, []moduleapi.HandoffFile{{Name: "wss", File: f}})
+		f.Close()
+		if err != nil {
+			return err
+		}
+		log.Info("replacement confirmed; no longer accepting", "pid", pid)
+		stopListening() // hijacked WebSockets are untouched
+		return nil
+	})
 	go func() { errc <- m.Run(ctx) }()
-	go func() { errc <- l.Serve(ctx) }()
-	return <-errc
+	err = <-errc
+	if errors.Is(err, retecloud.ErrHandedOff) {
+		brain.Release() // the replacement shares the module lock: never unlock it
+		return nil
+	}
+	brain.Close()
+	return err
+}
+
+// listen returns the WSS listener: the one a previous process handed over (handoff true), or a
+// new one on addr. An inherited listener on another address (listen_addr changed) is replaced.
+func listen(addr string) (ln net.Listener, handoff bool, err error) {
+	ln, err = moduleapi.InheritedListener("wss")
+	if err != nil {
+		return nil, false, err
+	}
+	handoff = moduleapi.Inherited("confirm") != nil
+	if ln != nil {
+		want, rerr := net.ResolveTCPAddr("tcp", addr)
+		if rerr == nil && sameAddr(ln.Addr(), want) {
+			return ln, handoff, nil
+		}
+		ln.Close()
+	}
+	ln, err = net.Listen("tcp", addr)
+	return ln, handoff, err
+}
+
+func sameAddr(a net.Addr, b *net.TCPAddr) bool {
+	ta, ok := a.(*net.TCPAddr)
+	return ok && ta.Port == b.Port && (ta.IP.Equal(b.IP) || (ta.IP.IsUnspecified() && b.IP == nil) ||
+		(ta.IP.IsUnspecified() && b.IP.IsUnspecified()))
 }

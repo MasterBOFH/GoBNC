@@ -3,11 +3,16 @@ package retecloud
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// errClosing ends writeLoop after a close frame.
+var errClosing = errors.New("retecloud: connection closing")
 
 // WebSocket timing and limits, as retecloud-api.
 const (
@@ -23,6 +28,8 @@ const (
 type outFrame struct {
 	msg              ServerMessage
 	startCompression bool
+	closeCode        int // non-zero: write a close frame with closeText, then end the connection
+	closeText        string
 }
 
 // wsConn is one WebSocket. Its frames are written in queue order by one writer goroutine; its
@@ -38,6 +45,7 @@ type wsConn struct {
 	out       chan outFrame
 	closeOnce sync.Once
 	closed    chan struct{}
+	writeDone chan struct{} // closed when writeLoop returns
 
 	// Loop-owned.
 	authed     bool
@@ -49,8 +57,10 @@ type wsConn struct {
 
 func newWSConn(m *Module, id uint64, ws *websocket.Conn, certSHA256, remoteIP string) *wsConn {
 	return &wsConn{id: id, m: m, ws: ws, certSHA256: certSHA256, remoteIP: remoteIP,
-		out: make(chan outFrame, sendQueueSize), closed: make(chan struct{}), clientName: "ws" + itoa(id),
-		sessions: map[int64]*liteSession{}}
+		out: make(chan outFrame, sendQueueSize), closed: make(chan struct{}), writeDone: make(chan struct{}),
+		// The pid keeps names apart from a replacement's during a hot reload.
+		clientName: "p" + itoa(uint64(os.Getpid())) + "-ws" + itoa(id),
+		sessions:   map[int64]*liteSession{}}
 }
 
 // send queues a frame without blocking; a full queue closes the connection (as retecloud-api).
@@ -67,6 +77,11 @@ func (c *wsConn) queue(f outFrame) {
 	default:
 		c.close()
 	}
+}
+
+// closeWith ends the connection with a close frame, after the frames already queued.
+func (c *wsConn) closeWith(code int, text string) {
+	c.queue(outFrame{closeCode: code, closeText: text})
 }
 
 func (c *wsConn) close() {
@@ -104,6 +119,7 @@ func (c *wsConn) readLoop() {
 func (c *wsConn) writeLoop() {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
+	defer close(c.writeDone)
 	defer c.close()
 	var stream *streamCompressor
 	for {
@@ -127,6 +143,11 @@ func (c *wsConn) writeLoop() {
 // writeFrame writes one frame: JSON text (newline-terminated, as retecloud-api's encoder), or a
 // binary chunk of the connection's deflate stream once compression started.
 func (c *wsConn) writeFrame(f outFrame, stream **streamCompressor) error {
+	if f.closeCode != 0 {
+		_ = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(f.closeCode, f.closeText),
+			time.Now().Add(writeWait))
+		return errClosing
+	}
 	if *stream != nil {
 		chunk, err := (*stream).encode(f.msg)
 		if err != nil {

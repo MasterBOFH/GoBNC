@@ -22,6 +22,7 @@ var Features = []string{wire.FeatureNetworks, wire.FeatureEvents, wire.FeatureHi
 type Brain interface {
 	Call(ctx context.Context, method string, params, result any) error
 	Events() <-chan wire.Event
+	Ready() bool
 	Run(ctx context.Context, onConnect func(ctx context.Context, c *moduleapi.Client) error) error
 }
 
@@ -50,6 +51,11 @@ type Module struct {
 	nets      map[int64]*network
 	brainUp   bool // between a brain hello and its loss
 	ownAction ownAction
+	reloading bool // a reloader is running
+	handedOff bool // a replacement took over: no new WebSockets, Run returns ErrHandedOff
+
+	reloader  Reloader // set before Run
+	onServing func()   // set before Run; cleared once called
 }
 
 // ownAction remembers the connection that just opened or closed a buffer, so the brain's
@@ -105,11 +111,16 @@ func (m *Module) Run(ctx context.Context) error {
 			m.handleEvent(ev)
 			continue
 		}
+		if m.handedOff {
+			m.drain()
+			return ErrHandedOff
+		}
 		select {
 		case <-ctx.Done():
 			for c := range m.conns {
-				c.close()
+				c.closeWith(closeGoingAway, "going away")
 			}
+			m.drain()
 			return nil
 		case op := <-m.ops:
 			op()
@@ -255,6 +266,7 @@ func (m *Module) brainConnected() {
 		}
 	}
 	m.resume()
+	m.serving()
 }
 
 // Accept serves one WebSocket (the Listener's callback) until it closes.
@@ -264,6 +276,9 @@ func (m *Module) Accept(ws *websocket.Conn, certSHA256, remoteIP string) {
 		m.nextConn++
 		c := newWSConn(m, m.nextConn, ws, certSHA256, remoteIP)
 		m.conns[c] = true
+		if m.handedOff { // accepted just before the listener stopped
+			c.closeWith(closeServiceRestart, "service restart")
+		}
 		done <- c
 	}) {
 		ws.Close()
