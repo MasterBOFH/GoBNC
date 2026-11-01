@@ -18,7 +18,11 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/config"
+	"github.com/MasterBOFH/GoBNC/internal/control"
+	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/module"
+	"github.com/MasterBOFH/GoBNC/internal/session"
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
@@ -433,4 +437,60 @@ func TestModuleReloadRefusedBeforeReady(t *testing.T) {
 	if _, err := s.moduleReload("a"); err == nil || err.Error() != `module "a" has 2 connections; use restart` {
 		t.Fatalf("reload with two connections: %v", err)
 	}
+}
+
+func TestModuleCtlReplyUsage(t *testing.T) {
+	s, _ := controlTestServer(t, config.ModuleConfig{Name: "a"})
+	for _, args := range [][]string{nil, {"bogus", "a"}, {"list", "a"}, {"stop"}, {"reload", "a", "b"}} {
+		if got := s.moduleCtlReply(args); got != "ERR "+moduleCtlUsage {
+			t.Fatalf("MODULECTL %q = %q", args, got)
+		}
+	}
+	if got := s.moduleCtlReply([]string{"stop", "a"}); got != `ERR module "a" is not running` {
+		t.Fatalf("MODULECTL stop a = %q", got)
+	}
+}
+
+func TestModuleCtlReplyList(t *testing.T) {
+	s, _ := controlTestServer(t, config.ModuleConfig{Name: "a"})
+	if got := s.moduleCtlReply([]string{"LIST"}); got != `OK ["a: not running"]` {
+		t.Fatalf("MODULECTL list = %q", got)
+	}
+}
+
+func TestControlModuleCtlDispatch(t *testing.T) {
+	s, sock := controlTestServer(t, config.ModuleConfig{Name: "a"})
+	path := filepath.Join(filepath.Dir(sock), "ctl.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			s.handleControl(c)
+		}
+	}()
+	resp, err := control.Client(path, control.CmdModuleCtl+" list")
+	if err != nil || resp != `OK ["a: not running"]` {
+		t.Fatalf("control reply = %q, %v", resp, err)
+	}
+}
+
+func TestBNCModuleList(t *testing.T) {
+	s, _ := controlTestServer(t, config.ModuleConfig{Name: "a"})
+	sess := session.New(store.Network{ID: 1, Name: "n", Nick: "me"}, nil, nil, nil, nil)
+	sess.SetRegisteredForTest(true)
+	s.attachAdmin(sess)
+	dl := newFakeServerDL("c1")
+	msg, _ := irc.Parse("BNC MODULE list")
+	if err := sess.HandleClientMessage(dl, msg); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range dl.snapshot() {
+		if m.Command == "NOTICE" && m.Trailing() == "a: not running" {
+			return
+		}
+	}
+	t.Fatalf("BNC MODULE list: client got %+v", dl.snapshot())
 }

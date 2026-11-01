@@ -47,6 +47,7 @@ func runCLI(args []string) error {
   network delete <name>
   network reconnect <name>
   network disconnect <name>
+  module list|start|stop|restart|reload [name]   manage module processes
 
 serve backgrounds by default (re-exec + pid file). Use -debug/-d or -foreground/-f
 to stay attached (required under systemd/rc.d). -debug also forces a debug console
@@ -120,6 +121,8 @@ Pass --sasl-pass (no value) to prompt for a SASL password.`)
 		return cmdDie(cfg)
 	case "can-upgrade":
 		return cmdCanUpgrade()
+	case "module":
+		return cmdModuleCtl(cfg, args[1:])
 	}
 
 	st, err := store.Open(cfg.DBPath)
@@ -505,4 +508,20 @@ func parseModuleReply(resp string) ([]string, error) {
 		return lines, nil
 	}
 	return nil, fmt.Errorf("unexpected reply: %s", resp)
+}
+
+// cmdModuleCtl runs gobnc module <list|start|stop|restart|reload> [name] on the running brain.
+func cmdModuleCtl(cfg config.Config, args []string) error {
+	resp, err := control.ClientTimeout(cfg.ResolvedControlSocket(), control.CmdModuleCtl+" "+strings.Join(args, " "), 45*time.Second)
+	if err != nil {
+		return fmt.Errorf("gobnc is not running (%v)", err)
+	}
+	lines, err := parseModuleReply(resp)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return nil
 }

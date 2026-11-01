@@ -23,12 +23,12 @@ import (
 
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "serve":
+		switch verb := os.Args[1]; {
+		case verb == "serve":
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 			runServe()
 			return
-		case "network", "auth", "rehash", "reload", "die", "stop", "status", "can-upgrade", "help", "-h", "--help":
+		case builtinVerbs[verb]:
 			if err := runCLI(os.Args[1:]); err != nil {
 				if errors.Is(err, errMustUpgrade) {
 					os.Exit(2)
@@ -233,3 +233,7 @@ func confirmReloadHandoff(ctx context.Context, handoffSock string) error {
 	}
 	return nil
 }
+
+// builtinVerbs are the CLI verbs gobnc handles itself; any other word is a module command.
+var builtinVerbs = map[string]bool{"network": true, "auth": true, "rehash": true, "reload": true, "die": true,
+	"stop": true, "status": true, "can-upgrade": true, "module": true, "help": true, "-h": true, "--help": true}

@@ -24,6 +24,7 @@ const (
 	CmdShutdown         = "SHUTDOWN"          // graceful brain stop (same as SIGTERM); keeper stays
 	CmdStatus           = "STATUS"            // live daemon/network status (OK <json>)
 	CmdModule           = "MODULE"            // MODULE <command> <args...>: run a module's command (OK <json lines>)
+	CmdModuleCtl        = "MODULECTL"         // MODULECTL <list|start|stop|restart|reload> [name]: manage module processes (OK <json lines>)
 )
 
 // Client sends a single command to a running daemon and returns the reply line.

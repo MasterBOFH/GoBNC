@@ -67,6 +67,7 @@ func Help() string {
   network delete <name>
   network reconnect [<name>]
   network disconnect [<name>]
+  module list|start|stop|restart|reload [<module>]
 (<name> defaults to this connection's network when omitted)`)
 }
 

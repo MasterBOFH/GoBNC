@@ -16,6 +16,9 @@ import (
 func (s *Server) attachAdmin(sess *session.Session) {
 	netName := sess.Network.Name
 	sess.SetAdmin(func(args []string) ([]string, error) {
+		if len(args) > 0 && strings.EqualFold(args[0], "module") {
+			return s.moduleCtl(args[1:])
+		}
 		if lines, handled, err := s.moduleCommand(args, wire.OriginBNC); handled {
 			return lines, err
 		}

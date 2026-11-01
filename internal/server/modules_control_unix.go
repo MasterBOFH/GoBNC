@@ -297,3 +297,46 @@ func (s *Server) moduleReload(name string) ([]string, error) {
 	return nil, fmt.Errorf("module %q: replacement did not take over within %s; pid %d still serving",
 		name, moduleReloadTimeout, old.PID)
 }
+
+const moduleCtlUsage = "usage: MODULECTL <list|start|stop|restart|reload> [name]"
+
+// moduleCtl runs one module control verb (gobnc module ..., BNC MODULE ..., MODULECTL ...).
+func (s *Server) moduleCtl(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, errors.New(moduleCtlUsage)
+	}
+	verb := strings.ToLower(args[0])
+	if verb == "list" {
+		if len(args) != 1 {
+			return nil, errors.New(moduleCtlUsage)
+		}
+		return s.moduleList()
+	}
+	if len(args) != 2 {
+		return nil, errors.New(moduleCtlUsage)
+	}
+	switch name := args[1]; verb {
+	case "start":
+		return s.moduleStart(name)
+	case "stop":
+		return s.moduleStop(name)
+	case "restart":
+		return s.moduleRestart(name)
+	case "reload":
+		return s.moduleReload(name)
+	}
+	return nil, errors.New(moduleCtlUsage)
+}
+
+// moduleCtlReply answers the control socket's MODULECTL: OK <json lines> or ERR <text>.
+func (s *Server) moduleCtlReply(args []string) string {
+	lines, err := s.moduleCtl(args)
+	if err != nil {
+		return "ERR " + err.Error()
+	}
+	b, err := json.Marshal(lines)
+	if err != nil {
+		return "ERR " + err.Error()
+	}
+	return "OK " + string(b)
+}
