@@ -42,7 +42,8 @@ type Conn struct {
 	subs    map[int64]bool                       // networks this connection subscribed to (events.subscribe)
 	clients map[clientKey]*session.VirtualClient // virtual clients it attached (clients.attach)
 
-	readySent bool // guarded by Server.mu: hello said ready, or the ready event was queued
+	since     time.Time // registration time; set before the conn is registered
+	readySent bool      // guarded by Server.mu: hello said ready, or the ready event was queued
 }
 
 func newConn(id uint64, srv *Server, nc net.Conn, hello helloInfo) *Conn {

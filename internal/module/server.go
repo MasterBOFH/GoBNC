@@ -5,6 +5,7 @@ package module
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,10 +49,11 @@ type Server struct {
 	log     *slog.Logger
 	uid     int
 
-	mu     sync.Mutex
-	cfg    config.ModulesConfig
-	conns  map[uint64]*Conn
-	nextID uint64
+	mu      sync.Mutex
+	cfg     config.ModulesConfig
+	conns   map[uint64]*Conn
+	nextID  uint64
+	changed chan struct{} // closed and replaced when a connection registers or goes (Changed)
 
 	commands    commandRegistry
 	onListening func()
@@ -66,7 +68,8 @@ func NewServer(cfg config.ModulesConfig, backend Backend, log *slog.Logger) *Ser
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid(), conns: map[uint64]*Conn{}, now: time.Now}
+	return &Server{cfg: cfg, backend: backend, log: log, uid: os.Getuid(), conns: map[uint64]*Conn{},
+		changed: make(chan struct{}), now: time.Now}
 }
 
 // SetConfig replaces the module list after a rehash. Connections already past hello keep the
@@ -180,12 +183,15 @@ func (s *Server) serveConn(ctx context.Context, nc net.Conn) {
 		return
 	}
 	c.Enqueue(resp)
+	c.since = s.now()
 	s.conns[c.id] = c
+	s.notifyChangedLocked()
 	s.mu.Unlock()
 	s.log.Info("module connected", "module", hello.module, "pid", hello.pid, "handoff", hello.handoff, "granted", hello.granted)
 	c.OnClose(func() {
 		s.mu.Lock()
 		delete(s.conns, c.id)
+		s.notifyChangedLocked()
 		s.mu.Unlock()
 		s.log.Info("module disconnected", "module", hello.module, "overflow", c.overflowed.Load())
 	})
@@ -199,6 +205,57 @@ func (s *Server) OnListening(f func()) {
 	s.mu.Lock()
 	s.onListening = f
 	s.mu.Unlock()
+}
+
+// ModuleConn describes one module connection past hello.
+type ModuleConn struct {
+	ID      uint64
+	Module  string
+	PID     int
+	Handoff bool
+	Granted []string
+	Since   time.Time
+}
+
+// Modules lists every connection past hello, oldest (lowest ID) first.
+func (s *Server) Modules() []ModuleConn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ModuleConn, 0, len(s.conns))
+	for _, c := range s.conns {
+		granted := make([]string, 0, len(c.granted))
+		for f := range c.granted {
+			granted = append(granted, f)
+		}
+		slices.Sort(granted)
+		out = append(out, ModuleConn{ID: c.id, Module: c.module, PID: c.pid, Handoff: c.handoff, Granted: granted, Since: c.since})
+	}
+	slices.SortFunc(out, func(a, b ModuleConn) int { return cmp.Compare(a.ID, b.ID) })
+	return out
+}
+
+// SendEvent queues event name with data on one connection.
+func (s *Server) SendEvent(connID uint64, name string, data any) error {
+	s.mu.Lock()
+	c := s.conns[connID]
+	s.mu.Unlock()
+	if c == nil || !c.EnqueueEvent(name, data) {
+		return fmt.Errorf("no module connection %d", connID)
+	}
+	return nil
+}
+
+// Changed returns a channel closed at the next connection registering or going; re-read
+// Modules after it fires and call Changed again for the next one.
+func (s *Server) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+func (s *Server) notifyChangedLocked() {
+	close(s.changed)
+	s.changed = make(chan struct{})
 }
 
 // Connected reports whether a module of that name is connected (past hello).

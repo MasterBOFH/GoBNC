@@ -260,3 +260,74 @@ func TestHelloAcceptsPIDAndHandoff(t *testing.T) {
 		t.Fatalf("conn b = %+v, want pid 0, no handoff", c)
 	}
 }
+
+func TestModulesListsConnections(t *testing.T) {
+	srv, path := startServer(t, []config.ModuleConfig{{Name: "a", Features: []string{"events"}}, {Name: "b"}}, &fakeBackend{ready: true})
+	a := dialModule(t, path)
+	var res wire.HelloResult
+	a.call(wire.MethodHello, wire.HelloParams{API: wire.APIVersion, Module: "a", Features: []string{"events"}, PID: 11, Handoff: true}, &res)
+	b := dialModule(t, path)
+	b.call(wire.MethodHello, wire.HelloParams{API: wire.APIVersion, Module: "b", PID: 22}, &res)
+	mods := srv.Modules()
+	if len(mods) != 2 || mods[0].Module != "a" || mods[1].Module != "b" || mods[0].ID >= mods[1].ID {
+		t.Fatalf("Modules = %+v", mods)
+	}
+	if mods[0].PID != 11 || !mods[0].Handoff || !reflect.DeepEqual(mods[0].Granted, []string{"events"}) ||
+		mods[1].PID != 22 || mods[1].Handoff || mods[0].Since.IsZero() {
+		t.Fatalf("Modules = %+v", mods)
+	}
+	ch := srv.Changed()
+	a.c.Close()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not fire on close")
+	}
+	if mods := srv.Modules(); len(mods) != 1 || mods[0].Module != "b" {
+		t.Fatalf("Modules after close = %+v", mods)
+	}
+}
+
+func TestChangedFiresOnConnectAndClose(t *testing.T) {
+	srv, path := startServer(t, []config.ModuleConfig{{Name: "a"}}, &fakeBackend{ready: true})
+	ch := srv.Changed()
+	tc := dialModule(t, path)
+	tc.hello("a")
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not fire on connect")
+	}
+	ch = srv.Changed()
+	tc.c.Close()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not fire on close")
+	}
+}
+
+func TestSendEventReachesOnlyThatConnection(t *testing.T) {
+	srv, path := startServer(t, []config.ModuleConfig{{Name: "a"}}, &fakeBackend{ready: true})
+	first, second := dialModule(t, path), dialModule(t, path)
+	first.hello("a")
+	second.hello("a")
+	mods := srv.Modules()
+	if len(mods) != 2 {
+		t.Fatalf("Modules = %+v", mods)
+	}
+	if err := srv.SendEvent(mods[1].ID, wire.EventReload, wire.ReloadEvent{Exec: "/bin/x"}); err != nil {
+		t.Fatal(err)
+	}
+	var ev wire.ReloadEvent
+	if err := json.Unmarshal(second.nextEvent(wire.EventReload), &ev); err != nil || ev.Exec != "/bin/x" {
+		t.Fatalf("reload event = %+v, %v", ev, err)
+	}
+	_ = first.c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if f, err := wire.ReadFrame(first.r); err == nil {
+		t.Fatalf("first connection got %+v", f)
+	}
+	if err := srv.SendEvent(9999, wire.EventReload, wire.ReloadEvent{}); err == nil {
+		t.Fatal("SendEvent to a missing connection succeeded")
+	}
+}
