@@ -63,10 +63,14 @@ func Config() json.RawMessage {
 // Client is a module's connection to the brain. It survives brain reloads: Run redials and calls
 // its onConnect again after every successful hello.
 type Client struct {
-	opts   Options
-	lock   *os.File
-	events chan wire.Event
-	ready  atomic.Bool
+	opts Options
+	lock *os.File
+	// lockInherited: lock came from a handoff; until ConfirmHandoff the previous process still
+	// relies on it, so Close must not unlock it.
+	lockInherited bool
+	confirmed     atomic.Bool
+	events        chan wire.Event
+	ready         atomic.Bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -89,7 +93,13 @@ func Dial(ctx context.Context, opts Options) (*Client, error) {
 		return nil, errors.New("moduleapi: no socket or module name (GOBNC_MODULE_SOCKET / GOBNC_MODULE_NAME)")
 	}
 	c := &Client{opts: opts, events: make(chan wire.Event, EventBuffer)}
-	if !opts.SkipLock {
+	if f := Inherited("lock"); f != nil && !opts.SkipLock {
+		// A handoff replacement: the lock is the previous process's open file, already locked.
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			return nil, ErrAlreadyRunning
+		}
+		c.lock, c.lockInherited = f, true
+	} else if !opts.SkipLock {
 		f, err := os.OpenFile(LockPath(opts.Socket, opts.Module), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("moduleapi: lock: %w", err)
@@ -277,11 +287,14 @@ func (c *Client) dropConn() {
 	}
 }
 
-// Close drops the connection and releases the module lock.
+// Close drops the connection and releases the module lock (a handoff replacement that has not
+// confirmed leaves the lock to the previous process, which shares it).
 func (c *Client) Close() error {
 	c.dropConn()
 	if c.lock != nil {
-		_ = syscall.Flock(int(c.lock.Fd()), syscall.LOCK_UN)
+		if !c.lockInherited || c.confirmed.Load() {
+			_ = syscall.Flock(int(c.lock.Fd()), syscall.LOCK_UN)
+		}
 		_ = c.lock.Close()
 		c.lock = nil
 	}
