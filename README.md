@@ -160,6 +160,8 @@ The first module, `gobnc-retecloud`, lets Rete on iOS use the bouncer: it serves
 
 Rete on iOS logs in with the bouncer password, or with a client certificate registered with `gobnc auth add-fingerprint <sha256>` — the same credentials as an IRC client. The app shows every network with a per-device switch for which ones it follows; networks themselves stay managed with `gobnc network add` / `mod`.
 
+Module processes are managed from the running brain, without a brain reload: `gobnc module list`, `gobnc module start|stop|restart <name>`, and `gobnc module reload <name>` (also `BNC MODULE …`). To update `gobnc-retecloud`, install the new binary at its `exec` path and run `gobnc module reload retecloud`: it hands its port to the new process, phones get one close (1012) and reconnect, and a replacement that fails to start leaves the old one serving. `reload` also applies a module `config` changed with `gobnc rehash`. A module without hot reload support is restarted instead; REHASH does not start or stop modules.
+
 A module can add its own commands: `BNC <name> …` from an IRC client and `gobnc <name> …` from the CLI reach it (it has 10 seconds to answer).
 
 ## Packaging

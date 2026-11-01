@@ -53,7 +53,8 @@ keeper (uplinks) ⇄ brain (Session, history, read markers, devices) ⇄ module 
   be restarted or replaced without losing anything, and IRC clients and modules agree (a read
   marker set from iOS reaches IRC clients as MARKREAD, and the other way round).
 - **The brain starts modules detached**, only if not already running; they outlive a brain reload.
-- **Next milestones:** module hot reload, then push (below). Not in this milestone.
+- **Module reload** (`gobnc module reload <name>`, below) replaces a module without a brain
+  reload. **Next milestone:** push (below).
 
 ## Architecture (approach A: bus + virtual clients)
 
@@ -137,7 +138,8 @@ its NAMES refresh lands, so such channels are `members_complete: false` in the s
 ### Code layout
 
 - `pkg/moduleapi/wire` — frames, constants, params/result/event types (importable by modules).
-- `pkg/moduleapi` — Go client library: dial, call, events, reconnect, the module lock.
+- `pkg/moduleapi` — Go client library: dial, call, events, reconnect, the module lock, hot-reload
+  handoff.
 - `internal/module` — the brain-side server: socket, peer check, hello, per-connection queue
   (8192 frames; overflow closes that connection), dispatch, one file per feature.
 - `internal/session` — bus, snapshot, envelopes, virtual clients, device rules.
@@ -166,7 +168,9 @@ Error codes (exact strings): `hello_required`, `unsupported_api`, `not_granted`,
 
 The first request must be `hello`; anything else gets `hello_required` and the connection closes.
 
-`hello` params `{"api": 1, "module": "<name>", "features": ["..."]}` → result
+`hello` params `{"api": 1, "module": "<name>", "features": ["..."], "pid": <int>?, "handoff": <bool>?}`
+(`pid`: the module's process id, used to stop or restart it; `handoff`: it replaces itself on a
+`reload` event) → result
 `{"api": 1, "brain_version": "<version.String()>", "granted": [...], "denied": [...], "ready": <bool>}`.
 `api` other than `1` → `unsupported_api` and close. `module` must match a configured module name
 (`modules.list[].name`), else `not_granted` and close. `granted` = requested ∩ configured
@@ -277,6 +281,8 @@ Events (brain → module):
 - `device_network {"client_id","network","subscribed"}`.
 - `command` — see `commands.register`.
 - `overflow {}` written best-effort before the brain closes a module whose queue is full.
+- `reload {"exec","args"?,"config"?}` — sent by `gobnc module reload` to a module that said
+  `handoff`: its current gobnc.json entry (see Module reload).
 
 Queue: 8192 frames per module connection, written by one writer goroutine; a full queue closes that
 connection (the brain never blocks). Order of all frames on one connection = order of enqueue.
@@ -335,34 +341,51 @@ Known differences from retecloud-api, none visible to the lite tests: `get_messa
 `socket` defaults to `gobnc-modules.sock` next to the control socket. A started module gets
 `GOBNC_MODULE_SOCKET`, `GOBNC_MODULE_NAME` and `GOBNC_MODULE_CONFIG` (the entry's `config`) and holds
 `<socket dir>/gobnc-module-<name>.lock` while it runs. REHASH applies a changed `list` to module
-connections made afterwards.
+connections made afterwards; it does not start or stop modules (`gobnc module start|stop`).
 
-## Next milestone: hot reload of a module
+## Module reload
 
-Planned in `specs/2026-11-01-module-hot-reload.md`. The brain's share is small and generic, so it
-can ship in the first live deploy; the reload mechanism itself lives in the module and
-`pkg/moduleapi`, so a bug in it is fixed by reloading the module, not the brain.
+`gobnc module <verb> [name]`, `BNC MODULE <verb> [name]` and the control verb
+`MODULECTL <verb> [name]` (reply `OK <json lines>` / `ERR <text>`) manage module processes from the
+running brain (`internal/server/modules_control_unix.go`); one operation per module at a time.
 
-- **Brain.** Hello carries the module's `pid` and whether it supports `handoff`.
-  `gobnc module list|start|stop|restart|reload <name>` (also `BNC MODULE ...`, control verb
-  `MODULECTL`). `reload` sends the module a `reload` event with its current gobnc.json entry
-  (`exec`, `args`, `config`) and waits up to 30 s for a newer connection of that name and for the
-  old one to close. A module without handoff support is restarted instead: SIGTERM the reported
-  pid, wait for its connection and lock to go (SIGKILL after 10 s), start it again. REHASH still
-  does not start or stop modules.
-- **Module.** The old process starts its own replacement, detached, passing its listening socket,
-  its module lock and a confirmation pipe as inherited file descriptors (`GOBNC_MODULE_HANDOFF`
-  names them). The replacement adopts the lock, connects to the brain, follows every network, and
-  writes `ok`; only then does it accept connections. The old process stops accepting, closes each
-  WebSocket with 1012 ("service restart"), drains, and exits without unlocking (the lock belongs to
-  the open file both processes share). If the replacement exits or does not confirm within 15 s,
-  the old process kills it and keeps serving.
-- **Virtual client names** carry the process id, so the two processes never share one during the
-  overlap.
+- `list` — each configured module: `running, pid <pid>[, handoff], features <...>` or
+  `not running` (`(lock held by another process)` when its lock is taken without a connection).
+- `start` — starts a configured module with an `exec` that is neither connected nor locked.
+- `stop` — SIGTERM to the pid each connection reported in hello, then waits until no connection of
+  that name remains and its lock is free; SIGKILL after 10 s, then 2 s more. A module that sent no
+  pid is refused.
+- `restart` — stop, then start from the current gobnc.json entry (after a REHASH, its new `config`).
+- `reload` — needs a ready brain and exactly one connection. A module without `handoff` is
+  restarted instead (`no handoff support; restarted ...`). Otherwise the brain sends it a `reload`
+  event with its current entry and waits up to 30 s for a newer connection of that name **and** the
+  old one closing: `reloaded <name>: pid <old> → <new>`. Otherwise the error names the old pid,
+  which is still serving.
+
+The handoff itself is the module's (`pkg/moduleapi/handoff.go`), so a bug in it is fixed by
+reloading the module, not the brain:
+
+1. `Client.Handoff` starts the replacement detached (own session, stdio on `/dev/null`) from the
+   event's `exec`/`args`, with `GOBNC_MODULE_CONFIG` = the event's `config` and inherited
+   descriptors: fd 3 the module lock, fd 4 a confirmation pipe, then the module's files (for
+   `gobnc-retecloud`, `wss`: the listening socket). `GOBNC_MODULE_HANDOFF=lock=3,confirm=4,wss=5`
+   names them. Inherited descriptors are marked close-on-exec on adoption.
+2. The replacement's `Dial` adopts the inherited lock (a flock belongs to the open file, which both
+   processes share), `InheritedListener("wss")` the socket (a changed `listen_addr` binds anew),
+   and once it is connected to a ready brain, `ConfirmHandoff` writes `ok`; only then does it start
+   accepting. Until then both processes hold the socket and the old one keeps accepting.
+3. The old process, once confirmed (15 s at most), stops accepting, closes each WebSocket with 1012
+   "service restart" after the frames already queued (2 s drain), and calls `Client.Release`, which
+   closes the lock file **without** unlocking it — unlocking would release the replacement's lock.
+   A replacement that gives up before confirming does not unlock it either.
+4. If the replacement exits or does not confirm, the old process kills it and keeps serving.
 
 Live WebSocket connections are not carried across (TLS state cannot move between processes, the
-reason the keeper exists); clients reconnect and resume with `after_id`. That is cheap because the
-module holds no state of its own.
+reason the keeper exists): clients reconnect and resume with `after_id`, the same path as a brain
+reload. During the overlap both processes are connected to the brain; virtual client names carry
+the pid (`p<pid>-ws<n>`), so they never collide. A WebSocket closed because the module shuts down
+(SIGTERM, `stop`) gets 1001 "going away". The replacement loads the TLS certificate afresh, so a
+renewed certificate needs only a reload.
 
 ## Later milestone: push notifications (iOS)
 
