@@ -494,3 +494,14 @@ func TestBNCModuleList(t *testing.T) {
 	}
 	t.Fatalf("BNC MODULE list: client got %+v", dl.snapshot())
 }
+
+func TestModuleStopRefusesBogusPID(t *testing.T) {
+	for _, pid := range []int{1, os.Getpid()} {
+		s, sock := controlTestServer(t, config.ModuleConfig{Name: "a", Exec: "/opt/a"})
+		dialRaw(t, sock, "a", pid, false)
+		waitConnected(t, s, "a")
+		if _, err := s.moduleStop("a"); err == nil || !strings.Contains(err.Error(), "stop it by hand") {
+			t.Fatalf("stop with pid %d: %v", pid, err)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -156,6 +157,9 @@ func (s *Server) stopModuleLocked(name string) ([]int, error) {
 	for _, c := range conns {
 		if c.PID <= 0 {
 			return nil, fmt.Errorf("module %q did not report its pid; stop it by hand", name)
+		}
+		if c.PID == 1 || c.PID == os.Getpid() {
+			return nil, fmt.Errorf("module %q reported pid %d; stop it by hand", name, c.PID)
 		}
 		pids = append(pids, c.PID)
 	}
