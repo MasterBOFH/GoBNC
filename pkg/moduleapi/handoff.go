@@ -111,7 +111,10 @@ func (c *Client) Handoff(ctx context.Context, ev wire.ReloadEvent, files []Hando
 			// EOF without ok: the replacement closed the pipe or exited; let exited say which.
 			confirmed = nil
 		case err := <-exited:
-			return 0, fmt.Errorf("moduleapi: replacement exited before confirming: %v", err)
+			if err == nil {
+				return 0, errors.New("moduleapi: replacement exited before confirming")
+			}
+			return 0, fmt.Errorf("moduleapi: replacement exited before confirming: %w", err)
 		case <-timer.C:
 			return fail(fmt.Errorf("moduleapi: replacement did not confirm within %s", HandoffTimeout))
 		case <-ctx.Done():

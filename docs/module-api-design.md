@@ -354,7 +354,7 @@ running brain (`internal/server/modules_control_unix.go`); one operation per mod
 - `start` — starts a configured module with an `exec` that is neither connected nor locked.
 - `stop` — SIGTERM to the pid each connection reported in hello, then waits until no connection of
   that name remains and its lock is free; SIGKILL after 10 s, then 2 s more. A module that sent no
-  pid is refused.
+  pid (or pid 1, or the brain's own) is refused.
 - `restart` — stop, then start from the current gobnc.json entry (after a REHASH, its new `config`).
 - `reload` — needs a ready brain and exactly one connection. A module without `handoff` is
   restarted instead (`no handoff support; restarted ...`). Otherwise the brain sends it a `reload`
@@ -378,7 +378,10 @@ reloading the module, not the brain:
    "service restart" after the frames already queued (2 s drain), and calls `Client.Release`, which
    closes the lock file **without** unlocking it — unlocking would release the replacement's lock.
    A replacement that gives up before confirming does not unlock it either.
-4. If the replacement exits or does not confirm, the old process kills it and keeps serving.
+4. If the replacement exits or does not confirm, the old process kills it and keeps serving. The
+   brain does not hear why: `reload` reports the failure when its 30 s wait ends, even when the
+   replacement failed at once (a wrong `exec`), and the module's log of the reason goes to its
+   stderr — `/dev/null` for a module the brain started.
 
 Live WebSocket connections are not carried across (TLS state cannot move between processes, the
 reason the keeper exists): clients reconnect and resume with `after_id`, the same path as a brain

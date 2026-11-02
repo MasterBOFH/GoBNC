@@ -30,6 +30,8 @@ func handoffChild(mode string) {
 	switch mode {
 	case "exit1":
 		os.Exit(1)
+	case "exit0":
+		os.Exit(0)
 	case "hang":
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -228,5 +230,19 @@ func TestHandoffFailedReplacementLeavesLock(t *testing.T) {
 	}
 	if !lockHeldElsewhere(t, LockPath(sock, "mod")) {
 		t.Fatal("a failed replacement released the old process's lock")
+	}
+}
+
+func TestHandoffChildExitZeroFails(t *testing.T) {
+	sock := sockPath(t)
+	startBrain(t, sock)
+	c, err := Dial(context.Background(), Options{Socket: sock, Module: "mod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ev := childEvent(t, "exit0")
+	if _, err := c.Handoff(context.Background(), ev, nil); err == nil || err.Error() != "moduleapi: replacement exited before confirming" {
+		t.Fatalf("Handoff = %v", err)
 	}
 }
