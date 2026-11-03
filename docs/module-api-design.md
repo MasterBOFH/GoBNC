@@ -312,6 +312,22 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
 
+### Close codes
+
+The close frame a server sends when it ends a WebSocket, with its reason string:
+
+| Code | Reason | When | Client does |
+|---|---|---|---|
+| 1012 | `service restart` | the server process is being replaced (GoBNC: module reload) | reconnect once at once, no error shown; then normal backoff |
+| 1001 | `going away` | process shutdown (SIGTERM/SIGINT, module stop, API shutdown) | normal backoff |
+| 1013 | `try again later` | the connection's send queue overflowed (slow consumer) | normal backoff |
+| 1008 | `authentication timeout` | no successful `authenticate` within the server's window (GoBNC: 30 s; the API has none) | normal backoff |
+| none (1005, 1006) | — | network loss, ping timeout, read error | normal backoff |
+
+`gobnc-retecloud` writes the 1013 frame directly (the full queue has no room for it), at most
+`writeWait` (10 s) after the frames being written, then closes the socket; 1012, 1001 and 1008
+follow the frames already queued.
+
 ## Conformance
 
 retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKEND=gobnc`

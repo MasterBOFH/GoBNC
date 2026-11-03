@@ -63,7 +63,8 @@ func newWSConn(m *Module, id uint64, ws *websocket.Conn, certSHA256, remoteIP st
 		sessions:   map[int64]*liteSession{}}
 }
 
-// send queues a frame without blocking; a full queue closes the connection (as retecloud-api).
+// send queues a frame without blocking; a full queue closes the connection with 1013 (as
+// retecloud-api).
 func (c *wsConn) send(msg ServerMessage) { c.queue(outFrame{msg: msg}) }
 
 func (c *wsConn) queue(f outFrame) {
@@ -75,8 +76,23 @@ func (c *wsConn) queue(f outFrame) {
 	select {
 	case c.out <- f:
 	default:
-		c.close()
+		c.overflow()
 	}
+}
+
+// overflow ends a connection whose send queue is full (a slow consumer) with 1013 "try again
+// later". The queue has no room for the close frame, so it is written directly, from its own
+// goroutine: the loop never waits on a peer that is not reading (WriteControl may run
+// concurrently with writeLoop's writes and waits at most writeWait for them).
+func (c *wsConn) overflow() {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		go func() {
+			_ = c.ws.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(closeTryAgainLater, "try again later"), time.Now().Add(writeWait))
+			_ = c.ws.Close()
+		}()
+	})
 }
 
 // closeWith ends the connection with a close frame, after the frames already queued.

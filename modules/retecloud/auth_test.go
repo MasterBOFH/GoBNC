@@ -90,10 +90,8 @@ func TestUnauthenticatedConnectionClosedAfterTimeout(t *testing.T) {
 	defer func() { authTimeout = old }()
 	e := newTestEnv(t, "undernet")
 	c := e.dial(false)
-	select {
-	case <-c.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("connection still open after the auth timeout")
+	if ce := c.closedWith(3 * time.Second); ce.Code != 1008 || ce.Text != "authentication timeout" {
+		t.Fatalf("close = %d %q, want 1008 authentication timeout", ce.Code, ce.Text)
 	}
 	if n := c.count(); n != 0 {
 		t.Fatalf("got %d frames before the close", n)

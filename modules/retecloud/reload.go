@@ -20,10 +20,12 @@ import (
 // client (moduleapi.Client.Release) and exits.
 var ErrHandedOff = errors.New("retecloud: handed off to a replacement")
 
-// Close codes sent to WebSockets when the module stops serving them.
+// Close codes sent to WebSockets the module ends.
 const (
-	closeServiceRestart = websocket.CloseServiceRestart // 1012: a replacement took over
-	closeGoingAway      = websocket.CloseGoingAway      // 1001: the module is shutting down
+	closeServiceRestart = websocket.CloseServiceRestart  // 1012: a replacement took over
+	closeGoingAway      = websocket.CloseGoingAway       // 1001: the module is shutting down
+	closeTryAgainLater  = websocket.CloseTryAgainLater   // 1013: the send queue overflowed
+	closeAuthTimeout    = websocket.ClosePolicyViolation // 1008: no authenticate within authTimeout
 )
 
 // drainTimeout bounds how long Run waits for WebSockets to write their close frames.

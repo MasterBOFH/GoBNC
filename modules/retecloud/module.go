@@ -289,7 +289,7 @@ func (m *Module) Accept(ws *websocket.Conn, certSHA256, remoteIP string) {
 	authTimer := time.AfterFunc(authTimeout, func() {
 		m.post(func() {
 			if !c.authed {
-				c.close()
+				c.closeWith(closeAuthTimeout, "authentication timeout")
 			}
 		})
 	})
