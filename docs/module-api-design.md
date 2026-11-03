@@ -34,8 +34,8 @@ keeper (uplinks) ⇄ brain (Session, history, read markers, devices) ⇄ module 
 
 - **iOS lite mode only.** `gobnc-retecloud` serves `sync_mode: "lite"`; desktops use IRC.
 - **Wire-identical with retecloud-api's `lite-mode` branch** after `authenticate`. Pinned spec
-  revision: retecloud-api **`d016cb5`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
-  the per-device toggle" and "Backend-specific authentication"). A needed protocol change goes to
+  revision: retecloud-api **`ec0f7b0`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
+  the per-device toggle" and "Backend-specific behaviour"). A needed protocol change goes to
   retecloud-api `lite-mode` first (doc + harness test), then here; `lite-mode` merges into
   retecloud-api only once GoBNC and Rete are both drawn up.
 - **Authentication** is GoBNC's own, over the WebSocket: the bouncer password
@@ -375,16 +375,16 @@ follow the frames already queued.
 ## Conformance
 
 retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKEND=gobnc`
-(`docker-compose.gobnc.yml`; see the harness README). Against the pinned retecloud-api revision
+(`docker-compose.gobnc.yml`; see the harness README). Against retecloud-api
 **`d016cb5`**, harness commit `890f1b2`: `test_lite_mode`, `test_lite_pipelining`,
 `test_casemapping`, `test_compression`, `test_reply_routing`, `test_history_paging`,
 `test_lite_bootstrap_cache`, `test_session_toggle` and `test_buffer_close` pass on ircu2 and solanum
 (22 passed; 4 skipped because they need full/state mode or REST).
 
 The close codes, `authenticate_error` codes, `session_state` broadcast and attributable
-`subscribe_buffer_error` above follow the retecloud-api `lite-mode` commits that add them to
-`documentation/WEBSOCKET_PROTOCOL_LITE.md` (after `d016cb5`); the harness figures in the paragraph
-above were measured before those additions.
+`subscribe_buffer_error` above match retecloud-api `ec0f7b0` (the pinned revision); the harness figures
+in the paragraph above were measured against `d016cb5`, before those additions, and are re-measured
+with the harness modules that cover them.
 
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
