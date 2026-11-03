@@ -164,3 +164,52 @@ func TestUnsubscribeStopsLiveLines(t *testing.T) {
 		}
 	}
 }
+
+// Every subscribe_buffer_error, standalone or answering an inline sync_session subscribe,
+// carries the session_id and data.buffer as the client sent them.
+func TestSubscribeBufferErrorsCarrySessionAndBuffer(t *testing.T) {
+	e := newTestEnv(t, "undernet", "libera")
+	synced, unsynced := e.sid("undernet"), e.sid("libera")
+	c := e.dial(false)
+	c.authenticate("ios-1")
+	c.liteSync(synced, "ios-1", nil)
+	check := func(name string, f map[string]any, sid, buffer, text string) {
+		t.Helper()
+		d, _ := f["data"].(map[string]any)
+		gotSID, hasSID := f["session_id"]
+		if f["type"] != "subscribe_buffer_error" || f["error"] != text || d == nil || d["buffer"] != buffer ||
+			(sid == "" && hasSID) || (sid != "" && gotSID != sid) {
+			t.Fatalf("%s: %v, want session_id %q, data.buffer %q, error %q", name, f, sid, buffer, text)
+		}
+	}
+	standalone := func(name string, data any, sid, buffer, text string) {
+		t.Helper()
+		mark := c.count()
+		rid := c.request("subscribe_buffer", data, sid)
+		check(name, c.waitFor(mark, 5*time.Second, reply(rid, "subscribe_buffer_success", "subscribe_buffer_error")), sid, buffer, text)
+	}
+	standalone("blank buffer", map[string]any{"buffer": "  "}, synced, "  ", "buffer is required")
+	standalone("unknown anchor", map[string]any{"buffer": "#c", "anchor": "middle"}, synced, "#c", "Unknown anchor")
+	standalone("unsynced session", map[string]any{"buffer": "#c"}, unsynced, "#c", "sync_session with sync_mode lite required")
+	standalone("unknown session", map[string]any{"buffer": "#c"}, "net-999", "#c", "sync_session with sync_mode lite required")
+	standalone("bad data", map[string]any{"buffer": "#c", "members": "bogus"}, synced, "#c", "Invalid request data")
+	standalone("no session_id", map[string]any{"buffer": "#c"}, "", "#c", "session_id is required")
+
+	// Inline: 20 fresh subscriptions fill the cap; the 21st and a bad anchor fail.
+	var subs []map[string]any
+	for i := 0; i < liteMaxSubscriptions+1; i++ {
+		subs = append(subs, map[string]any{"buffer": fmt.Sprintf("#b%d", i), "history": 0})
+	}
+	subs = append(subs, map[string]any{"buffer": "#z", "anchor": "middle"})
+	mark := c.count()
+	rid, _ := c.liteSync(unsynced, "ios-1", map[string]any{"subscribe": subs})
+	inlineErr := func(buffer string) map[string]any {
+		return c.waitFor(mark, 5*time.Second, func(f map[string]any) bool {
+			d, _ := f["data"].(map[string]any)
+			return f["request_id"] == rid && f["type"] == "subscribe_buffer_error" && d != nil && d["buffer"] == buffer
+		})
+	}
+	check("inline over the cap", inlineErr(fmt.Sprintf("#b%d", liteMaxSubscriptions)), unsynced,
+		fmt.Sprintf("#b%d", liteMaxSubscriptions), "Too many subscriptions")
+	check("inline unknown anchor", inlineErr("#z"), unsynced, "#z", "Unknown anchor")
+}

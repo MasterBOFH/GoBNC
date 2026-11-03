@@ -322,6 +322,12 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   authenticate with a `client_id`; a change seen only on a brain reconnect (the state moved while
   the brain was away) is sent then; a restarted network's new state comes in its
   `session_created`, not as a `session_state`.
+- Every `subscribe_buffer_error` (standalone, or answering an inline `sync_session` `subscribe`
+  item with the `sync_session`'s `request_id`) carries top-level `session_id` and
+  `"data":{"buffer":"<the buffer as the client sent it>"}`. GoBNC: `session_id` is echoed as sent
+  (absent on `"session_id is required"`); for `"Invalid request data"`, `buffer` is whatever
+  string `data.buffer` held (`""` when none could be read). The 20-subscription cap per
+  (connection, session) counts every subscription already accepted, inline ones included.
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
 

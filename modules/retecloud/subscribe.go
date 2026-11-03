@@ -15,9 +15,10 @@ import (
 // lost between the two nor sent twice.
 func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req SubscribeBufferRequest, snap *wire.Snapshot) {
 	sid := sessionID(n.id)
+	fail := func(text string) { c.send(subscribeError(rid, sid, req.Buffer, text)) }
 	buffer := strings.TrimSpace(req.Buffer)
 	if buffer == "" {
-		c.send(errorFrame(frameSubscribeBuffer, rid, "buffer is required"))
+		fail("buffer is required")
 		return
 	}
 	history := liteDefaultHistory
@@ -25,27 +26,27 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 		history = max(0, min(*req.History, liteMaxHistory))
 	}
 	if req.Anchor != "" && req.Anchor != wire.AnchorFirstUnread {
-		c.send(errorFrame(frameSubscribeBuffer, rid, "Unknown anchor"))
+		fail("Unknown anchor")
 		return
 	}
 	ls := c.sessions[n.id]
 	if ls == nil {
-		c.send(errorFrame(frameSubscribeBuffer, rid, "sync_session with sync_mode lite required"))
+		fail("sync_session with sync_mode lite required")
 		return
 	}
 	if _, already := ls.subs[n.key(buffer)]; !already && len(ls.subs) >= liteMaxSubscriptions {
-		c.send(errorFrame(frameSubscribeBuffer, rid, "Too many subscriptions"))
+		fail("Too many subscriptions")
 		return
 	}
 	if snap == nil {
 		fresh, err := m.snapshot(n.id)
 		if err != nil {
-			c.send(ServerMessage{Type: frameSubscribeBuffer + "_error", RequestID: rid, SessionID: sid, Error: "Error retrieving messages"})
+			fail("Error retrieving messages")
 			return
 		}
 		snap = &fresh
 		if ls = c.sessions[n.id]; ls == nil { // unsynced while catching up
-			c.send(errorFrame(frameSubscribeBuffer, rid, "sync_session with sync_mode lite required"))
+			fail("sync_session with sync_mode lite required")
 			return
 		}
 	}
@@ -59,7 +60,7 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 		var err error
 		msgs, hasMore, err = m.subscribeHistory(n, c.deviceID, name, history, req, page)
 		if err != nil {
-			c.send(ServerMessage{Type: frameSubscribeBuffer + "_error", RequestID: rid, SessionID: sid, Error: "Error retrieving messages"})
+			fail("Error retrieving messages")
 			return
 		}
 	}
@@ -251,19 +252,32 @@ func compactMember(nick, memberModes, modes, symbols string) string {
 	return b.String()
 }
 
+// subscribeError is a subscribe_buffer_error naming the session and the buffer as the client
+// sent them, so a client can tell which of several pipelined subscribes failed.
+func subscribeError(rid, sid, buffer, text string) ServerMessage {
+	f := errorFrame(frameSubscribeBuffer, rid, text)
+	f.SessionID = sid
+	f.Data = map[string]interface{}{"buffer": buffer}
+	return f
+}
+
 func (m *Module) handleSubscribeBuffer(c *wsConn, msg *ClientMessage) {
 	var req SubscribeBufferRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "Invalid request data"))
+		var probe struct { // the buffer, when that much of the data reads
+			Buffer string `json:"buffer"`
+		}
+		_ = json.Unmarshal(msg.Data, &probe)
+		c.send(subscribeError(msg.RequestID, msg.SessionID, probe.Buffer, "Invalid request data"))
 		return
 	}
 	if msg.SessionID == "" {
-		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "session_id is required"))
+		c.send(subscribeError(msg.RequestID, "", req.Buffer, "session_id is required"))
 		return
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil || c.sessions[n.id] == nil {
-		c.send(errorFrame(frameSubscribeBuffer, msg.RequestID, "sync_session with sync_mode lite required"))
+		c.send(subscribeError(msg.RequestID, msg.SessionID, req.Buffer, "sync_session with sync_mode lite required"))
 		return
 	}
 	m.requestSubscribe(c, n, msg.RequestID, req, nil)
