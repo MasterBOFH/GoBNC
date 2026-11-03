@@ -130,9 +130,79 @@ func TestLiteSyncStoresToggleAndUnsyncStopsFrames(t *testing.T) {
 	e.session("undernet").HandleDisconnect(nil) // a state change on the unsynced network
 	time.Sleep(300 * time.Millisecond)
 	for _, f := range c.since(mark) {
-		if f["session_id"] == e.sid("undernet") {
+		// session_state goes to every authenticated connection, followed or not.
+		if f["session_id"] == e.sid("undernet") && f["type"] != "session_state" {
 			t.Fatalf("frame for the unsynced session: %v", f)
 		}
+	}
+}
+
+func TestSessionStateBroadcastOnStateNameChange(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	sid := e.sid("undernet")
+	follower := e.dial(false)
+	follower.authenticate("ios-1")
+	follower.liteSync(sid, "ios-1", nil)
+	other := e.dial(false)
+	other.authenticate("ios-2") // authenticated, never synced this session
+	unauthed := e.dial(false)
+	isSessionState := func(state string) func(map[string]any) bool {
+		return func(f map[string]any) bool {
+			d, _ := f["data"].(map[string]any)
+			return f["type"] == "session_state" && f["session_id"] == sid && d["state"] == state
+		}
+	}
+	countSessionState := func(c *wsClient, from int) int {
+		n := 0
+		for _, f := range c.since(from) {
+			if f["type"] == "session_state" {
+				n++
+			}
+		}
+		return n
+	}
+
+	fm, om := follower.count(), other.count()
+	e.session("undernet").HandleDisconnect(nil) // registered → disconnected
+	follower.waitFor(fm, 5*time.Second, isSessionState("disconnected"))
+	follower.waitFor(fm, 5*time.Second, isType("state")) // followers still get state
+	other.waitFor(om, 5*time.Second, isSessionState("disconnected"))
+	if f := other.since(om); len(f) != 1 {
+		t.Fatalf("unsynced connection got %v, want only session_state", f)
+	}
+
+	// Same state name ("disconnected"): nothing; then a new one ("connecting").
+	fm, om = follower.count(), other.count()
+	id := e.nets["undernet"]
+	e.srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: "undernet", State: wire.NetStopped, Change: wire.ChangeState})
+	e.srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: "undernet", State: wire.NetConnecting, Change: wire.ChangeState})
+	follower.waitFor(fm, 5*time.Second, isSessionState("connecting"))
+	other.waitFor(om, 5*time.Second, isSessionState("connecting"))
+	if n := countSessionState(follower, fm); n != 1 {
+		t.Fatalf("follower got %d session_state frames, want 1 (stopped maps to the same name): %v", n, follower.since(fm))
+	}
+	if n := countSessionState(other, om); n != 1 {
+		t.Fatalf("other got %d session_state frames, want 1: %v", n, other.since(om))
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := unauthed.count(); n != 0 {
+		t.Fatalf("unauthenticated connection got %v", unauthed.since(0))
+	}
+}
+
+// A state that changed while the brain was away is told when the module reconnects.
+func TestSessionStateAfterBrainReconnect(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	c := e.dial(false)
+	c.authenticate("ios-1")
+	mark := c.count()
+	e.stopSrv()
+	time.Sleep(100 * time.Millisecond)
+	e.session("undernet").HandleDisconnect(nil) // no brain to hear it
+	e.startBrain()
+	f := c.waitFor(mark, 10*time.Second, isType("session_state"))
+	if d := f["data"].(map[string]any); f["session_id"] != e.sid("undernet") || d["state"] != "disconnected" {
+		t.Fatalf("session_state = %v", f)
 	}
 }
 

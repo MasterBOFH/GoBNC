@@ -52,6 +52,7 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 	if ev.Change != wire.ChangeState || ev.State == n.state {
 		return
 	}
+	before := sessionState(n.state)
 	n.state = ev.State
 	if ev.Nick != "" {
 		n.nick = ev.Nick
@@ -65,6 +66,23 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	m.broadcastFollowers(ev.Network, ServerMessage{Type: "state", SessionID: sid, Data: data})
+	m.sessionStateChanged(n, before)
+}
+
+// sessionStateChanged sends session_state to every connection authenticated with a client_id
+// (all of GoBNC's), followed or not, when n's state name (as in authenticate_success) is no
+// longer before.
+func (m *Module) sessionStateChanged(n *network, before string) {
+	after := sessionState(n.state)
+	if after == before {
+		return
+	}
+	msg := ServerMessage{Type: "session_state", SessionID: sessionID(n.id), Data: map[string]interface{}{"state": after}}
+	for c := range m.conns {
+		if c.authed && c.deviceID != "" {
+			c.send(msg)
+		}
+	}
 }
 
 func (m *Module) broadcastAuthed(msg ServerMessage) {

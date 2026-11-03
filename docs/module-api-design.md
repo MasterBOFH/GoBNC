@@ -309,10 +309,19 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
 - `sync_session` with `sync_mode: "lite"` stores `subscribed=true` for (device, session).
 - New `unsync_session` (`session_id` at top level, `data: {"client_id"}`) → `unsync_session_success`;
   stores `subscribed=false`; the connection stops receiving anything for that session (tier 0,
-  activity, subscriptions); a later `sync_session` re-enables it.
+  activity, subscriptions) except the account-wide broadcasts below; a later `sync_session`
+  re-enables it.
 - New broadcast `session_created {"type":"session_created","session_id","data":{"name","state"}}` to
   every authenticated connection of the account when a session is created; `session_deleted`
   (existing) unchanged.
+- New broadcast `session_state {"type":"session_state","session_id","data":{"state"}}` (`state` as
+  in `authenticate_success.sessions[]`) to every authenticated connection of the account that
+  authenticated with a `client_id`, following the session or not, whenever the session's state
+  name changes; not sent when the name is unchanged (GoBNC: `stopped` → `disconnected` is no
+  change). Followers still get the existing `state` frame as well. GoBNC: all connections
+  authenticate with a `client_id`; a change seen only on a brain reconnect (the state moved while
+  the brain was away) is sent then; a restarted network's new state comes in its
+  `session_created`, not as a `session_state`.
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
 

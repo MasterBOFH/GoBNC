@@ -250,14 +250,19 @@ func (m *Module) brainConnected() {
 	for _, info := range nets.Networks {
 		seen[info.ID] = true
 		n := m.nets[info.ID]
-		if n == nil {
+		known := n != nil
+		if !known {
 			n = &network{id: info.ID, joined: map[string]string{}}
 			m.nets[info.ID] = n
 		}
+		before := sessionState(n.state)
 		// A new brain numbers its line events from scratch.
 		n.name, n.state, n.followed, n.lastSeq = info.Name, info.State, false, 0
 		if info.Nick != "" && n.nick == "" {
 			n.nick = info.Nick
+		}
+		if known { // the state may have changed while the brain was away
+			m.sessionStateChanged(n, before)
 		}
 	}
 	for id := range m.nets {
