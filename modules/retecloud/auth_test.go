@@ -105,3 +105,64 @@ func TestPasswordLoginWithUnregisteredCertIsNotThrottled(t *testing.T) {
 		c.authenticate(fmt.Sprintf("ios-%d", i))
 	}
 }
+
+// authError sends authenticate with data and returns its authenticate_error.
+func (c *wsClient) authError(data any) map[string]any {
+	c.t.Helper()
+	mark := c.count()
+	rid := c.request("authenticate", data, "")
+	f := c.waitFor(mark, 15*time.Second, reply(rid, "authenticate_success", "authenticate_error"))
+	if f["type"] != "authenticate_error" {
+		c.t.Fatalf("authenticate: %v, want authenticate_error", f)
+	}
+	return f
+}
+
+func TestAuthenticateErrorCodes(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	c := e.dial(false)
+	for _, tc := range []struct {
+		name string
+		data any
+		text string
+		code string
+	}{
+		{"wrong password", map[string]any{"password": "nope", "client_id": "ios-1"}, "Authentication failed", "invalid_credentials"},
+		{"no password, no certificate", map[string]any{"client_id": "ios-1"}, "Authentication failed", "invalid_credentials"},
+		{"missing client_id", map[string]any{"password": testPassword}, "Invalid request data", "invalid_request"},
+		{"malformed data", "not an object", "Invalid request data", "invalid_request"},
+	} {
+		f := c.authError(tc.data)
+		if f["error"] != tc.text || f["code"] != tc.code {
+			t.Fatalf("%s: %v, want error %q code %q", tc.name, f, tc.text, tc.code)
+		}
+		if _, ok := f["retry_after"]; ok {
+			t.Fatalf("%s: retry_after on a non-rate-limited error: %v", tc.name, f)
+		}
+	}
+}
+
+func TestAuthenticateRateLimitedCode(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	c := e.dial(false)
+	for i := 0; i < 5; i++ { // the brain's 5 failures per address per 60 s
+		if f := c.authError(map[string]any{"password": "nope", "client_id": "ios-1"}); f["code"] != "invalid_credentials" {
+			t.Fatalf("failure %d: %v", i+1, f)
+		}
+	}
+	f := c.authError(map[string]any{"password": testPassword, "client_id": "ios-1"})
+	ra, _ := f["retry_after"].(float64)
+	if f["error"] != "Authentication failed" || f["code"] != "rate_limited" || ra < 1 || ra > 60 || ra != float64(int(ra)) {
+		t.Fatalf("locked out: %v, want code rate_limited with retry_after 1..60 s", f)
+	}
+}
+
+func TestAuthenticateBrainUnreachableIsUnavailable(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	c := e.dial(false)
+	e.stopSrv()
+	f := c.authError(map[string]any{"password": testPassword, "client_id": "ios-1"})
+	if f["error"] != "Authentication failed" || f["code"] != "unavailable" {
+		t.Fatalf("brain down: %v, want code unavailable", f)
+	}
+}

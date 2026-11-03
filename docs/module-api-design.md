@@ -244,10 +244,14 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `open_buffers` rows for that network: opens every query with a conversation line after the
   shared read marker (not CTCP requests, not server/status traffic); emits `buffer_open` reason
   `"seed"` per buffer.
-- `auth.check {"password"} | {"cert_sha256"}` plus `"remote_ip"` → `{"ok": bool}`. Password via
-  `auth.VerifyPassword` against the `auth` row; only when `allow_password_auth`. Cert via
-  `cert_fingerprints` (normalized with `auth.NormalizeFingerprint`); only when `allow_cert_auth`.
-  `remote_ip` not in `allowed_ips` (when set) → `ok:false`.
+- `auth.check {"password"} | {"cert_sha256"}` plus `"remote_ip"` → `{"ok": bool}`, plus on a
+  refusal `"reason"`: `"invalid"` or `"rate_limited"` with `"retry_after"` (whole seconds, rounded
+  up). Password via `auth.VerifyPassword` against the `auth` row; only when `allow_password_auth`.
+  Cert via `cert_fingerprints` (normalized with `auth.NormalizeFingerprint`); only when
+  `allow_cert_auth`. A wrong credential, a disabled method, or `remote_ip` not in `allowed_ips`
+  (when set) → `"invalid"`. 5 failures from one `remote_ip` within 60 s lock it out: further checks
+  answer `"rate_limited"` without verifying, `retry_after` = until the oldest of those failures
+  leaves the window.
 - `storage.*` — key ≤ 256 bytes, value string ≤ 64 KiB, namespaced by module name:
   `get {"key"}` → `{"value","found"}`, `set {"key","value"}` → `{}`, `delete {"key"}` → `{}`,
   `list {"prefix"}` → `{"keys": [...]}`.
@@ -311,6 +315,25 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   (existing) unchanged.
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
+
+### authenticate_error codes
+
+`{"type":"authenticate_error","request_id","error":"<text, unchanged>","code"[,"retry_after"]}`;
+`code` and `retry_after` (seconds) are top-level, beside `error`.
+
+| `code` | Meaning | Client does |
+|---|---|---|
+| `invalid_request` | malformed `data`, missing required field (GoBNC: no `client_id`) | bug; stop |
+| `invalid_credentials` | API: unparseable or bad-signature token. GoBNC: wrong password, unregistered or absent client certificate, auth method disabled, address not in `allowed_ips` | ask the user; no auto-retry |
+| `token_expired` | API only: the JWT expired | refresh the JWT over REST, retry |
+| `anonymous` | API only: anonymous JWT | ask the user to sign in |
+| `rate_limited` | GoBNC: the address is locked out (5 failures in 60 s); `retry_after` = seconds until the window frees | wait `retry_after`, retry |
+| `unavailable` | transient server-side failure (API: database error; GoBNC: a brain call failed — brain unreachable, not ready, or timed out) | retry with backoff |
+
+`gobnc-retecloud` maps `auth.check`'s `reason` (`"invalid"`, or no reason from an older brain →
+`invalid_credentials`; `"rate_limited"` → `rate_limited`) and an `auth.check` or session-listing
+call that fails → `unavailable` (`error` stays `"Authentication failed"` / `"Failed to list
+sessions"`).
 
 ### Close codes
 

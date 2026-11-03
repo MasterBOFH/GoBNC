@@ -392,8 +392,17 @@ type AuthCheckParams struct {
 	RemoteIP   string `json:"remote_ip"`
 }
 
+// auth.check refusal reasons (AuthCheckResult.Reason; empty when OK).
+const (
+	AuthInvalid     = "invalid"      // wrong credential, auth method disabled, or address not allowed
+	AuthRateLimited = "rate_limited" // too many failures from this address; see RetryAfter
+)
+
 type AuthCheckResult struct {
-	OK bool `json:"ok"`
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+	// RetryAfter is the whole seconds until a rate-limited address may try again.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // --- storage ---

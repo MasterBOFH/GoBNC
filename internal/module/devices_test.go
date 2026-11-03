@@ -147,3 +147,61 @@ func TestAuthCheckRateLimit(t *testing.T) {
 		t.Fatal("still limited after the window passed")
 	}
 }
+
+func authCheck(t *testing.T, tc *testConn, p wire.AuthCheckParams) wire.AuthCheckResult {
+	t.Helper()
+	var res wire.AuthCheckResult
+	tc.call(wire.MethodAuthCheck, p, &res)
+	return res
+}
+
+func TestAuthCheckReasonInvalid(t *testing.T) {
+	tc, _ := authFixture(t, true, false, nil)
+	if res := authCheck(t, tc, wire.AuthCheckParams{Password: "s3cret", RemoteIP: "10.0.0.1"}); !res.OK || res.Reason != "" {
+		t.Fatalf("right password: %+v", res)
+	}
+	if res := authCheck(t, tc, wire.AuthCheckParams{Password: "wrong", RemoteIP: "10.0.0.1"}); res.OK || res.Reason != wire.AuthInvalid || res.RetryAfter != 0 {
+		t.Fatalf("wrong password: %+v, want reason invalid", res)
+	}
+	if res := authCheck(t, tc, wire.AuthCheckParams{CertSHA256: strings.Repeat("ab", 32), RemoteIP: "10.0.0.1"}); res.OK || res.Reason != wire.AuthInvalid {
+		t.Fatalf("cert with allow_cert_auth=false: %+v, want reason invalid", res)
+	}
+}
+
+func TestAuthCheckReasonAddressNotAllowed(t *testing.T) {
+	tc, _, _, _ := historyFixtureWith(t, func(b *fakeBackend, _ *Server, db *store.Store, _ int64) {
+		b.cfg.AllowPasswordAuth, b.cfg.AllowedIPs = true, []string{"192.168.0.0/16"}
+		hash, _ := auth.HashPassword("s3cret")
+		if err := db.SetPasswordHash(context.Background(), hash); err != nil {
+			t.Fatal(err)
+		}
+	}, "auth")
+	if res := authCheck(t, tc, wire.AuthCheckParams{Password: "s3cret", RemoteIP: "10.0.0.1"}); res.OK || res.Reason != wire.AuthInvalid {
+		t.Fatalf("address outside allowed_ips: %+v, want reason invalid", res)
+	}
+}
+
+func TestAuthCheckReasonRateLimitedWithRetryAfter(t *testing.T) {
+	now := time.Now()
+	tc, _ := authFixture(t, true, true, &now)
+	for i := 0; i < 5; i++ {
+		if res := authCheck(t, tc, wire.AuthCheckParams{Password: "wrong", RemoteIP: "10.0.0.9"}); res.Reason != wire.AuthInvalid {
+			t.Fatalf("failure %d: %+v, want reason invalid", i+1, res)
+		}
+		if i == 0 {
+			now = now.Add(20 * time.Second) // the oldest failure frees the window 40 s from here
+		}
+	}
+	res := authCheck(t, tc, wire.AuthCheckParams{Password: "s3cret", RemoteIP: "10.0.0.9"})
+	if res.OK || res.Reason != wire.AuthRateLimited || res.RetryAfter != 40 {
+		t.Fatalf("locked out: %+v, want rate_limited, retry_after 40", res)
+	}
+	now = now.Add(39*time.Second + 500*time.Millisecond)
+	if res := authCheck(t, tc, wire.AuthCheckParams{Password: "s3cret", RemoteIP: "10.0.0.9"}); res.Reason != wire.AuthRateLimited || res.RetryAfter != 1 {
+		t.Fatalf("half a second left: %+v, want rate_limited, retry_after 1 (rounded up)", res)
+	}
+	now = now.Add(time.Second)
+	if res := authCheck(t, tc, wire.AuthCheckParams{Password: "s3cret", RemoteIP: "10.0.0.9"}); !res.OK {
+		t.Fatalf("after the window: %+v", res)
+	}
+}

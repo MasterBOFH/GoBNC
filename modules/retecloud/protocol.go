@@ -20,11 +20,13 @@ type ClientMessage struct {
 
 // ServerMessage is a frame to the client.
 type ServerMessage struct {
-	Type      string      `json:"type"`
-	RequestID string      `json:"request_id,omitempty"`
-	SessionID string      `json:"session_id,omitempty"`
-	Data      interface{} `json:"data,omitempty"`
-	Error     string      `json:"error,omitempty"`
+	Type       string      `json:"type"`
+	RequestID  string      `json:"request_id,omitempty"`
+	SessionID  string      `json:"session_id,omitempty"`
+	Data       interface{} `json:"data,omitempty"`
+	Error      string      `json:"error,omitempty"`
+	Code       string      `json:"code,omitempty"`        // stable error code (authenticate_error)
+	RetryAfter int         `json:"retry_after,omitempty"` // seconds, with code rate_limited
 }
 
 // AuthenticateRequest is GoBNC's authenticate: the bouncer password, or (without one) the TLS
@@ -190,4 +192,19 @@ func parseSessionID(s string) (int64, bool) {
 
 func errorFrame(msgType, requestID, text string) ServerMessage {
 	return ServerMessage{Type: msgType + "_error", RequestID: requestID, Error: text}
+}
+
+// authenticate_error codes.
+const (
+	authInvalidRequest     = "invalid_request"     // malformed data or no client_id
+	authInvalidCredentials = "invalid_credentials" // refused by the brain, or no credential at all
+	authRateLimited        = "rate_limited"        // the address is locked out; retry_after says how long
+	authUnavailable        = "unavailable"         // a brain call failed (unreachable, not ready, timeout)
+)
+
+// authError is an authenticate_error with its code (and retry_after, when rate limited).
+func authError(requestID, text, code string, retryAfter int) ServerMessage {
+	f := errorFrame("authenticate", requestID, text)
+	f.Code, f.RetryAfter = code, retryAfter
+	return f
 }

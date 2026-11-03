@@ -35,8 +35,11 @@ func handleAuthCheck(ctx context.Context, c *Conn, params json.RawMessage) (any,
 	}
 	s := c.srv
 	cfg := s.backend.Config()
-	if !ipAllowed(cfg, p.RemoteIP) || s.authLimited(p.RemoteIP) {
-		return wire.AuthCheckResult{OK: false}, nil
+	if !ipAllowed(cfg, p.RemoteIP) {
+		return wire.AuthCheckResult{Reason: wire.AuthInvalid}, nil
+	}
+	if wait := s.authLimited(p.RemoteIP); wait > 0 {
+		return wire.AuthCheckResult{Reason: wire.AuthRateLimited, RetryAfter: wait}, nil
 	}
 	ok := false
 	db := s.backend.Store()
@@ -57,8 +60,9 @@ func handleAuthCheck(ctx context.Context, c *Conn, params json.RawMessage) (any,
 	}
 	if !ok {
 		s.authFailed(p.RemoteIP)
+		return wire.AuthCheckResult{Reason: wire.AuthInvalid}, nil
 	}
-	return wire.AuthCheckResult{OK: ok}, nil
+	return wire.AuthCheckResult{OK: true}, nil
 }
 
 // ipAllowed applies allowed_ips (empty = everyone; an unparsable address is refused when a
@@ -83,11 +87,17 @@ func ipAllowed(cfg config.Config, ip string) bool {
 	return false
 }
 
-// authLimited reports whether ip used up its failures for the current window.
-func (s *Server) authLimited(ip string) bool {
+// authLimited returns 0 when ip may try, else the whole seconds (rounded up) until fewer than
+// authFailLimit of its failures fall within the window.
+func (s *Server) authLimited(ip string) int {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
-	return len(s.recentFailuresLocked(ip)) >= authFailLimit
+	fails := s.recentFailuresLocked(ip)
+	if len(fails) < authFailLimit {
+		return 0
+	}
+	free := fails[len(fails)-authFailLimit].Add(authFailWindow).Sub(s.now())
+	return max(1, int((free+time.Second-1)/time.Second))
 }
 
 func (s *Server) authFailed(ip string) {
