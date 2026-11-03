@@ -330,6 +330,12 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   (connection, session) counts every subscription already accepted, inline ones included.
 - GoBNC only: `session_id` = `"net-<network id>"`; `name` = the GoBNC network name;
   `create_session` → `create_session_error` `"Not supported"`.
+- GoBNC only: `session_created` may repeat for a `session_id` the client already has (it is sent
+  again when a stopped network restarts), so clients upsert. `session_deleted` is not sent (no
+  path removes a network from a running brain yet): clients reconcile their list from
+  `authenticate_success.sessions` on every connect; `sync_session` (and the other per-session
+  requests except `subscribe_buffer`, which answers "sync_session with sync_mode lite required")
+  naming a vanished id is answered "No access to session".
 
 ### authenticate_error codes
 
@@ -374,6 +380,11 @@ retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKE
 `test_casemapping`, `test_compression`, `test_reply_routing`, `test_history_paging`,
 `test_lite_bootstrap_cache`, `test_session_toggle` and `test_buffer_close` pass on ircu2 and solanum
 (22 passed; 4 skipped because they need full/state mode or REST).
+
+The close codes, `authenticate_error` codes, `session_state` broadcast and attributable
+`subscribe_buffer_error` above follow the retecloud-api `lite-mode` commits that add them to
+`documentation/WEBSOCKET_PROTOCOL_LITE.md` (after `d016cb5`); the harness figures in the paragraph
+above were measured before those additions.
 
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
