@@ -206,7 +206,11 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   "members": [{"nick","prefixes","user","host","account","away"}]}]}`. `last_id` = newest
   `messages.id` of the network at snapshot time (0 if none). `seq` = seq of the last `line` event
   emitted before the snapshot, so a module that re-subscribes for a fresh snapshot can place it in
-  the stream it is consuming. `members_complete` is false for a
+  the stream it is consuming. History read after a snapshot is not part of it: a line can be
+  stored (and change state) between the two, so a module pairing history with a snapshot bounds
+  it with `before_id: last_id + 1` and takes later lines from the stream (`gobnc-retecloud`'s
+  `subscribe_buffer` does: its state, history and live lines meet at the snapshot's
+  `seq`/`last_id`). `members_complete` is false for a
   channel seeded from the keeper blob after a brain restart until its NAMES refresh lands, at which
   point a `state` event `{"network","kind":"members","buffer","key","members":[...],"complete":true}`
   replaces the list.

@@ -56,6 +56,10 @@ type Module struct {
 
 	reloader  Reloader // set before Run
 	onServing func()   // set before Run; cleared once called
+
+	// afterSubscribeSnapshot, when set (tests only, before Run), runs on the loop right after a
+	// subscribe has its snapshot and before it reads history: the window a line can land in.
+	afterSubscribeSnapshot func(network int64)
 }
 
 // ownAction remembers the connection that just opened or closed a buffer, so the brain's

@@ -12,7 +12,9 @@ import (
 // the buffer's state from a snapshot, its last lines from history, then live lines. snap is a
 // snapshot already placed in the stream by this op (the bootstrap's); nil takes a fresh one.
 // The subscription starts at that snapshot's seq, and history's newest id, so a line is neither
-// lost between the two nor sent twice.
+// lost between the two nor sent twice. History is read after the snapshot, so it is bounded to
+// the snapshot's point (snap.LastID): a line stored later (a PART landing in between) comes live,
+// after the state it changes, never as history the state does not reflect.
 func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req SubscribeBufferRequest, snap *wire.Snapshot) {
 	sid := sessionID(n.id)
 	fail := func(text string) { c.send(subscribeError(rid, sid, req.Buffer, text)) }
@@ -50,6 +52,9 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 			return
 		}
 	}
+	if m.afterSubscribeSnapshot != nil {
+		m.afterSubscribeSnapshot(n.id)
+	}
 	state := bufferState(n, *snap, buffer, req.Members.mode)
 	name, _ := state["buffer"].(string)
 
@@ -58,7 +63,7 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 	page := map[string]interface{}{}
 	if history > 0 {
 		var err error
-		msgs, hasMore, err = m.subscribeHistory(n, c.deviceID, name, history, req, page)
+		msgs, hasMore, err = m.subscribeHistory(n, name, history, req, page, snap.LastID)
 		if err != nil {
 			fail("Error retrieving messages")
 			return
@@ -85,17 +90,22 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 }
 
 // subscribeHistory fetches a subscribe's history page: the tail after after_id (gap when more
-// was missed than fits), the page around the first unread line, or the latest lines.
-func (m *Module) subscribeHistory(n *network, device, buffer string, limit int, req SubscribeBufferRequest, page map[string]interface{}) ([]wire.HistoryMessage, bool, error) {
+// was missed than fits), the page around the first unread line, or the latest lines — each
+// holding only lines stored at or before upTo, the snapshot's newest message id.
+func (m *Module) subscribeHistory(n *network, buffer string, limit int, req SubscribeBufferRequest, page map[string]interface{}, upTo int64) ([]wire.HistoryMessage, bool, error) {
 	get := func(p wire.HistoryMessagesParams) (wire.HistoryMessagesResult, error) {
 		p.Network, p.Buffer = n.id, buffer
 		var res wire.HistoryMessagesResult
 		err := m.call(wire.MethodHistoryMessages, p, &res)
 		return res, err
 	}
+	before := upTo + 1
+	newest := func() (wire.HistoryMessagesResult, error) {
+		return get(wire.HistoryMessagesParams{BeforeID: &before, Limit: limit})
+	}
 	switch {
 	case req.AfterID != nil:
-		latest, err := get(wire.HistoryMessagesParams{Limit: limit})
+		latest, err := newest()
 		if err != nil {
 			return nil, false, err
 		}
@@ -128,12 +138,19 @@ func (m *Module) subscribeHistory(n *network, device, buffer string, limit int, 
 			if err != nil {
 				return nil, false, err
 			}
+			// Lines after the snapshot's point come live; they are not this page's to hold.
+			kept := res.Messages[:0]
+			for _, msg := range res.Messages {
+				if msg.ID <= upTo {
+					kept = append(kept, msg)
+				}
+			}
 			page["anchor_id"] = anchor
-			page["has_more_after"] = res.HasAfter
-			return res.Messages, res.HasBefore, nil
+			page["has_more_after"] = res.HasAfter && len(kept) == len(res.Messages)
+			return kept, res.HasBefore, nil
 		}
 	}
-	res, err := get(wire.HistoryMessagesParams{Limit: limit})
+	res, err := newest()
 	return res.Messages, res.HasBefore, err
 }
 
