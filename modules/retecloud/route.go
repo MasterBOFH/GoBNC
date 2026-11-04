@@ -369,20 +369,35 @@ func (m *Module) refreshBufferState(network int64, buffer string, withMembers bo
 	}
 }
 
+// lineTarget is one entry of irc_line's targets: a buffer the line was stored under and the id
+// of that buffer's copy.
+type lineTarget struct {
+	Buffer string `json:"buffer"`
+	ID     int64  `json:"id"`
+}
+
 // ircLineFrame is a line as retecloud-api's irc_line: raw, timestamp, and the message id (and
-// buffer) when it was stored.
+// buffer) when it was stored. A line stored under several buffers (a QUIT or NICK, once per
+// shared channel) also carries targets, each stored buffer with its own id; buffer/id are the
+// first of them.
 func ircLineFrame(line wire.LineEvent) ServerMessage {
 	ts, err := time.Parse(time.RFC3339Nano, line.Time)
 	if err != nil {
 		ts = time.Now().UTC()
 	}
 	data := map[string]interface{}{"silent": false, "timestamp": ts, "raw": line.Raw}
+	var targets []lineTarget
 	for _, b := range line.Buffers {
 		if b.ID > 0 {
-			data["id"] = b.ID
-			data["buffer"] = b.Name
-			break
+			targets = append(targets, lineTarget{Buffer: b.Name, ID: b.ID})
 		}
+	}
+	if len(targets) > 0 {
+		data["id"] = targets[0].ID
+		data["buffer"] = targets[0].Buffer
+	}
+	if len(targets) > 1 {
+		data["targets"] = targets
 	}
 	return ServerMessage{Type: frameIRCLine, SessionID: sessionID(line.Network), Data: data}
 }

@@ -1,10 +1,67 @@
 package retecloud
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
+
+func TestQuitFrameCarriesEachChannelsOwnID(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #a", ":me!u@h JOIN #b", ":peer!p@h JOIN #a", ":peer!p@h JOIN #b")
+	c := e.syncedClient("ios-1", "undernet", "#a")
+	mark := c.count()
+	e.feed("undernet", ":peer!p@h QUIT :gone")
+	f := c.waitFor(mark, 5*time.Second, func(f map[string]any) bool {
+		return f["type"] == "irc_line" && strings.Contains(f["data"].(map[string]any)["raw"].(string), "QUIT :gone")
+	})
+	d := f["data"].(map[string]any)
+	targets, _ := d["targets"].([]any)
+	if len(targets) != 2 {
+		t.Fatalf("targets = %v (frame %v)", d["targets"], f)
+	}
+	ids := map[string]float64{}
+	for _, raw := range targets {
+		tg := raw.(map[string]any)
+		ids[tg["buffer"].(string)] = tg["id"].(float64)
+	}
+	if ids["#a"] <= 0 || ids["#b"] <= 0 || ids["#a"] == ids["#b"] {
+		t.Fatalf("per-buffer ids = %v", ids)
+	}
+	first := targets[0].(map[string]any)
+	if d["buffer"] != first["buffer"] || d["id"] != first["id"] {
+		t.Fatalf("buffer/id %v/%v differ from the first target %v", d["buffer"], d["id"], first)
+	}
+	// Each id is that buffer's own stored copy.
+	for buf, id := range ids {
+		m := c.count()
+		rid := c.request("get_messages", map[string]any{"buffer": buf}, e.sid("undernet"))
+		msgs := c.waitFor(m, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+		last := msgs[len(msgs)-1].(map[string]any)
+		if last["id"] != id || !strings.Contains(fmt.Sprint(last["event_data"]), "QUIT :gone") {
+			t.Fatalf("%s: newest stored row %v, target id %v", buf, last, id)
+		}
+	}
+}
+
+func TestIRCLineFrameTargets(t *testing.T) {
+	one := ircLineFrame(wire.LineEvent{Raw: ":p!u@h PRIVMSG #a :x", Buffers: []wire.LineBuffer{{Name: "#a", Key: "#a", ID: 7}}})
+	if _, ok := one.Data.(map[string]interface{})["targets"]; ok {
+		t.Fatalf("single stored buffer has targets: %v", one.Data)
+	}
+	fan := ircLineFrame(wire.LineEvent{Raw: ":p!u@h NICK q", Buffers: []wire.LineBuffer{
+		{Name: "p", Key: "p"}, {Name: "#a", Key: "#a", ID: 7}, {Name: "#B", Key: "#b", ID: 8},
+	}})
+	d := fan.Data.(map[string]interface{})
+	want := []lineTarget{{Buffer: "#a", ID: 7}, {Buffer: "#B", ID: 8}}
+	got, _ := d["targets"].([]lineTarget)
+	if fmt.Sprint(got) != fmt.Sprint(want) || d["id"] != int64(7) || d["buffer"] != "#a" {
+		t.Fatalf("fan-out frame = %v", d)
+	}
+}
 
 // syncedClient authenticates as device and syncs network, subscribing to subs.
 func (e *testEnv) syncedClient(device, network string, subs ...string) *wsClient {

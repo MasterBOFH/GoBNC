@@ -34,7 +34,7 @@ keeper (uplinks) ⇄ brain (Session, history, read markers, devices) ⇄ module 
 
 - **iOS lite mode only.** `gobnc-retecloud` serves `sync_mode: "lite"`; desktops use IRC.
 - **Wire-identical with retecloud-api's `lite-mode` branch** after `authenticate`. Pinned spec
-  revision: retecloud-api **`ec0f7b0`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
+  revision: retecloud-api **`5fd1a8f`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
   the per-device toggle" and "Backend-specific behaviour"). A needed protocol change goes to
   retecloud-api `lite-mode` first (doc + harness test), then here; `lite-mode` merges into
   retecloud-api only once GoBNC and Rete are both drawn up.
@@ -405,9 +405,14 @@ retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKE
 (22 passed; 4 skipped because they need full/state mode or REST).
 
 The close codes, `authenticate_error` codes, `session_state` broadcast and attributable
-`subscribe_buffer_error` above match retecloud-api `ec0f7b0` (the pinned revision); the harness figures
+`subscribe_buffer_error` above match retecloud-api `ec0f7b0`; the harness figures
 in the paragraph above were measured against `d016cb5`, before those additions, and are re-measured
 with the harness modules that cover them.
+
+`irc_line`'s `targets` (retecloud-api `5fd1a8f`, the pinned revision) is GoBNC-only: the brain
+stores a QUIT or NICK once per shared channel, and a line stored under more than one buffer lists
+each stored buffer with its own id (`buffers[].id`), in `buffers` order; `buffer`/`id` are the
+first. retecloud-api stores such a line once and never sends it, so no harness test covers it.
 
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
