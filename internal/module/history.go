@@ -125,7 +125,9 @@ func (s *Server) closedAtFloor(ctx context.Context, device string, network int64
 }
 
 // handleHistoryActivity reports, for every buffer the device shows (joined channels, its open
-// queries, Server), the newest message and the unread / highlight counts.
+// queries, Server), the newest message and the unread / highlight counts. A stopped network
+// is counted from the store (see storedNetwork): its stored channel list stands in for the
+// joined channels.
 func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
 	p, err := decodeParams[wire.HistoryActivityParams](params)
 	if err != nil {
@@ -134,7 +136,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 	if p.Device == "" {
 		return nil, wire.Errorf(wire.CodeBadParams, "device is required")
 	}
-	sess, err := c.srv.session(p.Network)
+	sess, err := c.srv.view(ctx, p.Network)
 	if err != nil {
 		return nil, err
 	}

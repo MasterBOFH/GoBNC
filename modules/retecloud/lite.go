@@ -119,7 +119,9 @@ func (m *Module) handleSyncSession(c *wsConn, msg *ClientMessage) {
 // bootstrap prepares a lite session for the device on n and builds sync_session_success's data.
 // A stopped network (disconnect_session, or never started) has no Session in the brain, so its
 // network-scoped calls answer not_found: it bootstraps as disconnected, from the device's open
-// buffers only, and is followed again when the brain restarts it (onNetworkEvent).
+// buffers and the activity the brain counts from the store (history.activity and
+// read_markers.get need no Session), and is followed again when the brain restarts it
+// (onNetworkEvent).
 func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[string]string) (wire.Snapshot, *liteSession, map[string]interface{}, error) {
 	if err := m.call(wire.MethodDevicesSetNetwork, wire.DeviceSetNetworkParams{ClientID: deviceID, Network: n.id, Subscribed: true}, nil); err != nil {
 		return wire.Snapshot{}, nil, nil, err
@@ -130,6 +132,15 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 	if err != nil {
 		return wire.Snapshot{}, nil, nil, err
 	}
+	if stopped {
+		// A brain older than the store-read activity answers not_found here too: no counts.
+		if err := m.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: n.id, Device: deviceID}, &activity); err != nil {
+			if !isNotFound(err) {
+				return wire.Snapshot{}, nil, nil, err
+			}
+			activity = wire.HistoryActivityResult{}
+		}
+	}
 	var bufs wire.DeviceBuffersResult
 	if err := m.call(wire.MethodDevicesBuffers, wire.DeviceNetworkParams{ClientID: deviceID, Network: n.id}, &bufs); err != nil {
 		return wire.Snapshot{}, nil, nil, err
@@ -137,6 +148,13 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 
 	ls := newLiteSession(n.id)
 	ls.asOfID = snap.LastID
+	if stopped {
+		// No snapshot bounds a stopped network's counts: they run to the newest stored line,
+		// and nothing newer is stored until the network restarts.
+		for _, a := range activity.Buffers {
+			ls.asOfID = max(ls.asOfID, a.LastID)
+		}
+	}
 	for _, b := range bufs.Buffers {
 		if b.Open {
 			ls.open[b.Key] = true
@@ -186,9 +204,6 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 		ls.activity[a.Key] = &liteActivity{name: a.Buffer, unread: a.Unread, highlights: a.Highlights, lastID: ls.asOfID}
 	}
 	for _, key := range order {
-		if stopped {
-			break // read markers live on the Session too
-		}
 		var mark wire.ReadMarkerGetResult
 		if err := m.call(wire.MethodReadMarkersGet, wire.ReadMarkerGetParams{Network: n.id, Buffer: byKey[key].Name}, &mark); err == nil {
 			byKey[key].ReadID = mark.ID
@@ -222,8 +237,7 @@ func (m *Module) bootstrapLive(c *wsConn, n *network, deviceID string, snap *wir
 	}
 	for _, call := range calls {
 		if err := call(); err != nil {
-			var we *wire.Error
-			if errors.As(err, &we) && we.Code == wire.CodeNotFound {
+			if isNotFound(err) {
 				*snap, *activity = wire.Snapshot{}, wire.HistoryActivityResult{}
 				return true, nil
 			}
@@ -231,6 +245,12 @@ func (m *Module) bootstrapLive(c *wsConn, n *network, deviceID string, snap *wir
 		}
 	}
 	return false, nil
+}
+
+// isNotFound reports a brain call answered not_found (for a network: no Session runs it).
+func isNotFound(err error) bool {
+	var we *wire.Error
+	return errors.As(err, &we) && we.Code == wire.CodeNotFound
 }
 
 // identityMap is the bootstrap's identity section.

@@ -225,9 +225,13 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `Server`). `unread` counts PRIVMSG/NOTICE (CTCP ACTION included, other CTCP excluded, our own
   lines excluded) with `time` after the read marker and `id` above the device's `closed_at_id`.
   `highlights`: among those, lines in a query, or whose text contains our current nick as a whole
-  word under CASEMAPPING (word characters: `A-Za-z0-9_-[]\`^{}|`).
+  word under CASEMAPPING (word characters: `A-Za-z0-9_-[]\`^{}|`). A stopped network (no
+  Session) is counted from the store with the same rules: its stored channel list stands in for
+  the joined channels, "our nick" is the network's configured nick and names fold under rfc1459
+  (no ISUPPORT without an uplink). Only a network the store does not have is `not_found`.
 - `read_markers.get {"network","buffer"}` → `{"id","time"}` (`id` = newest message id at or before
-  the stored time; 0/"" if none). `read_markers.set {"network","buffer","id"}` → `{"stored_id",
+  the stored time; 0/"" if none); a stopped network's markers are read from the store as well.
+  `read_markers.set {"network","buffer","id"}` → `{"stored_id",
   "updated": bool}`; only moves forward; on update the brain sends MARKREAD to IRC clients with
   `draft/read-marker` (existing `broadcastMarkRead`) and emits `read_marker`.
 - `clients.attach {"network","client"}` (`client` ≤ 64 bytes, `[A-Za-z0-9._-]`) →
@@ -341,10 +345,12 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   requests except `subscribe_buffer`, which answers "sync_session with sync_mode lite required")
   naming a vanished id is answered "No access to session".
 - GoBNC only: a stopped network (after `disconnect_session`) has no Session in the brain, so its
-  network-scoped module calls answer `not_found`. A lite `sync_session` for it succeeds as the
-  spec's disconnected bootstrap (`connected`/`registered` false, no `isupport`/`identity`/
-  `capabilities` or hashes), with `buffers` from the device's open buffers only: unread counts
-  need the Session, so a stopped network carries none. The connection is followed live again
+  live module calls (`events.subscribe`, `clients.attach`, `devices.seed`, writes) answer
+  `not_found`. A lite `sync_session` for it succeeds as the spec's disconnected bootstrap
+  (`connected`/`registered` false, no `isupport`/`identity`/`capabilities` or hashes), with
+  `buffers` from the device's open buffers and the activity the brain counts from the store
+  (`history.activity`, see its limits above), each with its `unread`/`highlights` and `read_id`;
+  `as_of_id` is the newest line counted. The connection is followed live again
   when the network restarts (its `session_created`); `subscribe_buffer` meanwhile answers
   "Error retrieving messages". "Bouncer is reloading" is kept for a brain that is away or not
   ready.

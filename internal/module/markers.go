@@ -14,13 +14,13 @@ func init() {
 }
 
 // handleReadMarkersGet returns a buffer's shared read marker: its time and the newest message
-// id at or before it (0 / "" when unset).
+// id at or before it (0 / "" when unset), from the store for a stopped network too.
 func handleReadMarkersGet(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
 	p, err := decodeParams[wire.ReadMarkerGetParams](params)
 	if err != nil {
 		return nil, err
 	}
-	sess, err := c.srv.session(p.Network)
+	sess, err := c.srv.view(ctx, p.Network)
 	if err != nil {
 		return nil, err
 	}
