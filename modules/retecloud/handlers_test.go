@@ -1,10 +1,13 @@
 package retecloud
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 func TestGetMessagesPages(t *testing.T) {
@@ -52,6 +55,41 @@ func TestReadCursorBroadcastsToOtherFollowers(t *testing.T) {
 	for _, f := range a.since(ma) {
 		if f["type"] == "read_cursor" {
 			t.Fatalf("read_cursor echoed to its sender: %v", f)
+		}
+	}
+}
+
+func TestReadCursorErrorCarriesTheReason(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #c", ":me!u@h JOIN #d", ":peer!p@h PRIVMSG #c :read me")
+	a := e.syncedClient("ios-a", "undernet")
+	rid := a.request("get_messages", map[string]any{"buffer": "#c"}, e.sid("undernet"))
+	msgs := a.waitFor(0, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+	last := int64(msgs[len(msgs)-1].(map[string]any)["id"].(float64))
+	mark := a.count()
+	rid = a.request("read_cursor", map[string]any{"buffer": "#d", "last_message_id": last}, e.sid("undernet"))
+	f := a.waitFor(mark, 5*time.Second, reply(rid, "read_cursor_success", "read_cursor_error"))
+	if want := fmt.Sprintf("no message %d in #d", last); f["type"] != "read_cursor_error" || f["error"] != want {
+		t.Fatalf("read_cursor = %v, want error %q", f, want)
+	}
+}
+
+func TestReadCursorErrorText(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"reason", wire.Errorf(wire.CodeNotFound, "no message 9 in #x"), "no message 9 in #x"},
+		{"control characters dropped", wire.Errorf(wire.CodeNotFound, "no message 9 in #a\r\nb\x00\x1b[1m"), "no message 9 in #ab[1m"},
+		{"capped", wire.Errorf(wire.CodeNotFound, "%s", long), long[:readCursorErrorMax-3] + "..."},
+		{"internal stays generic", wire.Errorf(wire.CodeInternal, "sql: database is locked"), "Failed to update read cursor"},
+		{"empty message", &wire.Error{Code: wire.CodeNotFound}, "Failed to update read cursor"},
+		{"transport", errors.New("module: not connected"), "Failed to update read cursor"},
+	} {
+		if got := readCursorErrorText(tc.err); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

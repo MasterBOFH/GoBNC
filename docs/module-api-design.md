@@ -417,6 +417,9 @@ first. retecloud-api stores such a line once and never sends it, so no harness t
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
 `buffer_state`; identity `realname`, `secure`, `bot` and `oper` are not known to the brain.
+`read_cursor_error` carries the brain's reason for a refused `read_markers.set` (e.g.
+`no message 9 in #x`), without control characters and capped at 200 runes; an `internal` error or
+a failed call keeps `Failed to update read cursor`.
 
 ## Configuration
 

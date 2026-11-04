@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
@@ -118,10 +119,38 @@ func (m *Module) handleReadCursor(c *wsConn, msg *ClientMessage) {
 	m.noteOwnAction(c, "read_cursor", n.key(req.Buffer))
 	if err := m.call(wire.MethodReadMarkersSet, wire.ReadMarkerSetParams{Network: n.id, Buffer: req.Buffer, ID: req.LastMessageID}, nil); err != nil {
 		m.ownAction = ownAction{}
-		c.send(errorFrame("read_cursor", msg.RequestID, "Failed to update read cursor"))
+		c.send(errorFrame("read_cursor", msg.RequestID, readCursorErrorText(err)))
 		return
 	}
 	c.send(ServerMessage{Type: "read_cursor_success", RequestID: msg.RequestID, SessionID: msg.SessionID})
+}
+
+// readCursorErrorMax caps read_cursor_error text, in runes.
+const readCursorErrorMax = 200
+
+// readCursorErrorText is read_cursor_error's text for a failed read_markers.set: the brain's own
+// reason (e.g. "no message 9 in #x") when it gave one, without control characters and capped at
+// readCursorErrorMax runes. Internal errors (which can carry store details), transport failures
+// and an empty reason keep the generic text.
+func readCursorErrorText(err error) string {
+	const generic = "Failed to update read cursor"
+	var we *wire.Error
+	if !errors.As(err, &we) || we.Code == wire.CodeInternal {
+		return generic
+	}
+	text := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, we.Message))
+	if text == "" {
+		return generic
+	}
+	if r := []rune(text); len(r) > readCursorErrorMax {
+		text = string(r[:readCursorErrorMax-3]) + "..."
+	}
+	return text
 }
 
 // handleOpenBuffer marks a buffer open on this device (each device has its own open set).
