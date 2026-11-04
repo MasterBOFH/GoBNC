@@ -220,6 +220,7 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   first line after the read marker. `limit` 1..500, default 50. → `{"messages": [Message],
   "has_before": bool, "has_after": bool}`, ascending by id. Message:
   `{"id","time","msgid","command","source","buffer","raw","text"}`; `time` RFC 3339 nano UTC.
+  A stopped network (no Session) is paged from the store too, its names folded under rfc1459.
 - `history.activity {"network","device"}` → `{"buffers": [{"buffer","key","last_id","last_time",
   "unread","highlights"}]}` for every buffer the device shows (joined channels + open queries +
   `Server`). `unread` counts PRIVMSG/NOTICE (CTCP ACTION included, other CTCP excluded, our own
@@ -350,10 +351,14 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   (`connected`/`registered` false, no `isupport`/`identity`/`capabilities` or hashes), with
   `buffers` from the device's open buffers and the activity the brain counts from the store
   (`history.activity`, see its limits above), each with its `unread`/`highlights` and `read_id`;
-  `as_of_id` is the newest line counted. The connection is followed live again
-  when the network restarts (its `session_created`); `subscribe_buffer` meanwhile answers
-  "Error retrieving messages". "Bouncer is reloading" is kept for a brain that is away or not
-  ready.
+  `as_of_id` is the newest line counted. `subscribe_buffer` (inline or not) answers
+  `subscribe_buffer_success` with the spec's not-connected state (`{buffer, kind: "channel",
+  joined: false}`, `{buffer, kind: "query"}` without `user`, or Server's) and its history from
+  the store, unbounded by a snapshot, `has_more` as usual; `get_messages` pages the store the
+  same way. Live lines do not arrive while it is stopped; the connection is followed live again
+  when the network restarts (its `session_created`), and each subscription carries on from its
+  newest sent line as after a brain reload. "Bouncer is reloading" is kept for a brain that is
+  away or not ready.
 
 ### authenticate_error codes
 

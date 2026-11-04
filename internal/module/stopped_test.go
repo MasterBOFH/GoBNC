@@ -98,3 +98,25 @@ func TestReadMarkerSetNeedsASession(t *testing.T) {
 		t.Fatalf("read_markers.set on a stopped network: code %q, want not_found", code)
 	}
 }
+
+// A stopped network's history.messages pages its stored history, first_unread anchor included.
+func TestHistoryMessagesReadsTheStoreForAStoppedNetwork(t *testing.T) {
+	tc, nid, ids := stoppedFixture(t, "history")
+
+	var msgs wire.HistoryMessagesResult
+	tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: "#D"}, &msgs)
+	if len(msgs.Messages) != 4 || msgs.Messages[3].ID != ids[3] || msgs.Messages[0].Buffer != "#D" || msgs.HasBefore || msgs.HasAfter {
+		t.Fatalf("history.messages = %+v, want #d's four lines", msgs)
+	}
+	tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: "#d", BeforeID: ptr(ids[3]), Limit: 2}, &msgs)
+	if len(msgs.Messages) != 2 || msgs.Messages[1].ID != ids[2] || !msgs.HasBefore || !msgs.HasAfter {
+		t.Fatalf("before page = %+v, want two lines before %d", msgs, ids[3])
+	}
+	tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: "#d", Device: "phone", Anchor: wire.AnchorFirstUnread}, &msgs)
+	if len(msgs.Messages) != 3 || msgs.Messages[0].ID != ids[1] {
+		t.Fatalf("first_unread page = %+v, want it to start at %d", msgs.Messages, ids[1])
+	}
+	if code := tc.callErr(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: 999, Buffer: "#d"}); code != wire.CodeNotFound {
+		t.Errorf("messages for an unknown network: code %q, want not_found", code)
+	}
+}

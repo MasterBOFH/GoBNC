@@ -22,7 +22,8 @@ const (
 )
 
 // handleHistoryMessages pages one buffer's history by message id: before_id, after_id,
-// around_id, anchor (first_unread / latest) or, with none of them, the latest page.
+// around_id, anchor (first_unread / latest) or, with none of them, the latest page. A stopped
+// network's history is read from the store as well (see storedNetwork).
 func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
 	p, err := decodeParams[wire.HistoryMessagesParams](params)
 	if err != nil {
@@ -55,7 +56,7 @@ func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage)
 	default:
 		return nil, wire.Errorf(wire.CodeBadParams, "unknown anchor %q", p.Anchor)
 	}
-	sess, err := c.srv.session(p.Network)
+	sess, err := c.srv.view(ctx, p.Network)
 	if err != nil {
 		return nil, err
 	}

@@ -29,6 +29,7 @@ var liteActivityFlushDelay = 2 * time.Second
 type liteSession struct {
 	network    int64
 	asOfID     int64 // activity seeded up to this id; live lines <= it were counted
+	stopped    bool  // bootstrapped while the brain ran no Session for the network
 	subs       map[string]*liteSub
 	activity   map[string]*liteActivity
 	dirty      map[string]bool
@@ -111,8 +112,12 @@ func (m *Module) handleSyncSession(c *wsConn, msg *ClientMessage) {
 		Data: map[string]interface{}{"total_bytes": size, "total_messages": 0, "sync_mode": syncModeLite}})
 	c.send(success)
 	c.send(ServerMessage{Type: "sync_end", RequestID: msg.RequestID, SessionID: msg.SessionID})
+	inline := &snap
+	if ls.stopped { // no snapshot to start from: each subscribe looks for itself
+		inline = nil
+	}
 	for _, sub := range req.Subscribe {
-		m.requestSubscribe(c, n, msg.RequestID, sub, &snap)
+		m.requestSubscribe(c, n, msg.RequestID, sub, inline)
 	}
 }
 
@@ -147,7 +152,7 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 	}
 
 	ls := newLiteSession(n.id)
-	ls.asOfID = snap.LastID
+	ls.asOfID, ls.stopped = snap.LastID, stopped
 	if stopped {
 		// No snapshot bounds a stopped network's counts: they run to the newest stored line,
 		// and nothing newer is stored until the network restarts.

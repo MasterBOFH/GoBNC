@@ -2,6 +2,7 @@ package retecloud
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
@@ -40,17 +41,29 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 		fail("Too many subscriptions")
 		return
 	}
+	var upTo int64
 	if snap == nil {
 		fresh, err := m.snapshot(n.id)
-		if err != nil {
+		switch {
+		case isNotFound(err):
+			// A stopped network: no Session, so no state beyond the buffer's kind (a channel is
+			// not joined) and no live lines until it restarts (resumeConn then carries the
+			// subscription on from lastSent). History is the store's; nothing newer is stored
+			// meanwhile, so there is no point to bound it to.
+			fresh, upTo = wire.Snapshot{}, math.MaxInt64-1
+		case err != nil:
 			fail("Error retrieving messages")
 			return
+		default:
+			upTo = fresh.LastID
 		}
 		snap = &fresh
 		if ls = c.sessions[n.id]; ls == nil { // unsynced while catching up
 			fail("sync_session with sync_mode lite required")
 			return
 		}
+	} else {
+		upTo = snap.LastID
 	}
 	if m.afterSubscribeSnapshot != nil {
 		m.afterSubscribeSnapshot(n.id)
@@ -63,7 +76,7 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 	page := map[string]interface{}{}
 	if history > 0 {
 		var err error
-		msgs, hasMore, err = m.subscribeHistory(n, name, history, req, page, snap.LastID)
+		msgs, hasMore, err = m.subscribeHistory(n, name, history, req, page, upTo)
 		if err != nil {
 			fail("Error retrieving messages")
 			return
