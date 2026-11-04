@@ -340,6 +340,14 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   `authenticate_success.sessions` on every connect; `sync_session` (and the other per-session
   requests except `subscribe_buffer`, which answers "sync_session with sync_mode lite required")
   naming a vanished id is answered "No access to session".
+- GoBNC only: a stopped network (after `disconnect_session`) has no Session in the brain, so its
+  network-scoped module calls answer `not_found`. A lite `sync_session` for it succeeds as the
+  spec's disconnected bootstrap (`connected`/`registered` false, no `isupport`/`identity`/
+  `capabilities` or hashes), with `buffers` from the device's open buffers only: unread counts
+  need the Session, so a stopped network carries none. The connection is followed live again
+  when the network restarts (its `session_created`); `subscribe_buffer` meanwhile answers
+  "Error retrieving messages". "Bouncer is reloading" is kept for a brain that is away or not
+  ready.
 
 ### authenticate_error codes
 

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -116,21 +117,16 @@ func (m *Module) handleSyncSession(c *wsConn, msg *ClientMessage) {
 }
 
 // bootstrap prepares a lite session for the device on n and builds sync_session_success's data.
+// A stopped network (disconnect_session, or never started) has no Session in the brain, so its
+// network-scoped calls answer not_found: it bootstraps as disconnected, from the device's open
+// buffers only, and is followed again when the brain restarts it (onNetworkEvent).
 func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[string]string) (wire.Snapshot, *liteSession, map[string]interface{}, error) {
 	if err := m.call(wire.MethodDevicesSetNetwork, wire.DeviceSetNetworkParams{ClientID: deviceID, Network: n.id, Subscribed: true}, nil); err != nil {
 		return wire.Snapshot{}, nil, nil, err
 	}
-	if err := m.call(wire.MethodDevicesSeed, wire.DeviceNetworkParams{ClientID: deviceID, Network: n.id}, nil); err != nil {
-		return wire.Snapshot{}, nil, nil, err
-	}
-	if err := m.call(wire.MethodClientsAttach, wire.ClientParams{Network: n.id, Client: c.clientName}, nil); err != nil {
-		return wire.Snapshot{}, nil, nil, err
-	}
+	var snap wire.Snapshot
 	var activity wire.HistoryActivityResult
-	if err := m.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: n.id, Device: deviceID}, &activity); err != nil {
-		return wire.Snapshot{}, nil, nil, err
-	}
-	snap, err := m.snapshot(n.id)
+	stopped, err := m.bootstrapLive(c, n, deviceID, &snap, &activity)
 	if err != nil {
 		return wire.Snapshot{}, nil, nil, err
 	}
@@ -146,11 +142,11 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 			ls.open[b.Key] = true
 		}
 	}
-	connected := n.state == wire.NetRegistered || n.state == wire.NetConnecting
+	connected := !stopped && (n.state == wire.NetRegistered || n.state == wire.NetConnecting)
 	out := map[string]interface{}{
 		"client_id":  deviceID,
 		"connected":  connected,
-		"registered": n.state == wire.NetRegistered,
+		"registered": !stopped && n.state == wire.NetRegistered,
 	}
 	order := []string{}
 	byKey := map[string]*LiteBuffer{}
@@ -190,6 +186,9 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 		ls.activity[a.Key] = &liteActivity{name: a.Buffer, unread: a.Unread, highlights: a.Highlights, lastID: ls.asOfID}
 	}
 	for _, key := range order {
+		if stopped {
+			break // read markers live on the Session too
+		}
 		var mark wire.ReadMarkerGetResult
 		if err := m.call(wire.MethodReadMarkersGet, wire.ReadMarkerGetParams{Network: n.id, Buffer: byKey[key].Name}, &mark); err == nil {
 			byKey[key].ReadID = mark.ID
@@ -202,6 +201,36 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 	}
 	out["buffers"] = buffers
 	return snap, ls, out, nil
+}
+
+// bootstrapLive makes the bootstrap's calls on the network's Session: seed the device's open
+// buffers, attach the virtual client, count activity, take the snapshot. stopped reports a
+// network the brain runs no Session for (not_found); any other failure, not_ready included, is
+// an error.
+func (m *Module) bootstrapLive(c *wsConn, n *network, deviceID string, snap *wire.Snapshot, activity *wire.HistoryActivityResult) (stopped bool, err error) {
+	calls := []func() error{
+		func() error {
+			return m.call(wire.MethodDevicesSeed, wire.DeviceNetworkParams{ClientID: deviceID, Network: n.id}, nil)
+		},
+		func() error {
+			return m.call(wire.MethodClientsAttach, wire.ClientParams{Network: n.id, Client: c.clientName}, nil)
+		},
+		func() error {
+			return m.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: n.id, Device: deviceID}, activity)
+		},
+		func() (err error) { *snap, err = m.snapshot(n.id); return err },
+	}
+	for _, call := range calls {
+		if err := call(); err != nil {
+			var we *wire.Error
+			if errors.As(err, &we) && we.Code == wire.CodeNotFound {
+				*snap, *activity = wire.Snapshot{}, wire.HistoryActivityResult{}
+				return true, nil
+			}
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // identityMap is the bootstrap's identity section.
