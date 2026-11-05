@@ -302,7 +302,9 @@ func (s *Server) moduleReload(name string) ([]string, error) {
 		name, moduleReloadTimeout, old.PID)
 }
 
-const moduleCtlUsage = "usage: MODULECTL <list|start|stop|restart|reload> [name]"
+// moduleCtlUsage names the subcommand only, as the other usage lines do, so it reads right after
+// both `gobnc` and `/bnc`; MODULECTL is the control socket's verb, which no one types.
+const moduleCtlUsage = "usage: module <list|start|stop|restart|reload> [name]"
 
 // moduleCtl runs one module control verb (gobnc module ..., BNC MODULE ..., MODULECTL ...).
 func (s *Server) moduleCtl(args []string) ([]string, error) {

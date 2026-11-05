@@ -449,6 +449,10 @@ func TestModuleCtlReplyUsage(t *testing.T) {
 	if got := s.moduleCtlReply([]string{"stop", "a"}); got != `ERR module "a" is not running` {
 		t.Fatalf("MODULECTL stop a = %q", got)
 	}
+	// The usage is shown to people (`/bnc module`, `gobnc module`), never the socket verb.
+	if _, err := s.moduleCtl(nil); err == nil || err.Error() != "usage: module <list|start|stop|restart|reload> [name]" {
+		t.Fatalf("module usage = %v", err)
+	}
 }
 
 func TestModuleCtlReplyList(t *testing.T) {
