@@ -1125,6 +1125,11 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 			// that buffer's key, not as a query named after the server.
 			return []string{cm.Canonical(wire.ServerBuffer)}
 		}
+		if ch, ok := s.statusMsgChannel(t); ok {
+			// @#chan / +#chan: the channel's line, stored under the channel's key, as the
+			// envelope reports it.
+			return []string{cm.Canonical(ch)}
+		}
 		if !isChannelName(t) && s.isSelfNick(t) {
 			// Inbound private message: Param(0) is our own nick, not the
 			// other party. Key by the sender instead, so replies from a

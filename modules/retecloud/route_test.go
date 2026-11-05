@@ -104,6 +104,39 @@ func TestServerNoticeToUsCarriesAServerID(t *testing.T) {
 	}
 }
 
+// A STATUSMSG line (NOTICE @#a, PRIVMSG +#a) is #a's: its id is a row of #a, so read_cursor on
+// #a with it succeeds and get_messages #a has it.
+func TestStatusMsgLineIDIsTheChannels(t *testing.T) {
+	for _, tc := range []struct{ line, text string }{
+		{":peer!p@h NOTICE @#a :ops-only", "ops-only"},
+		{":peer!p@h PRIVMSG +#a :voiced-only", "voiced-only"},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			e := newTestEnv(t, "undernet")
+			e.feed("undernet", ":me!u@h JOIN #a")
+			c := e.syncedClient("ios-1", "undernet", "#a")
+			mark := c.count()
+			e.feed("undernet", tc.line)
+			d := ircLineOf(t, c, mark, tc.text)
+			if d["buffer"] != "#a" || d["id"] == nil || d["id"].(float64) <= 0 {
+				t.Fatalf("irc_line = %v, want buffer #a with an id", d)
+			}
+			id := d["id"].(float64)
+			m := c.count()
+			rid := c.request("read_cursor", map[string]any{"buffer": "#a", "last_message_id": id}, e.sid("undernet"))
+			if f := c.waitFor(m, 5*time.Second, reply(rid, "read_cursor_success", "read_cursor_error")); f["type"] != "read_cursor_success" {
+				t.Fatalf("read_cursor on #a with id %v = %v", id, f)
+			}
+			m = c.count()
+			rid = c.request("get_messages", map[string]any{"buffer": "#a"}, e.sid("undernet"))
+			msgs := c.waitFor(m, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+			if len(msgs) == 0 || msgs[len(msgs)-1].(map[string]any)["id"] != id {
+				t.Fatalf("#a history = %v, want the line with id %v", msgs, id)
+			}
+		})
+	}
+}
+
 func TestIRCLineFrameTargets(t *testing.T) {
 	one := ircLineFrame(wire.LineEvent{Raw: ":p!u@h PRIVMSG #a :x", Buffers: []wire.LineBuffer{{Name: "#a", Key: "#a", ID: 7}}})
 	if _, ok := one.Data.(map[string]interface{})["targets"]; ok {

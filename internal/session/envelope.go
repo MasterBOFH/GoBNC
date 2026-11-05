@@ -199,6 +199,19 @@ func (s *Session) inServerBuffer(msg irc.Message) bool {
 	return !isChan(stripStatusMsg(t, statusmsg, isChan))
 }
 
+// statusMsgChannel returns the channel a STATUSMSG target (@#chan, +#chan) is addressed to;
+// ok is false for any other target.
+func (s *Session) statusMsgChannel(t string) (string, bool) {
+	s.mu.RLock()
+	chantypes, statusmsg := s.isupport.Raw["CHANTYPES"], s.isupport.Raw["STATUSMSG"]
+	s.mu.RUnlock()
+	isChan := func(name string) bool { return isChannelTarget(name, chantypes) }
+	if ch := stripStatusMsg(t, statusmsg, isChan); ch != t && isChan(ch) {
+		return ch, true
+	}
+	return "", false
+}
+
 // serverSourced: no source, or a server name (no "!", contains ".").
 func serverSourced(msg irc.Message) bool {
 	return ServerSource(msg.Source)

@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/MasterBOFH/GoBNC/internal/store"
@@ -163,8 +162,29 @@ func TestEnvelopeServerSourcedToChannelIsTheChannelsWithID(t *testing.T) {
 			if len(ev.Buffers) != 1 || ev.Buffers[0].Name != "#a" || ev.Buffers[0].Key != "#a" || ev.Buffers[0].ID <= 0 {
 				t.Fatalf("envelope buffers = %+v, want #a with an id", ev.Buffers)
 			}
-			if strings.HasPrefix(line, ":srv.example NOTICE @") {
-				return // a STATUSMSG line is stored under "@#a" (as a user's is); the id is that row's
+			m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
+			if err != nil || m == nil || m.Target != "#a" {
+				t.Fatalf("stored row for id %d = %+v (err %v), want target #a", ev.Buffers[0].ID, m, err)
+			}
+		})
+	}
+}
+
+// A STATUSMSG line (@#a, +#a, @+#a), from anyone, is stored under the channel's key: the row
+// the envelope reports for #a is a row of #a (owner 2026-11-05).
+func TestStatusMsgLineIsStoredUnderTheChannel(t *testing.T) {
+	for _, line := range []string{
+		":peer!p@h NOTICE @#a :ops only",
+		":peer!p@h PRIVMSG +#a :voiced",
+		":peer!p@h PRIVMSG @+#A :both",
+		":srv.example NOTICE @#a :server to ops",
+	} {
+		t.Run(line, func(t *testing.T) {
+			s, sink := newEnvelopeSession(t)
+			feed(s, line)
+			ev := lastLine(t, sink)
+			if len(ev.Buffers) != 1 || ev.Buffers[0].Key != "#a" || ev.Buffers[0].ID <= 0 {
+				t.Fatalf("envelope buffers = %+v, want #a with an id", ev.Buffers)
 			}
 			m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
 			if err != nil || m == nil || m.Target != "#a" {
