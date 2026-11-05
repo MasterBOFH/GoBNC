@@ -34,7 +34,7 @@ keeper (uplinks) ⇄ brain (Session, history, read markers, devices) ⇄ module 
 
 - **iOS lite mode only.** `gobnc-retecloud` serves `sync_mode: "lite"`; desktops use IRC.
 - **Wire-identical with retecloud-api's `lite-mode` branch** after `authenticate`. Pinned spec
-  revision: retecloud-api **`5fd1a8f`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
+  revision: retecloud-api **`a4bb897`** (`documentation/WEBSOCKET_PROTOCOL_LITE.md`, "Sessions and
   the per-device toggle" and "Backend-specific behaviour"). A needed protocol change goes to
   retecloud-api `lite-mode` first (doc + harness test), then here; `lite-mode` merges into
   retecloud-api only once GoBNC and Rete are both drawn up.
@@ -399,17 +399,17 @@ follow the frames already queued.
 
 retecloud-harness runs its lite tests against `gobnc-retecloud` with `RETE_BACKEND=gobnc`
 (`docker-compose.gobnc.yml`; see the harness README). Against retecloud-api
-**`d016cb5`**, harness commit `890f1b2`: `test_lite_mode`, `test_lite_pipelining`,
+**`be69e15`**, harness commit `b8747b2`: `test_lite_mode`, `test_lite_pipelining`,
 `test_casemapping`, `test_compression`, `test_reply_routing`, `test_history_paging`,
 `test_lite_bootstrap_cache`, `test_session_toggle` and `test_buffer_close` pass on ircu2 and solanum
 (22 passed; 4 skipped because they need full/state mode or REST).
 
 The close codes, `authenticate_error` codes, `session_state` broadcast and attributable
-`subscribe_buffer_error` above match retecloud-api `ec0f7b0`; the harness figures
-in the paragraph above were measured against `d016cb5`, before those additions, and are re-measured
+`subscribe_buffer_error` above match retecloud-api `03d4277`; the harness figures
+in the paragraph above were measured against `be69e15`, before those additions, and are re-measured
 with the harness modules that cover them.
 
-`irc_line`'s `targets` (retecloud-api `5fd1a8f`, the pinned revision) is GoBNC-only: the brain
+`irc_line`'s `targets` (retecloud-api `a4bb897`, the pinned revision) is GoBNC-only: the brain
 stores a QUIT or NICK once per shared channel, and a line stored under more than one buffer lists
 each stored buffer with its own id (`buffers[].id`), in `buffers` order; `buffer`/`id` are the
 first. retecloud-api stores such a line once and never sends it, so no harness test covers it.
