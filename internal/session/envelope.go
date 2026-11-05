@@ -83,10 +83,10 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 	case "PRIVMSG", "NOTICE", "TAGMSG":
 		t := msg.Param(0)
 		switch {
-		case serverSourced(msg) || strings.HasPrefix(t, "$"):
-			add(wire.ServerBuffer)
 		case isChan(stripStatusMsg(t, statusmsg, isChan)):
-			add(stripStatusMsg(t, statusmsg, isChan), t)
+			add(stripStatusMsg(t, statusmsg, isChan), t) // whatever its source, a server's included
+		case s.inServerBuffer(msg):
+			add(wire.ServerBuffer)
 		case pre.self:
 			add(t) // our own line to someone: their query
 		default:
@@ -181,6 +181,22 @@ func lineKind(msg irc.Message) string {
 
 func isNumeric(cmd string) bool {
 	return len(cmd) == 3 && cmd[0] >= '0' && cmd[0] <= '9' && cmd[1] >= '0' && cmd[1] <= '9' && cmd[2] >= '0' && cmd[2] <= '9'
+}
+
+// inServerBuffer reports whether a PRIVMSG/NOTICE/TAGMSG belongs to the Server buffer: server-
+// sourced or to a $mask, and not to a channel (a channel's line is the channel's, whatever its
+// source). envelopeLocked routes and historyTargets stores by this one rule, so the envelope's
+// Server buffer carries the id the line was stored with.
+func (s *Session) inServerBuffer(msg irc.Message) bool {
+	t := msg.Param(0)
+	if !serverSourced(msg) && !strings.HasPrefix(t, "$") {
+		return false
+	}
+	s.mu.RLock()
+	chantypes, statusmsg := s.isupport.Raw["CHANTYPES"], s.isupport.Raw["STATUSMSG"]
+	s.mu.RUnlock()
+	isChan := func(name string) bool { return isChannelTarget(name, chantypes) }
+	return !isChan(stripStatusMsg(t, statusmsg, isChan))
 }
 
 // serverSourced: no source, or a server name (no "!", contains ".").

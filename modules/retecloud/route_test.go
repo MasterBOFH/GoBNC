@@ -47,6 +47,63 @@ func TestQuitFrameCarriesEachChannelsOwnID(t *testing.T) {
 	}
 }
 
+// ircLineOf waits for the irc_line whose raw contains text and returns its data.
+func ircLineOf(t *testing.T, c *wsClient, mark int, text string) map[string]any {
+	t.Helper()
+	f := c.waitFor(mark, 5*time.Second, func(f map[string]any) bool {
+		return f["type"] == "irc_line" && strings.Contains(f["data"].(map[string]any)["raw"].(string), text)
+	})
+	return f["data"].(map[string]any)
+}
+
+// A server-sourced NOTICE to a channel is the channel's line (owner 2026-11-05): a subscriber
+// gets it with the channel's id, and a connection not subscribed counts it as activity.
+func TestServerNoticeToChannelCarriesTheChannelsID(t *testing.T) {
+	old := liteActivityFlushDelay
+	liteActivityFlushDelay = 100 * time.Millisecond
+	defer func() { liteActivityFlushDelay = old }()
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #a", ":me!u@h JOIN #b")
+	c := e.syncedClient("ios-1", "undernet", "#a")
+	mark := c.count()
+	e.feed("undernet", ":irc.example.net NOTICE #a :in-subscribed", ":irc.example.net NOTICE #b :in-unsubscribed")
+	d := ircLineOf(t, c, mark, "in-subscribed")
+	if d["buffer"] != "#a" || d["id"] == nil || d["id"].(float64) <= 0 {
+		t.Fatalf("irc_line = %v, want buffer #a with an id", d)
+	}
+	act := c.waitFor(mark, 5*time.Second, isType("activity"))
+	entry := act["data"].(map[string]any)["buffers"].([]any)[0].(map[string]any)
+	if entry["buffer"] != "#b" || entry["unread"] != float64(1) || entry["last_id"].(float64) <= 0 {
+		t.Fatalf("activity = %v", act)
+	}
+	if linesWith(c, mark, "in-unsubscribed") != 0 {
+		t.Fatal("line of an unsubscribed buffer delivered")
+	}
+}
+
+// A server notice to us stays in the Server buffer, now with an id: the read cursor can be set
+// on it and history has it.
+func TestServerNoticeToUsCarriesAServerID(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	c := e.syncedClient("ios-1", "undernet")
+	mark := c.count()
+	e.feed("undernet", ":irc.example.net NOTICE me :*** Notice -- snotice")
+	d := ircLineOf(t, c, mark, "snotice")
+	if d["buffer"] != wire.ServerBuffer || d["id"] == nil || d["id"].(float64) <= 0 {
+		t.Fatalf("irc_line = %v, want buffer Server with an id", d)
+	}
+	id := d["id"].(float64)
+	m := c.count()
+	rid := c.request("read_cursor", map[string]any{"buffer": wire.ServerBuffer, "last_message_id": id}, e.sid("undernet"))
+	c.waitFor(m, 5*time.Second, reply(rid, "read_cursor_success"))
+	m = c.count()
+	rid = c.request("get_messages", map[string]any{"buffer": wire.ServerBuffer}, e.sid("undernet"))
+	msgs := c.waitFor(m, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+	if len(msgs) == 0 || msgs[len(msgs)-1].(map[string]any)["id"] != id {
+		t.Fatalf("Server history = %v, want the notice with id %v", msgs, id)
+	}
+}
+
 func TestIRCLineFrameTargets(t *testing.T) {
 	one := ircLineFrame(wire.LineEvent{Raw: ":p!u@h PRIVMSG #a :x", Buffers: []wire.LineBuffer{{Name: "#a", Key: "#a", ID: 7}}})
 	if _, ok := one.Data.(map[string]interface{})["targets"]; ok {

@@ -1120,6 +1120,11 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 		if t == "" {
 			return nil
 		}
+		if s.inServerBuffer(msg) {
+			// The envelope's Server buffer (a server notice to us, a $mask): stored under
+			// that buffer's key, not as a query named after the server.
+			return []string{cm.Canonical(wire.ServerBuffer)}
+		}
 		if !isChannelName(t) && s.isSelfNick(t) {
 			// Inbound private message: Param(0) is our own nick, not the
 			// other party. Key by the sender instead, so replies from a

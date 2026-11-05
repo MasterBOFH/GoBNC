@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/MasterBOFH/GoBNC/internal/store"
@@ -58,6 +60,7 @@ func TestEnvelopeKindsAndBuffers(t *testing.T) {
 		{"ctcp reply", ":peer!p@h NOTICE me :\x01VERSION x\x01", wire.LineCTCPReply, []string{"peer"}, false},
 		{"server notice", ":srv.example NOTICE me :maintenance", wire.LineNotice, []string{wire.ServerBuffer}, false},
 		{"mask notice", ":peer!p@h NOTICE $*.example :global", wire.LineNotice, []string{wire.ServerBuffer}, false},
+		{"server notice to channel", ":srv.example NOTICE #a :maintenance", wire.LineNotice, []string{"#a"}, false},
 		{"tagmsg", "@+typing=active :peer!p@h TAGMSG #a", wire.LineTagmsg, []string{"#a"}, false},
 		{"join", ":new!n@h JOIN #a", wire.LineJoin, []string{"#a"}, false},
 		{"part", ":peer!p@h PART #b :bye", wire.LinePart, []string{"#b"}, false},
@@ -142,6 +145,57 @@ func TestEnvelopeIDsOnlyForStoredBuffers(t *testing.T) {
 	feed(s, ":srv.example 251 me :not stored")
 	if ev := lastLine(t, sink); len(ev.Buffers) != 1 || ev.Buffers[0].ID != 0 {
 		t.Fatalf("numeric envelope = %+v", ev)
+	}
+}
+
+// A NOTICE or PRIVMSG to a channel goes to that channel, stored there with its id, whatever
+// its source: a server-sourced one included (owner 2026-11-05).
+func TestEnvelopeServerSourcedToChannelIsTheChannelsWithID(t *testing.T) {
+	for _, line := range []string{
+		":srv.example NOTICE #a :channel maintenance",
+		":srv.example NOTICE @#a :ops only",
+		":srv.example PRIVMSG #a :server says",
+	} {
+		t.Run(line, func(t *testing.T) {
+			s, sink := newEnvelopeSession(t)
+			feed(s, line)
+			ev := lastLine(t, sink)
+			if len(ev.Buffers) != 1 || ev.Buffers[0].Name != "#a" || ev.Buffers[0].Key != "#a" || ev.Buffers[0].ID <= 0 {
+				t.Fatalf("envelope buffers = %+v, want #a with an id", ev.Buffers)
+			}
+			if strings.HasPrefix(line, ":srv.example NOTICE @") {
+				return // a STATUSMSG line is stored under "@#a" (as a user's is); the id is that row's
+			}
+			m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
+			if err != nil || m == nil || m.Target != "#a" {
+				t.Fatalf("stored row for id %d = %+v (err %v), want target #a", ev.Buffers[0].ID, m, err)
+			}
+		})
+	}
+}
+
+// A server-sourced line not to a channel (to us, to "*" or AUTH before registration, a $mask)
+// stays in the Server buffer and is stored there, under the Server buffer's key, with its id.
+func TestEnvelopeServerSourcedNotToChannelIsServerWithID(t *testing.T) {
+	for _, line := range []string{
+		":srv.example NOTICE me :*** Notice -- snotice",
+		":srv.example NOTICE * :*** Looking up your hostname",
+		"NOTICE AUTH :*** no prefix",
+		":peer!p@h NOTICE $*.example :global",
+		":srv.example PRIVMSG me :server privmsg",
+	} {
+		t.Run(line, func(t *testing.T) {
+			s, sink := newEnvelopeSession(t)
+			feed(s, line)
+			ev := lastLine(t, sink)
+			if len(ev.Buffers) != 1 || ev.Buffers[0].Name != wire.ServerBuffer || ev.Buffers[0].ID <= 0 {
+				t.Fatalf("envelope buffers = %+v, want Server with an id", ev.Buffers)
+			}
+			m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
+			if err != nil || m == nil || m.Target != s.Fold(wire.ServerBuffer) {
+				t.Fatalf("stored row for id %d = %+v (err %v), want the Server buffer's key", ev.Buffers[0].ID, m, err)
+			}
+		})
 	}
 }
 
