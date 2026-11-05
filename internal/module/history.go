@@ -152,6 +152,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 	cm := sess.CaseMapping()
 	self := sess.Nick()
 	selfKey := cm.Canonical(self)
+	serverKey := cm.Canonical(wire.ServerBuffer)
 	type shown struct {
 		name  string
 		query bool
@@ -196,6 +197,9 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 		for _, l := range a.Unread {
 			if cm.Canonical(sourceNick(l.Source)) == selfKey {
 				continue // our own lines are never unread
+			}
+			if key == serverKey && session.ServerSource(l.Source) {
+				continue // server notices in Server are status traffic (a channel's still count)
 			}
 			ba.Unread++
 			if b.query || session.IsHighlight(l.Text, self, cm) {

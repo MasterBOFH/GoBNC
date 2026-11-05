@@ -138,3 +138,34 @@ func TestHistoryActivityCountsUnreadAndHighlights(t *testing.T) {
 		t.Fatalf("missing device: code %q", code)
 	}
 }
+
+// The Server buffer stores server notices, but they are status traffic, not unread: only a
+// person's line there (a $mask notice) counts. In a channel a server notice counts like any.
+func TestHistoryActivityServerNoticesAreNotUnreadInServer(t *testing.T) {
+	tc, db, nid, _ := historyFixture(t, "history")
+	t0 := time.Now().Add(-time.Hour).UTC()
+	for i, l := range []struct{ target, src, text string }{
+		{"server", "srv.example", "*** Looking up your hostname"},
+		{"server", "", "*** no prefix"},
+		{"server", "srv.example", "*** Notice -- snotice"},
+		{"server", "oper!o@h", "global notice"},
+		{"#c", "srv.example", "channel maintenance"},
+	} {
+		if _, err := db.InsertMessage(context.Background(), store.Message{NetworkID: nid, Target: l.target,
+			Time: t0.Add(time.Duration(i) * time.Second), Command: "NOTICE", Source: l.src, Raw: "x", Text: l.text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var res wire.HistoryActivityResult
+	tc.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: nid, Device: "phone"}, &res)
+	got := map[string]wire.BufferActivity{}
+	for _, b := range res.Buffers {
+		got[b.Buffer] = b
+	}
+	if srv := got[wire.ServerBuffer]; srv.Unread != 1 || srv.LastID == 0 {
+		t.Fatalf("Server activity = %+v, want 1 unread (the $mask notice) and its last id", srv)
+	}
+	if ch := got["#c"]; ch.Unread != 1 {
+		t.Fatalf("#c activity = %+v, want the server notice counted", ch)
+	}
+}

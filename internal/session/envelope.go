@@ -201,7 +201,12 @@ func (s *Session) inServerBuffer(msg irc.Message) bool {
 
 // serverSourced: no source, or a server name (no "!", contains ".").
 func serverSourced(msg irc.Message) bool {
-	src := msg.Source
+	return ServerSource(msg.Source)
+}
+
+// ServerSource reports whether a line's source is a server rather than a person: none at all,
+// or a server name (no "!" or "@", contains ".").
+func ServerSource(src string) bool {
 	return src == "" || (!strings.Contains(src, "!") && !strings.Contains(src, "@") && strings.Contains(src, "."))
 }
 
