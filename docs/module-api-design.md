@@ -224,7 +224,8 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 - `history.activity {"network","device"}` → `{"buffers": [{"buffer","key","last_id","last_time",
   "unread","highlights"}]}` for every buffer the device shows (joined channels + open queries +
   `Server`). `unread` counts PRIVMSG/NOTICE (CTCP ACTION included, other CTCP excluded, our own
-  lines excluded) with `time` after the read marker and `id` above the device's `closed_at_id`.
+  lines excluded, server-sourced lines excluded in `Server` but not in a channel) with `time` after
+  the read marker and `id` above the device's `closed_at_id`.
   `highlights`: among those, lines in a query, or whose text contains our current nick as a whole
   word under CASEMAPPING (word characters: `A-Za-z0-9_-[]\`^{}|`). A stopped network (no
   Session) is counted from the store with the same rules: its stored channel list stands in for
@@ -280,10 +281,12 @@ Events (brain → module):
   reset on brain start. `kind` ∈ `message` (PRIVMSG, incl. CTCP ACTION), `notice`, `ctcp` (PRIVMSG
   CTCP other than ACTION), `ctcp_reply` (NOTICE CTCP), `tagmsg`, `join`, `part`, `quit`, `kick`,
   `nick`, `mode`, `topic`, `invite`, `away`, `account`, `chghost`, `setname`, `numeric`, `error`,
-  `other`. `buffers`: for messages the channel or (for a query) the peer's nick, `Server` for
-  server-sourced / `$mask` lines; QUIT/NICK/AWAY/ACCOUNT/CHGHOST/SETNAME list every channel the user
+  `other`. `buffers`: for messages the channel (whatever the source, a server's included) or (for a
+  query) the peer's nick, `Server` for server-sourced / `$mask` messages not to a channel (stored
+  under `Server`, so they have an id there; history.activity does not count server-sourced ones as
+  unread); QUIT/NICK/AWAY/ACCOUNT/CHGHOST/SETNAME list every channel the user
   shared with us before the change plus their query buffer if one exists in history; `id` present
-  when that buffer stored the line. `self` true when the source is us. `label` present on the echo
+  when that buffer stored the line (numerics and `ERROR` are not stored, so have none). `self` true when the source is us. `label` present on the echo
   of a module's own `send.line`. Solicited replies routed by `RequestTracker` to a specific client
   emit **no** `line` event (they go to the asker only, as `client_line` for a virtual client).
 - `client_line {"network","client","raw"}` — anything `Session` sent to that virtual client.
