@@ -211,7 +211,8 @@ func TestClientPollingSuppressesOwnPoll(t *testing.T) {
 	_, tok, _ := s.tracker.Begin(BeginOpts{Client: d.ID(), Cmd: "WHO", PreferWHOX: true, WHOMask: "#c", WHOXFields: "cuhnf"})
 	s.tracker.SetWHOXClientFix(tok, true, "")
 	feed(s, ":srv 354 me "+tok+" #c al a.example alice H", ":srv 315 me #c :End of /WHO list.")
-	// A plain WHO (352) counts as well.
+	// An untracked 352 (no request GoBNC knows asked for it) updates the user but no longer counts
+	// as polling; #d is not polled again here because GoBNC already polled it itself.
 	if p := s.PollWHO(time.Now(), WHOPoll{Interval: 45 * time.Minute}); p != "#d" {
 		t.Fatalf("polled %q, want #d (#c was just polled by a client)", p)
 	}
