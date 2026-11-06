@@ -110,6 +110,39 @@ func TestPeerNickWithoutQueryRenamesNothing(t *testing.T) {
 	}
 }
 
+// Keep both (owner ruling): a device that already has the new nick's query keeps both, hears no
+// rename, and the old query's history gets its own copy of the NICK.
+func TestPeerNickOntoAHeldQueryKeepsBoth(t *testing.T) {
+	s, sink := newEnvelopeSession(t)
+	ctx := context.Background()
+	nid := s.Network.ID
+	_ = s.store.SetBufferOpen(ctx, "phone", nid, "peer", "peer", true, 0)
+	_ = s.store.SetBufferOpen(ctx, "phone", nid, "peer2", "peer2", true, 0)
+	_ = s.store.SetBufferOpen(ctx, "pad", nid, "peer", "peer", true, 0)
+
+	feed(s, ":peer!p@h NICK :peer2")
+
+	renames, _ := renamesBefore(sink, "NICK :peer2")
+	if len(renames) != 1 || renames[0].ClientID != "pad" {
+		t.Fatalf("renames = %+v, want the pad only", renames)
+	}
+	if bufs, _ := s.store.ListOpenBuffers(ctx, "phone", nid); len(bufs) != 2 || bufs[0].Target != "peer" || bufs[0].RenamedFrom != "" {
+		t.Fatalf("phone rows = %+v, want both kept", bufs)
+	}
+	ev := lastLine(t, sink)
+	if !sameSet(bufferNames(ev), []string{"#a", "#b", "peer", "peer2"}) {
+		t.Fatalf("NICK envelope buffers = %v", bufferNames(ev))
+	}
+	for _, b := range ev.Buffers {
+		if b.Key == "peer" {
+			m, err := s.store.MessageByID(ctx, nid, b.ID)
+			if err != nil || m == nil || m.Target != "peer" || m.Command != "NICK" {
+				t.Fatalf("old query's copy = %+v (err %v)", m, err)
+			}
+		}
+	}
+}
+
 func TestOwnNickRenamesNoQuery(t *testing.T) {
 	s, sink := newEnvelopeSession(t)
 	_ = s.store.SetBufferOpen(context.Background(), "phone", s.Network.ID, "me", "me", true, 0)

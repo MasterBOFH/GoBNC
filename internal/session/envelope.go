@@ -118,6 +118,9 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 			nick := msg.Nick()
 			if newNick := msg.Param(0); msg.Command == "NICK" && newNick != "" && ids[cm.Canonical(newNick)] > 0 {
 				add(newNick) // the query's copy, stored under the name the query now has
+				if ids[cm.Canonical(nick)] > 0 {
+					add(nick) // a device kept the old query too: its own copy
+				}
 			} else if nick != "" && !pre.self && s.hasQuery(nick) {
 				add(nick)
 			}

@@ -117,12 +117,14 @@ server lines and `$` masks never). `devices.seed` gives a new device the queries
 
 A peer's NICK renames their query on every device with a row for the old nick, open or closed
 (`renameQueryLocked`, `store.RenameBuffer`): the row becomes the new nick's, keeping `is_open` and the
-floor, merged into the device's row for the new nick when it has one (open if either was, the
-higher floor), and `renamed_from` keeps the name the device's last sync listed it under until
-`devices.clear_renames` clears it. `buffer_rename` is emitted per device before the line's own
-event. When the query exists (stored lines or a device row), the NICK is also stored under the new
-nick, and the line event lists the query under the new nick with that copy's id. Our own NICK
-renames nothing.
+floor, and `renamed_from` keeps the name the device's last sync listed it under until
+`devices.clear_renames` clears it. A device that already has a row for the new nick keeps both
+queries as they are (owner ruling): no rename, no `renamed_from`, no `buffer_rename`.
+`buffer_rename` is emitted per renamed device before the line's own event. When the query exists
+(stored lines or a device row), the NICK is also stored under the new nick, and under the old nick
+too when some device keeps both; the line event lists the query under each name it was stored
+under, with that copy's id. When no device kept both, the read marker moves from the old nick to
+the new one (unless the new nick has its own). Our own NICK renames nothing.
 
 The rule applies to devices that follow the network (`device_networks.subscribed`), and never
 reopens a buffer closed after the line (a keeper replay of a stored line). Seeding runs once per

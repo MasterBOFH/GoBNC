@@ -199,10 +199,20 @@ func (s *Session) queryExists(key string) bool {
 	return err == nil && ok
 }
 
+// queryKeptOld reports whether some device holds queries for both nicks: a peer's nick change
+// keeps both there (owner ruling), so the old query's history gets the change too.
+func (s *Session) queryKeptOld(fromKey, toKey string) bool {
+	if s.store == nil || s.Network.ID == 0 {
+		return false
+	}
+	ok, err := s.store.DeviceHoldsBoth(context.Background(), s.Network.ID, fromKey, toKey)
+	return err == nil && ok
+}
+
 // renameQueryLocked follows a peer's NICK in every device's buffer rows (store.RenameBuffer:
-// open/closed and the floor kept, merged into a row for the new nick) and emits buffer_rename
-// for each device whose rows changed — before the line's own event. Our own NICK renames
-// nothing. Call before applyState, holding busMu.
+// open/closed and the floor kept; a device that already has the new nick's row keeps both) and
+// emits buffer_rename for each device whose rows were renamed — before the line's own event. Our
+// own NICK renames nothing. Call before applyState, holding busMu.
 func (s *Session) renameQueryLocked(msg irc.Message) {
 	if msg.Command != "NICK" || s.store == nil || s.Network.ID == 0 {
 		return
@@ -212,7 +222,7 @@ func (s *Session) renameQueryLocked(msg irc.Message) {
 		return
 	}
 	fromKey, toKey := s.Fold(from), s.Fold(to)
-	changed, err := s.store.RenameBuffer(context.Background(), s.Network.ID, fromKey, toKey, to)
+	changed, _, err := s.store.RenameBuffer(context.Background(), s.Network.ID, fromKey, toKey, to)
 	if err != nil {
 		s.log.Warn("rename query for devices", "from", fromKey, "to", toKey, "err", err)
 		return

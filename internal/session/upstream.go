@@ -1177,9 +1177,14 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 		}
 		s.mu.RUnlock()
 		// A peer's nick change is also their query's line: stored under the new nick, the name
-		// the query has from now on (renameQueryLocked), whether or not they share a channel.
+		// the query has from now on (renameQueryLocked), whether or not they share a channel; and
+		// under the old nick too when a device keeps both queries (it held the new nick's).
 		if msg.Command == "NICK" && msg.Param(0) != "" && !s.isSelfNick(nick) && s.queryExists(folded) {
-			out = append(out, cm.Canonical(msg.Param(0)))
+			newKey := cm.Canonical(msg.Param(0))
+			out = append(out, newKey)
+			if s.queryKeptOld(folded, newKey) {
+				out = append(out, folded)
+			}
 		}
 		return out
 	default:

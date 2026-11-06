@@ -17,7 +17,7 @@ func TestDeviceBuffersListAndClearRenames(t *testing.T) {
 	if err := db.SetBufferOpen(ctx, "phone", nid, "alice", "alice", true, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.RenameBuffer(ctx, nid, "alice", "bob", "Bob"); err != nil {
+	if _, _, err := db.RenameBuffer(ctx, nid, "alice", "bob", "Bob"); err != nil {
 		t.Fatal(err)
 	}
 	var bufs wire.DeviceBuffersResult
