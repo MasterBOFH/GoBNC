@@ -56,6 +56,21 @@ func hlRulesKey(network int64) string { return kvHighlightRules + strconv.Format
 // versionFormat is the version's spelling: UTC, milliseconds (as retecloud-api's updated_at).
 const versionFormat = "2006-01-02T15:04:05.000Z"
 
+// sameVersion compares an if_version with the stored version as instants at microsecond
+// precision, so any RFC 3339 spelling of the same time matches; "" matches only a key never
+// written.
+func sameVersion(ifVersion, stored string) bool {
+	if ifVersion == "" || stored == "" {
+		return ifVersion == stored
+	}
+	a, errA := time.Parse(time.RFC3339Nano, ifVersion)
+	b, errB := time.Parse(time.RFC3339Nano, stored)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return a.Truncate(time.Microsecond).Equal(b.Truncate(time.Microsecond))
+}
+
 // nextVersion is now's version, made later than prev so every write has a new one.
 func nextVersion(prev string, now time.Time) string {
 	now = now.UTC().Truncate(time.Millisecond)
@@ -307,13 +322,14 @@ func (m *Module) handleSetHighlightRules(c *wsConn, msg *ClientMessage) {
 		fail("Invalid rule", "invalid_request", nil)
 		return
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, req.Rules); err != nil {
-		fail("Invalid rule", "invalid_request", nil)
+	if len(rules) > highlight.MaxRules || len(req.Rules) > highlight.MaxBytes { // the array as sent
+		fail("Too many highlight rules", "limit", nil)
 		return
 	}
-	if len(rules) > highlight.MaxRules || compact.Len() > highlight.MaxBytes {
-		fail("Too many highlight rules", "limit", nil)
+	// Stored compactly with exactly the rule fields (isEnabled, ruleType, matchType.value).
+	normal, err := json.Marshal(rules)
+	if err != nil {
+		fail("Invalid rule", "invalid_request", nil)
 		return
 	}
 	n := m.networkFor(msg.SessionID)
@@ -326,11 +342,11 @@ func (m *Module) handleSetHighlightRules(c *wsConn, msg *ClientMessage) {
 		fail("Database error", "unavailable", nil)
 		return
 	}
-	if *req.IfVersion != stored.UpdatedAt {
+	if !sameVersion(*req.IfVersion, stored.UpdatedAt) {
 		fail("Highlight rules changed", "version_conflict", map[string]interface{}{"version": stored.UpdatedAt})
 		return
 	}
-	next := storedHighlightRules{Rules: json.RawMessage(compact.Bytes()), UpdatedAt: nextVersion(stored.UpdatedAt, m.now())}
+	next := storedHighlightRules{Rules: json.RawMessage(normal), UpdatedAt: nextVersion(stored.UpdatedAt, m.now())}
 	value, _ := json.Marshal(next)
 	if err := m.storageSet(hlRulesKey(n.id), string(value)); err != nil {
 		fail("Database error", "unavailable", nil)

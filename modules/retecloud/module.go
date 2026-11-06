@@ -95,7 +95,7 @@ type network struct {
 	lastSeq   uint64            // seq of the last line event processed
 	followed  bool              // events.subscribe done on the current brain connection
 
-	hl      highlightConfig                    // synced highlight settings (hlconfig.go)
+	hl      highlightConfig                   // synced highlight settings (hlconfig.go)
 	members map[string]map[string]*memberInfo // channel key → nick key → membership (members.go)
 	modeSet *irc.ModeSet
 }

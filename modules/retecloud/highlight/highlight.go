@@ -43,7 +43,7 @@ func ParseRules(raw []byte) ([]Rule, error) {
 	rules := make([]Rule, 0, len(items))
 	for _, it := range items {
 		var r Rule
-		if err := json.Unmarshal(it, &r); err != nil || strings.TrimSpace(r.RuleType) == "" {
+		if err := json.Unmarshal(it, &r); err != nil || r.RuleType == "" {
 			return nil, ErrInvalidRule
 		}
 		rules = append(rules, r)

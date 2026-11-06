@@ -69,7 +69,9 @@ func TestSetBufferHighlightStoresFoldsAndBroadcasts(t *testing.T) {
 	if it == nil || it["value"] != `["#noisy{1}"]` || it["updated_at"] == "" {
 		t.Fatalf("broadcast = %v", up)
 	}
-	a.waitFor(0, 5*time.Second, func(f map[string]any) bool { return f["type"] == "config_update" && configItem(f, "buffer_highlight_off") != nil })
+	a.waitFor(0, 5*time.Second, func(f map[string]any) bool {
+		return f["type"] == "config_update" && configItem(f, "buffer_highlight_off") != nil
+	})
 
 	// No change, no broadcast.
 	mark = b.count()
@@ -151,7 +153,9 @@ func TestSetHighlightRulesVersioning(t *testing.T) {
 	a := e.dial(false)
 	a.authenticate("ios-a")
 	a.liteSync(e.sid("undernet"), "ios-a", nil)
-	rules := []map[string]any{{"isEnabled": true, "ruleType": "contains_text", "matchType": map[string]any{"value": "rete"}}}
+	// Stored with exactly the rule fields, in the shape's order: an id is dropped, defaults filled.
+	rules := []map[string]any{{"id": "local-1", "isEnabled": true, "ruleType": "contains_text", "matchType": map[string]any{"value": "rete"}},
+		{"ruleType": "sender_is"}}
 
 	f := a.call("set_highlight_rules", e.sid("undernet"), map[string]any{"rules": rules, "if_version": ""})
 	if f["type"] != "set_highlight_rules_success" {
@@ -162,7 +166,7 @@ func TestSetHighlightRulesVersioning(t *testing.T) {
 		return f["type"] == "config_update" && configItem(f, "highlight_rules") != nil
 	})
 	it := configItem(up, "highlight_rules")
-	if it["updated_at"] != v1 || it["value"] != `[{"isEnabled":true,"matchType":{"value":"rete"},"ruleType":"contains_text"}]` {
+	if it["updated_at"] != v1 || it["value"] != `[{"isEnabled":true,"ruleType":"contains_text","matchType":{"value":"rete"}},{"isEnabled":false,"ruleType":"sender_is","matchType":{"value":""}}]` {
 		t.Fatalf("broadcast = %v", it)
 	}
 
@@ -171,8 +175,16 @@ func TestSetHighlightRulesVersioning(t *testing.T) {
 	if f["code"] != "version_conflict" || f["error"] != "Highlight rules changed" || f["data"].(map[string]any)["version"] != v1 {
 		t.Fatalf("stale write: %v", f)
 	}
-	// From the current version: a new, later version.
-	f = a.call("set_highlight_rules", e.sid("undernet"), map[string]any{"rules": []any{}, "if_version": v1})
+	// A different instant conflicts, even within the same millisecond.
+	t1, _ := time.Parse(time.RFC3339Nano, v1)
+	f = a.call("set_highlight_rules", e.sid("undernet"), map[string]any{"rules": []any{},
+		"if_version": t1.Add(time.Microsecond).Format(time.RFC3339Nano)})
+	if f["code"] != "version_conflict" {
+		t.Fatalf("a microsecond later: %v", f)
+	}
+	// From the current version, spelled differently (offset, more digits): a new, later version.
+	other := t1.In(time.FixedZone("", 2*3600)).Format("2006-01-02T15:04:05.000000-07:00")
+	f = a.call("set_highlight_rules", e.sid("undernet"), map[string]any{"rules": []any{}, "if_version": other})
 	v2, _ := f["data"].(map[string]any)["version"].(string)
 	if f["type"] != "set_highlight_rules_success" || v2 <= v1 {
 		t.Fatalf("second write: %v (v1 %s)", f, v1)
