@@ -76,7 +76,7 @@ func TestSeedDeviceOpensQueriesWithUnreadLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Devices that existed before these lines got them opened; a brand-new device seeds.
-	seeded, err := s.SeedDevice("fresh")
+	seeded, err := s.SeedDevice("fresh", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestSeedDeviceOpensQueriesWithUnreadLines(t *testing.T) {
 	if opens, _, _ := eventsAround(sink, "peer", "\x00"); len(opens) != 1 || opens[0].Reason != wire.OpenSeed || opens[0].ClientID != "fresh" {
 		t.Fatalf("seed events = %+v", opens)
 	}
-	if again, _ := s.SeedDevice("fresh"); len(again) != 0 {
+	if again, _ := s.SeedDevice("fresh", false); len(again) != 0 {
 		t.Fatalf("second seed opened %v", again)
 	}
 }
@@ -96,7 +96,7 @@ func TestSeedSkipsStatusmsgMaskAndNoticeOnlyTargets(t *testing.T) {
 	feed(s, ":op!o@h PRIVMSG @#a :ops only", ":oper!o@h PRIVMSG $*.example :global",
 		":NickServ!s@services. NOTICE me :identify", ":Carol!c@h PRIVMSG me :hi")
 	_ = s.store.SetBufferOpen(context.Background(), "fresh", s.Network.ID, "carol", "Carol", true, 0) // a row first
-	seeded, err := s.SeedDevice("fresh")
+	seeded, err := s.SeedDevice("fresh", false)
 	if err != nil {
 		t.Fatal(err)
 	}

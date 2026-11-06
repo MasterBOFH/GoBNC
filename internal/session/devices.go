@@ -56,24 +56,43 @@ func (s *Session) reopenQueryLocked(msg irc.Message, target string, id int64) {
 // query with an unread PRIVMSG from the peer after the shared read marker (not a CTCP request,
 // not server traffic — the live rule's lines) is opened and announced with buffer_open reason
 // "seed". It returns the buffers opened.
-func (s *Session) SeedDevice(clientID string) ([]string, error) {
+//
+// With baseline, that first seed starts by marking read everything nobody has read: every
+// buffer with history and no read marker gets its marker at its newest line, exactly as a
+// client's MARKREAD would set it (read_marker to modules, MARKREAD to IRC clients). Only queries
+// with lines after an existing marker are then opened.
+func (s *Session) SeedDevice(clientID string, baseline bool) ([]string, error) {
 	if s.store == nil || s.Network.ID == 0 {
 		return nil, nil
 	}
+	seeded, marks, err := s.seedDevice(clientID, baseline)
+	for _, m := range marks {
+		s.broadcastMarkRead("", m)
+	}
+	return seeded, err
+}
+
+func (s *Session) seedDevice(clientID string, baseline bool) ([]string, []irc.Message, error) {
 	ctx := context.Background()
 	s.busMu.Lock()
 	defer s.busMu.Unlock()
 	seeded, err := s.store.DeviceSeeded(ctx, clientID, s.Network.ID)
 	if err != nil || seeded {
-		return nil, err
+		return nil, nil, err
 	}
 	targets, err := s.store.DistinctTargets(ctx, s.Network.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.mu.RLock()
 	chantypes, statusmsg := s.isupport.Raw["CHANTYPES"], s.isupport.Raw["STATUSMSG"]
 	s.mu.RUnlock()
+	var marks []irc.Message
+	if baseline {
+		if marks, err = s.baselineMarkersLocked(ctx, targets, statusmsg); err != nil {
+			return nil, marks, err
+		}
+	}
 	var seededBufs []string
 	for _, target := range targets {
 		if target == "" || target == s.Fold(wire.ServerBuffer) || target[0] == '$' ||
@@ -82,13 +101,13 @@ func (s *Session) SeedDevice(clientID string) ([]string, error) {
 		}
 		var marker time.Time
 		if ts, ok, err := s.store.GetReadMarker(ctx, s.Network.ID, target); err != nil {
-			return seededBufs, err
+			return seededBufs, marks, err
 		} else if ok {
 			marker, _ = parseMarkTime(ts)
 		}
 		a, err := s.store.BufferActivity(ctx, s.Network.ID, target, marker, 0)
 		if err != nil {
-			return seededBufs, err
+			return seededBufs, marks, err
 		}
 		display := ""
 		for _, l := range a.Unread { // newest first: the peer's current spelling
@@ -107,12 +126,46 @@ func (s *Session) SeedDevice(clientID string) ([]string, error) {
 			continue
 		}
 		if err := s.store.SetBufferOpen(ctx, clientID, s.Network.ID, target, display, true, 0); err != nil {
-			return seededBufs, err
+			return seededBufs, marks, err
 		}
 		seededBufs = append(seededBufs, display)
 		s.emitLocked(wire.BufferOpenEvent{Network: s.Network.ID, ClientID: clientID, Buffer: display, Key: target, Reason: wire.OpenSeed})
 	}
-	return seededBufs, s.store.MarkDeviceSeeded(ctx, clientID, s.Network.ID)
+	return seededBufs, marks, s.store.MarkDeviceSeeded(ctx, clientID, s.Network.ID)
+}
+
+// baselineMarkersLocked sets the read marker of every target with history and no marker to its
+// newest line's time, emitting read_marker for each, and returns the MARKREAD lines the caller
+// sends IRC clients once busMu is released (as SetReadMarkerFromModule does). Status-message
+// and $mask targets are not buffers and are skipped. Caller holds busMu.
+func (s *Session) baselineMarkersLocked(ctx context.Context, targets []string, statusmsg string) ([]irc.Message, error) {
+	var marks []irc.Message
+	for _, target := range targets {
+		if target == "" || target[0] == '$' || strings.IndexByte(statusmsg, target[0]) >= 0 {
+			continue
+		}
+		if _, ok, err := s.store.GetReadMarker(ctx, s.Network.ID, target); err != nil {
+			return marks, err
+		} else if ok {
+			continue
+		}
+		newest, err := s.store.MessagesLatest(ctx, s.Network.ID, target, 1)
+		if err != nil {
+			return marks, err
+		}
+		if len(newest) == 0 {
+			continue
+		}
+		stored, updated, err := s.setReadMarkerIfNewer(target, newest[0].Time.UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return marks, err
+		}
+		if updated {
+			s.emitReadMarkerLocked(target, target, stored)
+			marks = append(marks, s.markReadMsg(target, stored))
+		}
+	}
+	return marks, nil
 }
 
 // IsChannel reports whether name is a channel on this network (ISUPPORT CHANTYPES).

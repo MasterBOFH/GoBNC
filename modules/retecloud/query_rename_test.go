@@ -20,12 +20,20 @@ func isNickLine(f map[string]any) bool {
 
 func TestPeerNickRenamesTheQueryLiveAndAtTheNextBootstrap(t *testing.T) {
 	e := newTestEnv(t, "undernet")
-	e.feed("undernet", ":bob!b@h PRIVMSG me :hello") // gives bob a query
 	sid := e.sid("undernet")
-
-	live := e.syncedClient("ios-live", "undernet", "bob") // bob subscribed
+	// Both devices synced before bob's line, which opens his query on each.
+	live := e.syncedClient("ios-live", "undernet")
 	away := e.dial(false)
 	away.authenticate("ios-away")
+	away.liteSync(sid, "ios-away", nil)
+	e.feed("undernet", ":bob!b@h PRIVMSG me :hello") // gives bob a query
+	for _, c := range []*wsClient{live, away} {
+		c.waitFor(0, 5*time.Second, func(f map[string]any) bool {
+			return f["type"] == "open_buffer" && f["data"].(map[string]any)["buffer"] == "bob"
+		})
+	}
+	rid := live.request("subscribe_buffer", map[string]any{"buffer": "bob", "history": 0}, sid) // bob subscribed
+	live.waitFor(0, 5*time.Second, reply(rid, "subscribe_buffer_success"))
 	_, frames := away.liteSync(sid, "ios-away", nil)
 	if _, ok := liteBuffers(t, successData(t, frames))["bob"]; !ok {
 		t.Fatalf("ios-away should show bob: %v", frames)
@@ -57,7 +65,7 @@ func TestPeerNickRenamesTheQueryLiveAndAtTheNextBootstrap(t *testing.T) {
 	}
 
 	// The query's history under the new nick holds the NICK.
-	rid := live.request("get_messages", map[string]any{"buffer": "robert"}, sid)
+	rid = live.request("get_messages", map[string]any{"buffer": "robert"}, sid)
 	msgs := live.waitFor(mark, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
 	if len(msgs) != 1 || !strings.Contains(msgs[0].(map[string]any)["event_data"].(map[string]any)["raw"].(string), "NICK :Robert") {
 		t.Fatalf("robert's history = %v", msgs)

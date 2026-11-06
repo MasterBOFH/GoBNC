@@ -75,6 +75,7 @@ func TestLiteSyncStoppedNetworkHighlightsLastNick(t *testing.T) {
 	sid := e.sid("undernet")
 	c := e.dial(false)
 	c.authenticate("ios-1")
+	e.knownDevice("ios-1", "undernet") // not a first sync: the backdated lines below stay unread
 	c.liteSync(sid, "ios-1", nil)
 
 	if err := e.be.db.SetLastNick(ctx, nid, "me_"); err != nil { // configured nick "me"

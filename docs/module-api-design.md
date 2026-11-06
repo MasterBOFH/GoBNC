@@ -114,7 +114,9 @@ closed-at floor that only rises; `internal/store/devices.go`). When a line is st
 `maybeStoreHistory` reopens it on every device where it is not open (a closed row reopens with its
 floor raised to id−1) and emits `buffer_open` reason `message` before the line's own event. As in
 ReteCloud, only a PRIVMSG opens a query (ours included, CTCP ACTION included; notices, other CTCP,
-server lines and `$` masks never). `devices.seed` gives a new device the queries with unread lines.
+server lines and `$` masks never). `devices.seed` gives a new device the queries with unread lines;
+with `baseline` it first marks read every buffer nobody has read (no read marker), which is what
+`gobnc-retecloud` does on a device's first lite sync.
 
 A peer's NICK renames their query on every device with a row for the old nick, open or closed
 (`renameQueryLocked`, `store.RenameBuffer`): the row becomes the new nick's, keeping `is_open` and the
@@ -269,10 +271,15 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 - `devices.open {"client_id","network","buffer"}` → `{}`; emits `buffer_open` reason `"user"`.
 - `devices.close {"client_id","network","buffer"}` → `{"closed_at_id"}` (newest id in that buffer);
   emits `buffer_close`.
-- `devices.seed {"client_id","network"}` → `{"seeded": [buffers]}`: only when the device has no
-  `open_buffers` rows for that network: opens every query with a conversation line after the
-  shared read marker (not CTCP requests, not server/status traffic); emits `buffer_open` reason
-  `"seed"` per buffer.
+- `devices.seed {"client_id","network","baseline"?}` → `{"seeded": [buffers]}`: once per device and
+  network (the first call; later calls do nothing): opens every query with a conversation line after
+  the shared read marker (not CTCP requests, not server/status traffic); emits `buffer_open` reason
+  `"seed"` per buffer. With `"baseline": true` (requires `read_markers`, else `not_granted`) that
+  first call starts by setting the read marker of every buffer with stored history and no marker
+  (channels, queries and `Server`; not `$` masks or status-message targets) to its newest line,
+  exactly as `read_markers.set` would (MARKREAD to IRC clients with `draft/read-marker`,
+  `read_marker` emitted), so only queries with lines after an existing marker are opened. This is
+  the lite protocol's "new device's first sync" rule.
 - `auth.check {"password"} | {"cert_sha256"}` plus `"remote_ip"` → `{"ok": bool}`, plus on a
   refusal `"reason"`: `"invalid"` or `"rate_limited"` with `"retry_after"` (whole seconds, rounded
   up). Password via `auth.VerifyPassword` against the `auth` row; only when `allow_password_auth`.

@@ -39,6 +39,8 @@ func TestGetMessagesPages(t *testing.T) {
 func TestReadCursorBroadcastsToOtherFollowers(t *testing.T) {
 	e := newTestEnv(t, "undernet")
 	e.feed("undernet", ":me!u@h JOIN #c", ":peer!p@h PRIVMSG #c :read me")
+	e.knownDevice("ios-a", "undernet") // not first syncs: #c stays unread until ios-a reads it
+	e.knownDevice("ios-b", "undernet")
 	a := e.syncedClient("ios-a", "undernet")
 	b := e.syncedClient("ios-b", "undernet")
 	rid := a.request("get_messages", map[string]any{"buffer": "#c"}, e.sid("undernet"))
