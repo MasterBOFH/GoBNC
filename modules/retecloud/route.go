@@ -52,6 +52,11 @@ func (m *Module) handleEvent(ev wire.Event) {
 		if json.Unmarshal(ev.Data, &br) == nil {
 			m.onBufferRename(br)
 		}
+	case wire.EventDeviceNetwork:
+		var dn wire.DeviceNetworkEvent
+		if json.Unmarshal(ev.Data, &dn) == nil {
+			m.onDeviceNetwork(dn)
+		}
 	case wire.EventState:
 		var st wire.StateEvent
 		if json.Unmarshal(ev.Data, &st) == nil {
@@ -94,6 +99,7 @@ func (m *Module) onLine(line wire.LineEvent) {
 			c.send(frame)
 		}
 	}
+	m.pushLine(n, line)
 	n.trackSelf(line)
 	n.trackMembers(line)
 	if (line.Kind == wire.LinePart && line.Self) || (line.Kind == wire.LineKick && r.always) {
@@ -276,6 +282,7 @@ func (m *Module) onReadMarker(rm wire.ReadMarkerEvent) {
 		return
 	}
 	origin, device := m.takeOwnAction("read_cursor", rm.Key)
+	m.onReadMove(rm, device)
 	msg := ServerMessage{Type: "read_cursor", SessionID: sessionID(rm.Network),
 		Data: map[string]interface{}{"buffer": rm.Key, "last_message_id": rm.ID, "client_id": device}}
 	for c := range m.conns {

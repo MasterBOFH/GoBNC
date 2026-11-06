@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
+	"github.com/MasterBOFH/GoBNC/modules/retecloud/push"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
@@ -62,6 +63,10 @@ type Module struct {
 	afterSubscribeSnapshot func(network int64)
 
 	now func() time.Time // the clock (tests set it before Run)
+
+	push     pushState   // registrations, read moves, clears (pushreg.go, pushsend.go)
+	relay    *push.Relay // set before Run in tests
+	relaySem chan struct{}
 }
 
 // ownAction remembers the connection that just opened or closed a buffer, so the brain's
@@ -114,7 +119,8 @@ func New(cfg Config, brain Brain, log *slog.Logger) *Module {
 		log = slog.Default()
 	}
 	return &Module{cfg: cfg, log: log, brain: brain, ops: make(chan func(), 1024),
-		conns: map[*wsConn]bool{}, nets: map[int64]*network{}, now: time.Now}
+		conns: map[*wsConn]bool{}, nets: map[int64]*network{}, now: time.Now,
+		push: newPushState(), relay: defaultRelay()}
 }
 
 // Run serves until ctx ends: the brain connection (reconnecting across brain reloads) and the
@@ -295,6 +301,7 @@ func (m *Module) brainConnected() {
 			delete(m.nets, id)
 		}
 	}
+	m.loadPushDevices()
 	m.resume()
 	m.serving()
 }
@@ -384,6 +391,12 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		m.handleConnectSession(c, msg)
 	case "disconnect_session":
 		m.handleDisconnectSession(c, msg)
+	case "push_register":
+		m.handlePushRegister(c, msg)
+	case "push_unregister":
+		m.handlePushUnregister(c, msg)
+	case "push_presence":
+		m.handlePushPresence(c, msg)
 	case "set_buffer_highlight":
 		m.handleSetBufferHighlight(c, msg)
 	case "set_highlight_rules":
@@ -396,7 +409,8 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 }
 
 // codedFrames are the requests whose errors carry a code.
-var codedFrames = map[string]bool{"set_buffer_highlight": true, "set_highlight_rules": true}
+var codedFrames = map[string]bool{"set_buffer_highlight": true, "set_highlight_rules": true,
+	"push_register": true, "push_unregister": true, "push_presence": true}
 
 func (m *Module) compressionLevel() int {
 	if m.cfg.CompressionLevel >= 1 && m.cfg.CompressionLevel <= 9 {

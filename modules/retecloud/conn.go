@@ -53,6 +53,7 @@ type wsConn struct {
 	compress   bool                   // deflate-stream accepted
 	clientName string                 // virtual client name on every network
 	sessions   map[int64]*liteSession // followed networks (sync_session lite)
+	background bool                   // push_presence said background
 }
 
 func newWSConn(m *Module, id uint64, ws *websocket.Conn, certSHA256, remoteIP string) *wsConn {

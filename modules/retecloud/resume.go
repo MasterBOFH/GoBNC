@@ -18,6 +18,11 @@ func (m *Module) resume() {
 			followed[id] = true
 		}
 	}
+	for id := range m.nets { // networks a registered device follows for push, connected or not
+		if m.pushFollows(id) {
+			followed[id] = true
+		}
+	}
 	for id := range followed {
 		if m.nets[id] == nil {
 			m.dropNetwork(id)
