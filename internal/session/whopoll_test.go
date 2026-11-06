@@ -172,7 +172,7 @@ func TestWHOFlagsAreAuthoritative(t *testing.T) {
 func TestOwnWHOXPollIsSilentAndTeaches(t *testing.T) {
 	s, d, sink, w := newMetaSession(t)
 	now := time.Now()
-	polled := s.PollWHO(now, 45*time.Minute)
+	polled := s.PollWHO(now, WHOPoll{Interval: 45 * time.Minute})
 	if polled != "#c" {
 		t.Fatalf("polled %q, want #c (first by key)", polled)
 	}
@@ -194,13 +194,13 @@ func TestOwnWHOXPollIsSilentAndTeaches(t *testing.T) {
 		t.Fatalf("alice = %+v", a)
 	}
 	// One channel per tick; the next tick takes the other channel, then nothing is due.
-	if p := s.PollWHO(now.Add(time.Second), 45*time.Minute); p != "#d" {
+	if p := s.PollWHO(now.Add(time.Second), WHOPoll{Interval: 45 * time.Minute}); p != "#d" {
 		t.Fatalf("second tick polled %q, want #d", p)
 	}
-	if p := s.PollWHO(now.Add(2*time.Second), 45*time.Minute); p != "" {
+	if p := s.PollWHO(now.Add(2*time.Second), WHOPoll{Interval: 45 * time.Minute}); p != "" {
 		t.Fatalf("third tick polled %q, want nothing due", p)
 	}
-	if p := s.PollWHO(now.Add(46*time.Minute), 45*time.Minute); p != "#c" {
+	if p := s.PollWHO(now.Add(46*time.Minute), WHOPoll{Interval: 45 * time.Minute}); p != "#c" {
 		t.Fatalf("after the interval polled %q, want #c again", p)
 	}
 }
@@ -212,12 +212,12 @@ func TestClientPollingSuppressesOwnPoll(t *testing.T) {
 	s.tracker.SetWHOXClientFix(tok, true, "")
 	feed(s, ":srv 354 me "+tok+" #c al a.example alice H", ":srv 315 me #c :End of /WHO list.")
 	// A plain WHO (352) counts as well.
-	if p := s.PollWHO(time.Now(), 45*time.Minute); p != "#d" {
+	if p := s.PollWHO(time.Now(), WHOPoll{Interval: 45 * time.Minute}); p != "#d" {
 		t.Fatalf("polled %q, want #d (#c was just polled by a client)", p)
 	}
 	w.reset()
 	feed(s, ":srv 352 me #d al a.example srv alice H :0 Alice")
-	if p := s.PollWHO(time.Now().Add(time.Minute), 45*time.Minute); p != "" {
+	if p := s.PollWHO(time.Now().Add(time.Minute), WHOPoll{Interval: 45 * time.Minute}); p != "" {
 		t.Fatalf("polled %q, want nothing", p)
 	}
 	if got := w.lines(); len(got) != 0 {
@@ -227,18 +227,18 @@ func TestClientPollingSuppressesOwnPoll(t *testing.T) {
 
 func TestNoOwnPollWithoutWHOXModulesOrInterval(t *testing.T) {
 	s, _, _, w := newMetaSession(t)
-	if p := s.PollWHO(time.Now(), 0); p != "" {
+	if p := s.PollWHO(time.Now(), WHOPoll{}); p != "" {
 		t.Fatalf("interval 0 polled %q", p)
 	}
 	s.Unsubscribe(1)
-	if p := s.PollWHO(time.Now(), time.Minute); p != "" {
+	if p := s.PollWHO(time.Now(), WHOPoll{Interval: time.Minute}); p != "" {
 		t.Fatalf("no module subscribed, polled %q", p)
 	}
 	s.Subscribe(1, &recSink{}, nil, nil)
 	s.mu.Lock()
 	s.isupport.WHOX = false
 	s.mu.Unlock()
-	if p := s.PollWHO(time.Now(), time.Minute); p != "" {
+	if p := s.PollWHO(time.Now(), WHOPoll{Interval: time.Minute}); p != "" {
 		t.Fatalf("no WHOX, polled %q", p)
 	}
 	if got := w.lines(); len(got) != 0 {

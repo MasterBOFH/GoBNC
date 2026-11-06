@@ -449,13 +449,15 @@ func (s *Server) retentionLoop(ctx context.Context) {
 	}
 }
 
-// WHOPollTick is how often one silent WHOX poll may go out per network (overridable in tests).
-var WHOPollTick = 90 * time.Second
+// WHOPollTick, when non-zero (tests), replaces the WHOX poll loop's tick, which is otherwise the
+// seed pace (who_seed_seconds) capped at the poll pace.
+var WHOPollTick time.Duration
 
-// whoPollLoop lets every network poll at most one channel's WHOX per tick (Session.PollWHO
-// decides whether one is due). The interval is read each tick, so a rehash applies.
+// whoPollLoop lets every network poll a channel's WHOX when one is due (Session.PollWHO decides,
+// and paces: one channel per seed pace while seeding, one per 90 s after). The settings are read
+// each tick, so a rehash applies.
 func (s *Server) whoPollLoop(ctx context.Context) {
-	t := time.NewTicker(WHOPollTick)
+	t := time.NewTicker(s.whoPollTick())
 	defer t.Stop()
 	for {
 		select {
@@ -463,23 +465,34 @@ func (s *Server) whoPollLoop(ctx context.Context) {
 			return
 		case now := <-t.C:
 			s.pollWHO(now)
+			t.Reset(s.whoPollTick())
 		}
 	}
 }
 
+func (s *Server) whoPollTick() time.Duration {
+	if WHOPollTick > 0 {
+		return WHOPollTick
+	}
+	s.mu.RLock()
+	tick := s.cfg.WHOSeedPace()
+	s.mu.RUnlock()
+	return min(tick, config.WHOPollPace)
+}
+
 func (s *Server) pollWHO(now time.Time) {
 	s.mu.RLock()
-	interval := s.cfg.WHOPollInterval()
+	p := session.WHOPoll{Interval: s.cfg.WHOPollInterval(), SeedPace: s.cfg.WHOSeedPace(), Pace: config.WHOPollPace}
 	sessions := make([]*session.Session, 0, len(s.sess))
 	for _, sess := range s.sess {
 		sessions = append(sessions, sess)
 	}
 	s.mu.RUnlock()
-	if interval <= 0 {
+	if p.Interval <= 0 {
 		return
 	}
 	for _, sess := range sessions {
-		sess.PollWHO(now, interval)
+		sess.PollWHO(now, p)
 	}
 }
 

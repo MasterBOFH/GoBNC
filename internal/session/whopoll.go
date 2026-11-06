@@ -26,12 +26,23 @@ const whoPollFields = "tcuhnfa"
 // whoxFieldOrder is the order WHOX reply fields come in, whatever order they were asked in.
 const whoxFieldOrder = "tcuihsnfdlaor"
 
-// PollWHO sends at most one silent WHOX poll: for the joined channel whose members a WHO reply
-// named longest ago, provided that was at least interval before now. It polls only while a
-// module is subscribed (nothing else reads the metadata), the network is registered and has
-// WHOX, and interval > 0. It returns the polled channel's name, or "".
-func (s *Session) PollWHO(now time.Time, interval time.Duration) string {
-	if interval <= 0 {
+// WHOPoll is what PollWHO is allowed: Interval is how long a channel's metadata may go without a
+// WHO reply naming it (0 disables GoBNC's own polls); SeedPace is the least time between two
+// polls while a joined channel has not been named by any WHO reply on this connection (the
+// seed, after a brain start, a module's first subscription or a reconnect); Pace is the least
+// time between two polls of channels that are merely stale. A zero pace does not limit.
+type WHOPoll struct {
+	Interval, SeedPace, Pace time.Duration
+}
+
+// PollWHO sends at most one silent WHOX poll. A channel no WHO reply has named on this
+// connection comes first (by key), at SeedPace; otherwise the channel a reply named longest ago,
+// provided that was at least Interval before now, at Pace. A channel any client WHO'd within the
+// interval is skipped. It polls only while a module is subscribed (nothing else reads the
+// metadata), the network is registered and has WHOX, and Interval > 0. It returns the polled
+// channel's name, or "".
+func (s *Session) PollWHO(now time.Time, p WHOPoll) string {
+	if p.Interval <= 0 {
 		return ""
 	}
 	s.busMu.Lock()
@@ -52,23 +63,33 @@ func (s *Session) PollWHO(now time.Time, interval time.Duration) string {
 		}
 	}
 	sort.Strings(keys)
-	pick := ""
+	pick, seed := "", false
 	var oldest time.Time
 	for _, key := range keys {
-		last := s.lastWHO[key]
-		if now.Sub(last) < interval {
+		last, named := s.lastWHO[key]
+		if !named {
+			pick, seed = key, true
+			break
+		}
+		if now.Sub(last) < p.Interval {
 			continue
 		}
 		if pick == "" || last.Before(oldest) {
 			pick, oldest = key, last
 		}
 	}
-	if pick == "" {
+	pace := p.Pace
+	if seed {
+		pace = p.SeedPace
+	}
+	// A tenth of the pace is slack for the ticker's jitter: a tick a hair early is not a skip.
+	if pick == "" || (!s.lastPollWHO.IsZero() && now.Sub(s.lastPollWHO) < pace-pace/10) {
 		s.mu.Unlock()
 		return ""
 	}
 	name := s.channels[pick].Name
 	s.noteWHOAtLocked(pick, now)
+	s.lastPollWHO = now
 	s.mu.Unlock()
 
 	_, tok, writeNow := s.tracker.Begin(BeginOpts{Client: internalClient, Cmd: "WHO", PreferWHOX: true,

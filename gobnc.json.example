@@ -58,6 +58,11 @@
   // minutes, and at most one channel per 90 s. 0 = default (45); negative = never poll.
   "who_poll_minutes": 0,
 
+  // GoBNC's first WHOX of each channel (after the brain starts or a network (re)connects,
+  // once a module is subscribed): one channel per this many seconds, skipping a channel a
+  // client WHO'd within who_poll_minutes. 0 = default (10); negative = the 90 s poll pace.
+  "who_seed_seconds": 0,
+
   // How incoming CTCP requests (PING, VERSION, or anything else
   // CTCP-framed, whether sent to our own nick or a channel we're in) are
   // handled: "relay" forwards live to attached downlinks unchanged

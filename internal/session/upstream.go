@@ -629,6 +629,8 @@ func (s *Session) HandleDisconnect(err error) {
 	s.uplinkServer = ""
 	s.ircd = ""
 	s.channels = make(map[string]*ChannelState)
+	s.lastWHO = nil // a new connection's channels are seeded again (PollWHO)
+	s.lastPollWHO = time.Time{}
 	s.whoNamed = nil
 	s.pendingJoinKeys = make(map[string]string)
 	s.selfEcho = nil

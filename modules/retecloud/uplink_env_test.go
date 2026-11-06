@@ -31,6 +31,25 @@ type fakeIRCd struct {
 	mu   sync.Mutex
 	got  []string
 	conn net.Conn
+	// answer, when set, may answer a line the script does not (send writes to the client).
+	answer func(msg irc.Message, nick string, send func(string))
+}
+
+// setAnswer installs f.answer.
+func (f *fakeIRCd) setAnswer(fn func(msg irc.Message, nick string, send func(string))) {
+	f.mu.Lock()
+	f.answer = fn
+	f.mu.Unlock()
+}
+
+// push writes unsolicited lines to the connected client.
+func (f *fakeIRCd) push(lines ...string) {
+	f.mu.Lock()
+	c := f.conn
+	f.mu.Unlock()
+	for _, l := range lines {
+		_, _ = c.Write([]byte(l + "\r\n"))
+	}
 }
 
 func newFakeIRCd(t *testing.T, echo bool) *fakeIRCd {
@@ -78,6 +97,12 @@ func (f *fakeIRCd) serve() {
 		msg, err := irc.Parse(line)
 		if err != nil {
 			continue
+		}
+		f.mu.Lock()
+		answer := f.answer
+		f.mu.Unlock()
+		if answer != nil {
+			answer(msg, nick, send)
 		}
 		switch msg.Command {
 		case "CAP":

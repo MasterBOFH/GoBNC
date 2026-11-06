@@ -119,6 +119,8 @@ type Session struct {
 	// lastWHO is when a WHO/WHOX reply last named each channel (folded), whoever asked —
 	// PollWHO polls only a channel nobody polled within its interval (whopoll.go).
 	lastWHO map[string]time.Time
+	// lastPollWHO is when PollWHO last sent a WHOX of its own (its pacing).
+	lastPollWHO time.Time
 	// whoNamed lists channels (folded) a WHO/WHOX reply named since the last RPL_ENDOFWHO;
 	// at the end their members go to modules as a state/members event (emitRosterDoneLocked).
 	whoNamed []string

@@ -34,6 +34,13 @@ const DefaultChatHistoryMax = 100
 // before GoBNC polls it itself (see WHOPollMinutes).
 const DefaultWHOPollMinutes = 45
 
+// DefaultWHOSeedSeconds is the pace of GoBNC's first WHOX of each channel (see WHOSeedSeconds).
+const DefaultWHOSeedSeconds = 10
+
+// WHOPollPace is the least time between two of GoBNC's own WHOX polls of channels that are
+// merely stale (named by a WHO reply, but not within who_poll_minutes).
+const WHOPollPace = 90 * time.Second
+
 // Config is process bootstrap configuration.
 type Config struct {
 	ListenAddr string `json:"listen_addr"`
@@ -80,9 +87,15 @@ type Config struct {
 
 	// WHOPollMinutes: while a module is subscribed to a network, GoBNC sends a silent WHOX for
 	// a channel whose members no WHO reply (its own or one a client asked for) has named in
-	// this many minutes, at most one channel per tick (90 s). 0 uses DefaultWHOPollMinutes;
-	// negative disables GoBNC's own polls.
+	// this many minutes, at most one channel per 90 s. 0 uses DefaultWHOPollMinutes;
+	// negative disables GoBNC's own polls (the seed below too).
 	WHOPollMinutes int `json:"who_poll_minutes,omitempty"`
+
+	// WHOSeedSeconds: a joined channel no WHO reply has named since the network (re)connected
+	// or the brain started is polled first, one channel per this many seconds, while a module
+	// is subscribed (the seed). 0 uses DefaultWHOSeedSeconds; negative seeds at the poll's own
+	// pace (90 s).
+	WHOSeedSeconds int `json:"who_seed_seconds,omitempty"`
 
 	// CTCPPing / CTCPVersion / CTCPOther control how incoming CTCP requests
 	// (any CTCP-framed PRIVMSG, whether targeted at our own nick or a
@@ -153,6 +166,17 @@ func (c Config) WHOPollInterval() time.Duration {
 		return DefaultWHOPollMinutes * time.Minute
 	}
 	return time.Duration(c.WHOPollMinutes) * time.Minute
+}
+
+// WHOSeedPace is WHOSeedSeconds as a duration.
+func (c Config) WHOSeedPace() time.Duration {
+	switch {
+	case c.WHOSeedSeconds < 0:
+		return WHOPollPace
+	case c.WHOSeedSeconds == 0:
+		return DefaultWHOSeedSeconds * time.Second
+	}
+	return time.Duration(c.WHOSeedSeconds) * time.Second
 }
 
 // ResolvedModules returns Modules with Socket defaulted to gobnc-modules.sock in the control
