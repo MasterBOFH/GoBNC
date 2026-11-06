@@ -133,7 +133,9 @@ func (s *Session) state332Locked(msg irc.Message) {
 	}
 }
 
-func (s *Session) state352Locked(msg irc.Message) {
+// state352Locked learns from RPL_WHOREPLY. target is the request's (casemapped) mask, known
+// when the tracker could tie the reply to a request; a plain WHO always carries the flags.
+func (s *Session) state352Locked(msg irc.Message, target string, known bool) {
 	// RPL_WHOREPLY: ... user host server nick flags :hops realname
 	if len(msg.Params) < 6 {
 		return
@@ -149,7 +151,7 @@ func (s *Session) state352Locked(msg irc.Message) {
 		u.Host = msg.Param(3)
 	}
 	u.ApplyWHOFlags(msg.Param(6))
-	s.noteWHOLocked(msg.Param(1))
+	s.noteWHOLocked(msg.Param(1), known && s.whoPollsLocked(target, msg.Param(1)))
 }
 
 func (s *Session) state353Locked(msg irc.Message) {

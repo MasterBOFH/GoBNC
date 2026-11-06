@@ -338,6 +338,9 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 		Created:         rt.now(),
 		Outbound:        opts.Outbound,
 	}
+	if cmd == "WHO" || cmd == "WHOX" {
+		req.Target = opts.WHOMask // on every path: a reply's request says what it polled
+	}
 	if opts.PreferLabel {
 		rt.nextLbl++
 		label = formatID("L", rt.nextLbl)
@@ -346,7 +349,6 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 		return label, "", true
 	}
 	if opts.PreferWHOX && (cmd == "WHO" || cmd == "WHOX") {
-		req.Target = opts.WHOMask
 		if existing := rt.findMatchingWHOX(req); existing != nil {
 			existing.coalesce(req)
 			return "", "", false
@@ -505,28 +507,43 @@ func (rt *RequestTracker) SerialHeadClient(cmd string) (ClientID, bool) {
 	return "", false
 }
 
-// WHOXReplyFields returns the field letters of the WHOX request a 354 answers, so its params
-// can be read: by the reply's label, or by the uplink token GoBNC put in params[1] (whose 't'
-// is then present even when the client did not ask for it). ok is false when the request is
-// unknown (e.g. a labeled request whose replies arrive in a batch without the label).
-func (rt *RequestTracker) WHOXReplyFields(msg irc.Message) (fields string, ok bool) {
+// WHOReplyRequest returns what the WHO request a 352 or 354 answers asked: its target (the
+// casemapped WHO mask) and, for a WHOX, its field letters, so the 354's params can be read. The
+// request is found by the reply's label, by the uplink token GoBNC put in a 354's params[1]
+// (whose 't' is then present even when the client did not ask for it), or for a 352 as the head
+// of the plain WHO queue. ok is false when the request is unknown (e.g. a labeled request whose
+// replies arrive in a batch without the label).
+func (rt *RequestTracker) WHOReplyRequest(msg irc.Message) (target, fields string, ok bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	isWHO := func(req *pendingRequest) bool {
+		return req != nil && (req.Command == "WHO" || req.Command == "WHOX")
+	}
 	if label, has := msg.Tag("label"); has {
-		if req := rt.labeled[label]; req != nil && req.WHOXFields != "" {
-			return req.WHOXFields, true
+		if req := rt.labeled[label]; isWHO(req) && (msg.Command == "352" || req.WHOXFields != "") {
+			return req.Target, req.WHOXFields, true
 		}
 	}
-	if len(msg.Params) > 1 {
-		if req := rt.whox[msg.Params[1]]; req != nil && req.WHOXFields != "" {
-			fields = req.WHOXFields
-			if !strings.Contains(fields, "t") {
-				fields += "t"
+	switch msg.Command {
+	case "354":
+		if len(msg.Params) > 1 {
+			if req := rt.whox[msg.Params[1]]; req != nil && req.WHOXFields != "" {
+				fields = req.WHOXFields
+				if !strings.Contains(fields, "t") {
+					fields += "t"
+				}
+				return req.Target, fields, true
 			}
-			return fields, true
+		}
+	case "352":
+		if _, inBatch := msg.Tag("batch"); inBatch {
+			return "", "", false // a labeled batch's line, not the plain WHO queue's
+		}
+		if _, req, found := rt.serialHeadFor("352"); found && isWHO(req) {
+			return req.Target, "", true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // ActiveClient returns the client owning the head of any serialized

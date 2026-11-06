@@ -25,11 +25,11 @@ func (s *Session) applyState(msg irc.Message) {
 	var blobWelcome, blobCloak, blobSelfNick, blobUplinkServer []byte
 
 	// Tracker lookups before s.mu (the tracker never takes s.mu, but keep the two apart).
-	var whoxFields string
-	var whoxKnown, silenceOurQuery bool
+	var whoTarget, whoxFields string
+	var whoKnown, silenceOurQuery bool
 	switch msg.Command {
-	case "354":
-		whoxFields, whoxKnown = s.tracker.WHOXReplyFields(msg)
+	case "352", "354":
+		whoTarget, whoxFields, whoKnown = s.tracker.WHOReplyRequest(msg)
 	case "272":
 		head, ok := s.tracker.SerialHeadClient("SILENCE")
 		silenceOurQuery = ok && head == internalClient
@@ -109,10 +109,10 @@ func (s *Session) applyState(msg irc.Message) {
 	case "332":
 		s.state332Locked(msg)
 	case "352":
-		s.state352Locked(msg)
+		s.state352Locked(msg, whoTarget, whoKnown)
 	case "354":
-		if whoxKnown {
-			s.state354Locked(msg, whoxFields)
+		if whoKnown {
+			s.state354Locked(msg, whoTarget, whoxFields)
 		}
 	case "315":
 		s.state315Locked(msg)

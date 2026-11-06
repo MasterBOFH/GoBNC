@@ -101,14 +101,26 @@ func (s *Session) PollWHO(now time.Time, p WHOPoll) string {
 	return name
 }
 
-// noteWHOLocked records that a WHO reply just named channel. Caller holds s.mu.
-func (s *Session) noteWHOLocked(channel string) {
+// noteWHOLocked records that a WHO reply just named channel, so the WHO's end sends its members
+// to modules. polled is whether the WHO also counts as a poll of the channel (whoPollsLocked),
+// which PollWHO then skips for the interval. Caller holds s.mu.
+func (s *Session) noteWHOLocked(channel string, polled bool) {
 	if channel == "" || !isChannelName(channel) {
 		return
 	}
 	key := s.isupport.CaseMapping.Canonical(channel)
-	s.noteWHOAtLocked(key, time.Now())
+	if polled {
+		s.noteWHOAtLocked(key, time.Now())
+	}
 	s.noteWHONamedLocked(key)
+}
+
+// whoPollsLocked reports whether a reply naming channel, to a WHO whose (casemapped) target was
+// target, polled channel: only a WHO of the channel itself covers all its members. A WHO of a
+// nick, host or mask names one channel per reply but covers only that member. The caller also
+// requires the flags. Caller holds s.mu.
+func (s *Session) whoPollsLocked(target, channel string) bool {
+	return target != "" && isChannelName(target) && target == s.isupport.CaseMapping.Canonical(channel)
 }
 
 // noteWHONamedLocked remembers that a WHO reply named channel (folded), so the WHO's end sends
@@ -156,9 +168,10 @@ func (s *Session) noteWHOAtLocked(key string, at time.Time) {
 }
 
 // state354Locked learns from RPL_WHOSPCRPL (354), whose fields the request named (fields, from
-// the tracker; 't' when the reply carries a token). Self's ident/host are not taken from it,
-// as with 352. Caller holds s.mu.
-func (s *Session) state354Locked(msg irc.Message, fields string) {
+// the tracker; 't' when the reply carries a token) and whose target was target (casemapped).
+// Self's ident/host are not taken from it, as with 352. It counts as a poll of its channel only
+// when the request asked for the flags. Caller holds s.mu.
+func (s *Session) state354Locked(msg irc.Message, target, fields string) {
 	vals := map[byte]string{}
 	i := 1 // params[0] is our nick
 	for j := 0; j < len(whoxFieldOrder); j++ {
@@ -194,7 +207,8 @@ func (s *Session) state354Locked(msg irc.Message, fields string) {
 		}
 		u.Account = v
 	}
-	s.noteWHOLocked(vals['c'])
+	_, flags := vals['f']
+	s.noteWHOLocked(vals['c'], flags && s.whoPollsLocked(target, vals['c']))
 }
 
 // stripNamesUserhost turns a userhost-in-names RPL_NAMREPLY back into the plain form.
