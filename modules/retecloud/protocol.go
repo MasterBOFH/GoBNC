@@ -75,6 +75,8 @@ type SubscribeBufferRequest struct {
 	Members MembersOption `json:"members,omitempty"`
 	AfterID *int64        `json:"after_id,omitempty"`
 	Anchor  string        `json:"anchor,omitempty"`
+	// AnchorID opens the buffer on one stored row (a tapped push).
+	AnchorID *int64 `json:"anchor_id,omitempty"`
 }
 
 type membersMode int

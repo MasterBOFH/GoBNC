@@ -32,6 +32,10 @@ func (m *Module) requestSubscribe(c *wsConn, n *network, rid string, req Subscri
 		fail("Unknown anchor")
 		return
 	}
+	if req.AnchorID != nil && (req.AfterID != nil || req.Anchor != "") {
+		fail("anchor_id cannot be combined with after_id or anchor")
+		return
+	}
 	ls := c.sessions[n.id]
 	if ls == nil {
 		fail("sync_session with sync_mode lite required")
@@ -140,31 +144,60 @@ func (m *Module) subscribeHistory(n *network, buffer string, limit int, req Subs
 		page["gap"] = gap
 		hasMore := len(tail) > 0 && (latest.HasBefore || len(tail) < len(latest.Messages))
 		return tail, hasMore, nil
-	case req.Anchor == wire.AnchorFirstUnread:
-		var mark wire.ReadMarkerGetResult
-		if err := m.call(wire.MethodReadMarkersGet, wire.ReadMarkerGetParams{Network: n.id, Buffer: buffer}, &mark); err != nil {
+	case req.AnchorID != nil:
+		res, err := get(wire.HistoryMessagesParams{AroundID: req.AnchorID, Limit: limit})
+		if err != nil {
 			return nil, false, err
 		}
-		if mark.ID > 0 {
-			anchor := mark.ID + 1
-			res, err := get(wire.HistoryMessagesParams{AroundID: &anchor, Limit: limit})
-			if err != nil {
-				return nil, false, err
+		for _, msg := range res.Messages {
+			if msg.ID == *req.AnchorID {
+				msgs, hasMore := aroundPage(res, *req.AnchorID, page, upTo)
+				return msgs, hasMore, nil
 			}
-			// Lines after the snapshot's point come live; they are not this page's to hold.
-			kept := res.Messages[:0]
-			for _, msg := range res.Messages {
-				if msg.ID <= upTo {
-					kept = append(kept, msg)
-				}
-			}
-			page["anchor_id"] = anchor
-			page["has_more_after"] = res.HasAfter && len(kept) == len(res.Messages)
-			return kept, res.HasBefore, nil
 		}
+		// Purged, or another buffer's id: the first-unread page, said so.
+		page["anchor_missing"] = true
+		return m.firstUnreadPage(n, buffer, get, newest, limit, page, upTo)
+	case req.Anchor == wire.AnchorFirstUnread:
+		return m.firstUnreadPage(n, buffer, get, newest, limit, page, upTo)
 	}
 	res, err := newest()
 	return res.Messages, res.HasBefore, err
+}
+
+// firstUnreadPage is the page centred on the first line after the shared read cursor, or the
+// newest page when the buffer has no cursor.
+func (m *Module) firstUnreadPage(n *network, buffer string, get func(wire.HistoryMessagesParams) (wire.HistoryMessagesResult, error),
+	newest func() (wire.HistoryMessagesResult, error), limit int, page map[string]interface{}, upTo int64) ([]wire.HistoryMessage, bool, error) {
+	var mark wire.ReadMarkerGetResult
+	if err := m.call(wire.MethodReadMarkersGet, wire.ReadMarkerGetParams{Network: n.id, Buffer: buffer}, &mark); err != nil {
+		return nil, false, err
+	}
+	if mark.ID > 0 {
+		anchor := mark.ID + 1
+		res, err := get(wire.HistoryMessagesParams{AroundID: &anchor, Limit: limit})
+		if err != nil {
+			return nil, false, err
+		}
+		msgs, hasMore := aroundPage(res, anchor, page, upTo)
+		return msgs, hasMore, nil
+	}
+	res, err := newest()
+	return res.Messages, res.HasBefore, err
+}
+
+// aroundPage keeps a page around anchor up to the snapshot's point (lines after it come live;
+// they are not this page's to hold) and notes anchor_id and has_more_after.
+func aroundPage(res wire.HistoryMessagesResult, anchor int64, page map[string]interface{}, upTo int64) ([]wire.HistoryMessage, bool) {
+	kept := res.Messages[:0]
+	for _, msg := range res.Messages {
+		if msg.ID <= upTo {
+			kept = append(kept, msg)
+		}
+	}
+	page["anchor_id"] = anchor
+	page["has_more_after"] = res.HasAfter && len(kept) == len(res.Messages)
+	return kept, res.HasBefore
 }
 
 // messageResponse is a history line as retecloud-api replays a stored raw line.
