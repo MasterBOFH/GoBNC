@@ -193,7 +193,7 @@ func TestStripFormatting(t *testing.T) {
 	cases := map[string]string{
 		"\x02bold\x02 \x1ditalic\x1d \x1funder\x1f \x1estrike\x1e \x11mono\x11 \x16rev\x16\x0f": "bold italic under strike mono rev",
 		"\x0304red\x03 \x034,12both\x03 \x03,x":                                                 "red both ,x",
-		"\x04FF0000hex\x04 \x04ff0000,00FF00two":                                               "hex two",
+		"\x04FF0000hex\x04 \x04ff0000,00FF00two":                                                "hex two",
 		"plain 5":                                                                               "plain 5",
 		"\x03123":                                                                               "3",
 	}

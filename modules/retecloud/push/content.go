@@ -4,6 +4,7 @@
 package push
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -82,7 +83,7 @@ func MessagePlaintext(m Message) ([]byte, error) {
 	text := CapText(StripFormatting(strings.ToValidUTF8(m.Text, "�")), MaxText)
 	encode := func(limit int) ([]byte, error) {
 		m.Text = CapText(text, limit)
-		return json.Marshal(m)
+		return marshal(m)
 	}
 	b, err := encode(len(text))
 	if err != nil || len(b) <= MaxPlaintext {
@@ -117,7 +118,7 @@ func MessagePlaintext(m Message) ([]byte, error) {
 // ClearPlaintext encodes c (V and Type filled in) and pads it.
 func ClearPlaintext(c Clear) ([]byte, error) {
 	c.V, c.Type = 1, TypeClear
-	b, err := json.Marshal(c)
+	b, err := marshal(c)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +126,18 @@ func ClearPlaintext(c Clear) ([]byte, error) {
 		return nil, ErrTooLarge
 	}
 	return Pad(b), nil
+}
+
+// marshal is the plaintext's byte form (PUSH_ENCRYPTION.md, Test vectors): compact, keys in
+// the document's order (the structs'), "<", ">" and "&" not escaped, no trailing newline.
+func marshal(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
 // Pad appends ASCII spaces up to the next multiple of 256 bytes.
