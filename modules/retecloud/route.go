@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/irc"
-	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -58,6 +57,9 @@ func (m *Module) handleEvent(ev wire.Event) {
 		if json.Unmarshal(ev.Data, &st) == nil {
 			switch st.Kind {
 			case wire.StateMembers:
+				if n := m.nets[st.Network]; n != nil && n.members != nil {
+					n.setMembers(st.Key, st.Members)
+				}
 				m.refreshBufferState(st.Network, st.Buffer, true)
 			case wire.StateSilence:
 				m.broadcastSilence(st.Network, st.Silence)
@@ -93,6 +95,7 @@ func (m *Module) onLine(line wire.LineEvent) {
 		}
 	}
 	n.trackSelf(line)
+	n.trackMembers(line)
 	if (line.Kind == wire.LinePart && line.Self) || (line.Kind == wire.LineKick && r.always) {
 		if len(line.Buffers) > 0 {
 			m.refreshBufferState(n.id, line.Buffers[0].Name, false)
@@ -200,9 +203,9 @@ func (m *Module) countActivity(c *wsConn, n *network, ls *liteSession, line wire
 		ls.activity[b.Key] = a
 	}
 	a.unread++
-	// A server-sourced line (a server notice to a channel) counts but never highlights.
-	hl := !session.ServerSource(line.Source) &&
-		(!n.isChannel(b.Name) || session.IsHighlight(lineParam(line.Raw, 1), n.nick, n.cm))
+	// A server-sourced line (a server notice to a channel) counts but never highlights; the
+	// synced switch and rules decide the rest.
+	hl := n.isHighlight(line.Source, line.Raw, b.Name, b.Key)
 	if hl {
 		a.highlights++
 	}

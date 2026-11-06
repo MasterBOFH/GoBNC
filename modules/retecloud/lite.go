@@ -108,6 +108,7 @@ func (m *Module) handleSyncSession(c *wsConn, msg *ClientMessage) {
 	if b, err := json.Marshal(success); err == nil {
 		size = len(b)
 	}
+	c.send(n.syncConfigUpdate(m.now()))
 	c.send(ServerMessage{Type: "sync_start", RequestID: msg.RequestID, SessionID: msg.SessionID,
 		Data: map[string]interface{}{"total_bytes": size, "total_messages": 0, "sync_mode": syncModeLite}})
 	c.send(success)
@@ -150,6 +151,12 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 	if err := m.call(wire.MethodDevicesBuffers, wire.DeviceNetworkParams{ClientID: deviceID, Network: n.id}, &bufs); err != nil {
 		return wire.Snapshot{}, nil, nil, err
 	}
+
+	closedAt := make(map[string]int64, len(bufs.Buffers))
+	for _, b := range bufs.Buffers {
+		closedAt[b.Key] = b.ClosedAtID
+	}
+	m.adjustActivity(n, deviceID, &activity, closedAt)
 
 	ls := newLiteSession(n.id)
 	ls.asOfID, ls.stopped = snap.LastID, stopped

@@ -60,6 +60,8 @@ type Module struct {
 	// afterSubscribeSnapshot, when set (tests only, before Run), runs on the loop right after a
 	// subscribe has its snapshot and before it reads history: the window a line can land in.
 	afterSubscribeSnapshot func(network int64)
+
+	now func() time.Time // the clock (tests set it before Run)
 }
 
 // ownAction remembers the connection that just opened or closed a buffer, so the brain's
@@ -87,6 +89,10 @@ type network struct {
 	joined    map[string]string // key → display name
 	lastSeq   uint64            // seq of the last line event processed
 	followed  bool              // events.subscribe done on the current brain connection
+
+	hl      highlightConfig                    // synced highlight settings (hlconfig.go)
+	members map[string]map[string]*memberInfo // channel key → nick key → membership (members.go)
+	modeSet *irc.ModeSet
 }
 
 // defaultChanTypes classifies the names of a network the module has no snapshot of (stopped,
@@ -108,7 +114,7 @@ func New(cfg Config, brain Brain, log *slog.Logger) *Module {
 		log = slog.Default()
 	}
 	return &Module{cfg: cfg, log: log, brain: brain, ops: make(chan func(), 1024),
-		conns: map[*wsConn]bool{}, nets: map[int64]*network{}}
+		conns: map[*wsConn]bool{}, nets: map[int64]*network{}, now: time.Now}
 }
 
 // Run serves until ctx ends: the brain connection (reconnecting across brain reloads) and the
@@ -242,6 +248,7 @@ func (n *network) applySnapshot(s wire.Snapshot) {
 		n.joined[ch.Key] = ch.Name
 	}
 	n.lastSeq = s.Seq
+	n.seedMembers(s)
 }
 
 // key folds a buffer name the way the network compares names.
@@ -281,6 +288,7 @@ func (m *Module) brainConnected() {
 		if known { // the state may have changed while the brain was away
 			m.sessionStateChanged(n, before)
 		}
+		m.loadHighlightConfig(n)
 	}
 	for id := range m.nets {
 		if !seen[id] {
@@ -346,7 +354,11 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		return
 	}
 	if !c.authed {
-		c.send(errorFrame(msg.Type, msg.RequestID, "Not authenticated"))
+		f := errorFrame(msg.Type, msg.RequestID, "Not authenticated")
+		if codedFrames[msg.Type] {
+			f.Code = "not_authenticated"
+		}
+		c.send(f)
 		return
 	}
 	switch msg.Type {
@@ -372,12 +384,19 @@ func (m *Module) handle(c *wsConn, msg *ClientMessage) {
 		m.handleConnectSession(c, msg)
 	case "disconnect_session":
 		m.handleDisconnectSession(c, msg)
+	case "set_buffer_highlight":
+		m.handleSetBufferHighlight(c, msg)
+	case "set_highlight_rules":
+		m.handleSetHighlightRules(c, msg)
 	case "create_session":
 		c.send(errorFrame("create_session", msg.RequestID, "Not supported"))
 	default:
 		c.send(errorFrame("unknown", msg.RequestID, "Unknown message type"))
 	}
 }
+
+// codedFrames are the requests whose errors carry a code.
+var codedFrames = map[string]bool{"set_buffer_highlight": true, "set_highlight_rules": true}
 
 func (m *Module) compressionLevel() int {
 	if m.cfg.CompressionLevel >= 1 && m.cfg.CompressionLevel <= 9 {

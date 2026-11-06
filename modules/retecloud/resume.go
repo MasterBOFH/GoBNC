@@ -72,6 +72,7 @@ func (m *Module) resumeConn(c *wsConn, n *network, ls *liteSession, snap wire.Sn
 	}
 	var activity wire.HistoryActivityResult
 	if err := m.call(wire.MethodHistoryActivity, wire.HistoryActivityParams{Network: n.id, Device: c.deviceID}, &activity); err == nil {
+		m.adjustActivity(n, c.deviceID, &activity, nil)
 		ls.asOfID = snap.LastID
 		for _, a := range activity.Buffers {
 			if _, subscribed := ls.subs[a.Key]; subscribed {

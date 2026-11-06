@@ -13,10 +13,12 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 	sid := sessionID(ev.Network)
 	switch ev.Change {
 	case wire.ChangeAdded:
-		if m.nets[ev.Network] == nil {
-			m.nets[ev.Network] = newNetwork(ev.Network)
-		}
 		n := m.nets[ev.Network]
+		if n == nil {
+			n = newNetwork(ev.Network)
+			m.nets[ev.Network] = n
+			m.loadHighlightConfig(n)
+		}
 		n.name, n.state, n.nick = ev.Name, ev.State, ev.Nick
 		m.broadcastAuthed(ServerMessage{Type: "session_created", SessionID: sid,
 			Data: map[string]interface{}{"name": ev.Name, "state": sessionState(ev.State)}})
