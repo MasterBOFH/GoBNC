@@ -14,7 +14,7 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 	switch ev.Change {
 	case wire.ChangeAdded:
 		if m.nets[ev.Network] == nil {
-			m.nets[ev.Network] = &network{id: ev.Network, joined: map[string]string{}}
+			m.nets[ev.Network] = newNetwork(ev.Network)
 		}
 		n := m.nets[ev.Network]
 		n.name, n.state, n.nick = ev.Name, ev.State, ev.Nick

@@ -89,6 +89,19 @@ type network struct {
 	followed  bool              // events.subscribe done on the current brain connection
 }
 
+// defaultChanTypes classifies the names of a network the module has no snapshot of (stopped,
+// or never seen running since the module started): the channel prefixes the brain itself uses
+// for a network without ISUPPORT (a Session before 005, the stored view of a stopped network),
+// so the module and the brain agree on a stopped network's buffers. No nick can start with any
+// of them, so a query is never taken for a channel.
+const defaultChanTypes = "#&+!"
+
+// newNetwork is a network the module has no snapshot of yet. Its case mapping is the zero
+// value, rfc1459, as the brain's.
+func newNetwork(id int64) *network {
+	return &network{id: id, joined: map[string]string{}, chantypes: defaultChanTypes}
+}
+
 // New builds the module over a brain client.
 func New(cfg Config, brain Brain, log *slog.Logger) *Module {
 	if log == nil {
@@ -204,7 +217,7 @@ func (m *Module) snapshot(id int64) (wire.Snapshot, error) {
 	m.catchUp(id, res.Snapshot.Seq)
 	n := m.nets[id]
 	if n == nil {
-		n = &network{id: id}
+		n = newNetwork(id)
 		m.nets[id] = n
 	}
 	n.applySnapshot(res.Snapshot)
@@ -256,7 +269,7 @@ func (m *Module) brainConnected() {
 		n := m.nets[info.ID]
 		known := n != nil
 		if !known {
-			n = &network{id: info.ID, joined: map[string]string{}}
+			n = newNetwork(info.ID)
 			m.nets[info.ID] = n
 		}
 		before := sessionState(n.state)
