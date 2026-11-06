@@ -30,6 +30,10 @@ const DefaultLegacyPlaybackMax = 50000
 // DefaultChatHistoryMax is the default max lines per CHATHISTORY query (ISUPPORT CHATHISTORY=N).
 const DefaultChatHistoryMax = 100
 
+// DefaultWHOPollMinutes is how long a channel's member metadata may go without a WHO reply
+// before GoBNC polls it itself (see WHOPollMinutes).
+const DefaultWHOPollMinutes = 45
+
 // Config is process bootstrap configuration.
 type Config struct {
 	ListenAddr string `json:"listen_addr"`
@@ -73,6 +77,12 @@ type Config struct {
 
 	// HistoryRetentionDays prunes stored messages older than N days (0 = no prune).
 	HistoryRetentionDays int `json:"history_retention_days"`
+
+	// WHOPollMinutes: while a module is subscribed to a network, GoBNC sends a silent WHOX for
+	// a channel whose members no WHO reply (its own or one a client asked for) has named in
+	// this many minutes, at most one channel per tick (90 s). 0 uses DefaultWHOPollMinutes;
+	// negative disables GoBNC's own polls.
+	WHOPollMinutes int `json:"who_poll_minutes,omitempty"`
 
 	// CTCPPing / CTCPVersion / CTCPOther control how incoming CTCP requests
 	// (any CTCP-framed PRIVMSG, whether targeted at our own nick or a
@@ -133,6 +143,17 @@ type ModuleConfig struct {
 
 // moduleNameRE is the allowed shape of a module name.
 var moduleNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// WHOPollInterval is WHOPollMinutes as a duration: 0 when polling is disabled.
+func (c Config) WHOPollInterval() time.Duration {
+	switch {
+	case c.WHOPollMinutes < 0:
+		return 0
+	case c.WHOPollMinutes == 0:
+		return DefaultWHOPollMinutes * time.Minute
+	}
+	return time.Duration(c.WHOPollMinutes) * time.Minute
+}
 
 // ResolvedModules returns Modules with Socket defaulted to gobnc-modules.sock in the control
 // socket's directory.

@@ -149,6 +149,7 @@ func (s *Session) state352Locked(msg irc.Message) {
 		u.Host = msg.Param(3)
 	}
 	u.ApplyWHOFlags(msg.Param(6))
+	s.noteWHOLocked(msg.Param(1))
 }
 
 func (s *Session) state353Locked(msg irc.Message) {
@@ -165,7 +166,7 @@ func (s *Session) state353Locked(msg irc.Message) {
 	}
 	ms := s.isupport.Modes
 	for _, ent := range strings.Fields(msg.Trailing()) {
-		nick := ent
+		nick, user, host := splitUserhost(ent) // userhost-in-names: nick!user@host
 		var prefixes []byte
 		for len(nick) > 0 {
 			sym := nick[0]
@@ -180,6 +181,10 @@ func (s *Session) state353Locked(msg irc.Message) {
 			continue
 		}
 		u := s.ensureUserLocked(nick)
+		// As with WHO, self's ident/host come only from our own prefix (see state352Locked).
+		if u != s.self && user != "" && host != "" {
+			u.User, u.Host = user, host
+		}
 		folded := s.isupport.CaseMapping.Canonical(u.Nick)
 		ch.Members[folded] = struct{}{}
 		if len(prefixes) > 0 && ch.Modes != nil {

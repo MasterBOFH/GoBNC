@@ -52,6 +52,12 @@
   // Delete stored messages older than N days (0 = never prune).
   "history_retention_days": 0,
 
+  // While a module (e.g. gobnc-retecloud) is attached to a network, GoBNC keeps member
+  // hosts, accounts and away/oper/bot flags fresh with a silent WHOX of its own, but only for
+  // a channel no WHO reply (its own, or one an IRC client asked for) has covered in this many
+  // minutes, and at most one channel per 90 s. 0 = default (45); negative = never poll.
+  "who_poll_minutes": 0,
+
   // How incoming CTCP requests (PING, VERSION, or anything else
   // CTCP-framed, whether sent to our own nick or a channel we're in) are
   // handled: "relay" forwards live to attached downlinks unchanged

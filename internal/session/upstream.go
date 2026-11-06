@@ -38,6 +38,7 @@ var DesiredCaps = []string{
 	"away-notify",
 	"chghost",
 	"invite-notify",
+	"userhost-in-names",
 	"sasl",
 	"chathistory",
 	"draft/chathistory",
@@ -187,6 +188,7 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 
 	if (msg.Command == "376" || msg.Command == "422") && gotWelcome {
 		s.completeRegistration()
+		s.RefreshSilence()
 	}
 }
 
@@ -829,6 +831,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 	ids := s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
 	s.renameQueryLocked(msg)                            // after storing: the query's copy needs the old rows to exist
 	s.applyState(msg)
+	s.emitSilenceLocked() // ahead of the SILENCE line that changed it
 
 	s.mu.RLock()
 	cm := s.isupport.CaseMapping
@@ -1209,6 +1212,10 @@ func (s *Session) rewriteFor(d Downlink, msg irc.Message) irc.Message {
 	if !s.clientAccepts(d, out) {
 		out.Command = ""
 		return out
+	}
+	// userhost-in-names: clients without the cap get the plain nick list.
+	if out.Command == "353" && !d.HasCap("userhost-in-names") {
+		out = stripNamesUserhost(out)
 	}
 	// extended-join: clients without the cap must not see account/GECOS params.
 	if out.Command == "JOIN" && !d.HasCap("extended-join") && len(out.Params) > 1 {

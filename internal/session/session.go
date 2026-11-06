@@ -116,9 +116,21 @@ type Session struct {
 	// (a live session learns them from the uplink's own `:nick MODE nick
 	// +modes` during registration, which a resumed attach never replays).
 	pendingUModeRefresh bool
-	downlinks           map[ClientID]Downlink
-	isupport            *irc.ISUPPORT
-	upCaps              map[string]bool
+	// lastWHO is when a WHO/WHOX reply last named each channel (folded), whoever asked —
+	// PollWHO polls only a channel nobody polled within its interval (whopoll.go).
+	lastWHO map[string]time.Time
+	// silence is the server's SILENCE list (silence.go); silenceReply collects a list reply
+	// (271s) until its 272, silenceReplyOurs says one of those 271s named our own list, and
+	// silenceDirty marks a change not yet emitted to modules.
+	silence          []string
+	silenceReply     []string
+	silenceReplyOurs bool
+	silenceDirty     bool
+	// writeHook, when set (tests), receives uplink writes instead of the driver.
+	writeHook func(irc.Message) error
+	downlinks map[ClientID]Downlink
+	isupport  *irc.ISUPPORT
+	upCaps    map[string]bool
 	// upSASLAvailable / upSASLMechs track whether the uplink currently
 	// offers sasl at all (CAP LS/NEW/DEL, post-registration too) — the
 	// Session-owned equivalent of internal/uplink.Uplink's own
@@ -415,6 +427,9 @@ func (s *Session) HasUpCap(name string) bool {
 // instead of a per-network raw connection. Uses Wire so a parsed client Raw
 // body is preserved; only the tag prefix changes.
 func (s *Session) WriteMessage(msg irc.Message) error {
+	if s.writeHook != nil {
+		return s.writeHook(msg)
+	}
 	if s.driver == nil {
 		return fmt.Errorf("uplink not ready")
 	}

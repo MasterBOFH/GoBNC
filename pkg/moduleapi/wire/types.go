@@ -90,6 +90,9 @@ type Snapshot struct {
 	ISupport map[string]string `json:"isupport"`
 	Caps     []string          `json:"caps"`
 	Channels []Channel         `json:"channels"`
+	// Silence is the server-side SILENCE list; omitted when empty (also when the network has
+	// none, or it is not known yet).
+	Silence []string `json:"silence,omitempty"`
 }
 
 type Self struct {
@@ -124,6 +127,8 @@ type Member struct {
 	Host     string `json:"host"`
 	Account  string `json:"account"`
 	Away     bool   `json:"away"`
+	Oper     bool   `json:"oper,omitempty"`
+	Bot      bool   `json:"bot,omitempty"`
 }
 
 // Line kinds.
@@ -180,9 +185,13 @@ type ClientLineEvent struct {
 }
 
 // State event kinds.
-const StateMembers = "members"
+const (
+	StateMembers = "members"
+	StateSilence = "silence"
+)
 
-// StateEvent: kind "members" replaces a channel's member list (Complete true once NAMES landed).
+// StateEvent: kind "members" replaces a channel's member list (Complete true once NAMES landed);
+// kind "silence" replaces the SILENCE list (Silence, no buffer).
 type StateEvent struct {
 	Network  int64    `json:"network"`
 	Kind     string   `json:"kind"`
@@ -190,6 +199,7 @@ type StateEvent struct {
 	Key      string   `json:"key"`
 	Members  []Member `json:"members"`
 	Complete bool     `json:"complete"`
+	Silence  []string `json:"silence,omitempty"`
 }
 
 // --- history ---

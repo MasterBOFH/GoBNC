@@ -80,16 +80,10 @@ func (u *User) ApplyWHOFlags(flags string) {
 	if u == nil || flags == "" {
 		return
 	}
+	// The flags are the server's whole answer: H/G, '*' and the bot flag are set or cleared.
 	u.Away = strings.ContainsAny(flags, "G") // gone; H = here
-	if strings.Contains(flags, "H") && !strings.Contains(flags, "G") {
-		u.Away = false
-	}
-	if strings.Contains(flags, "*") {
-		u.Oper = true
-	}
-	if strings.ContainsAny(flags, "B") {
-		u.Bot = true
-	}
+	u.Oper = strings.Contains(flags, "*")
+	u.Bot = strings.ContainsAny(flags, "B")
 	if strings.ContainsAny(flags, "sS") {
 		u.Secure = true
 	}

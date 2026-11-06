@@ -54,6 +54,7 @@ var DesiredCaps = []string{
 	"away-notify",
 	"chghost",
 	"invite-notify",
+	"userhost-in-names",
 	"sasl",
 	"chathistory",
 	"draft/chathistory",

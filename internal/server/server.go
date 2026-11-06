@@ -320,6 +320,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Always run; pruneHistory no-ops when HistoryRetentionDays <= 0 (supports rehash enable).
 	go s.retentionLoop(ctx)
+	go s.whoPollLoop(ctx)
 
 	if err := s.certs.Load(s.cfg.TLSCert, s.cfg.TLSKey); err != nil {
 		s.cancel()
@@ -445,6 +446,40 @@ func (s *Server) retentionLoop(ctx context.Context) {
 		case <-t.C:
 			s.pruneHistory(ctx)
 		}
+	}
+}
+
+// WHOPollTick is how often one silent WHOX poll may go out per network (overridable in tests).
+var WHOPollTick = 90 * time.Second
+
+// whoPollLoop lets every network poll at most one channel's WHOX per tick (Session.PollWHO
+// decides whether one is due). The interval is read each tick, so a rehash applies.
+func (s *Server) whoPollLoop(ctx context.Context) {
+	t := time.NewTicker(WHOPollTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			s.pollWHO(now)
+		}
+	}
+}
+
+func (s *Server) pollWHO(now time.Time) {
+	s.mu.RLock()
+	interval := s.cfg.WHOPollInterval()
+	sessions := make([]*session.Session, 0, len(s.sess))
+	for _, sess := range s.sess {
+		sessions = append(sessions, sess)
+	}
+	s.mu.RUnlock()
+	if interval <= 0 {
+		return
+	}
+	for _, sess := range sessions {
+		sess.PollWHO(now, interval)
 	}
 }
 
@@ -965,6 +1000,8 @@ func (s *Server) dialNetworkLocked(n store.Network, sess *session.Session) error
 		sess.RefreshSelfUModes()
 		sess.RefreshSelfUserHost()
 		sess.RefreshResumedChannelNames()
+		// The SILENCE list has no blob key either; query it silently (A2992).
+		sess.RefreshSilence()
 		return nil
 	}
 	if err := s.driver.Dial(netID, s.dialConfigForLocked(n), 0); err != nil {

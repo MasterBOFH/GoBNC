@@ -214,7 +214,9 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 - Snapshot: `{"network", "state", "last_id", "seq", "self": {"nick","user","host","account","umodes","away"},
   "isupport": {"KEY": "value", ...}, "caps": [...], "channels": [{"name","key","topic":
   {"text","setter","time"},"modes","chankey","members_complete",
-  "members": [{"nick","prefixes","user","host","account","away"}]}]}`. `last_id` = newest
+  "members": [{"nick","prefixes","user","host","account","away","oper"?,"bot"?}]}],
+  "silence"?: [...]}`. `oper` / `bot` are omitted when false, `silence` (the server's SILENCE list,
+  queried silently after registration) when empty. `last_id` = newest
   `messages.id` of the network at snapshot time (0 if none). `seq` = seq of the last `line` event
   emitted before the snapshot, so a module that re-subscribes for a fresh snapshot can place it in
   the stream it is consuming. History read after a snapshot is not part of it: a line can be
@@ -224,7 +226,8 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `seq`/`last_id`). `members_complete` is false for a
   channel seeded from the keeper blob after a brain restart until its NAMES refresh lands, at which
   point a `state` event `{"network","kind":"members","buffer","key","members":[...],"complete":true}`
-  replaces the list.
+  replaces the list. A `state` event `{"network","kind":"silence","silence"?:[...]}` replaces the
+  SILENCE list whenever it changes, ahead of the `SILENCE` line that changed it.
 - `history.messages {"network","buffer","before_id"?|"after_id"?|"around_id"?|"anchor"?,"limit"?,"device"?}`:
   exactly one of the four selectors (none = latest). `anchor` ∈ `"first_unread"`, `"latest"`;
   `first_unread` needs `device` (to apply its closed-at floor) and returns the page starting at the

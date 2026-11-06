@@ -38,6 +38,7 @@ func (s *Session) snapshotLocked() wire.Snapshot {
 		ISupport: make(map[string]string, len(s.isupport.Raw)),
 		Caps:     []string{},
 		Channels: []wire.Channel{},
+		Silence:  append([]string{}, s.silence...),
 	}
 	if u := s.self; u != nil {
 		snap.Self = wire.Self{Nick: s.liveNickLocked(), User: u.User, Host: u.Host, Account: u.Account,
@@ -91,6 +92,7 @@ func (s *Session) membersLocked(ch *ChannelState) []wire.Member {
 		m := wire.Member{Nick: folded}
 		if u := s.users[folded]; u != nil {
 			m.Nick, m.User, m.Host, m.Account, m.Away = u.Nick, u.User, u.Host, u.Account, u.Away
+			m.Oper, m.Bot = u.Oper, u.Bot
 		}
 		if ch.Modes != nil && ch.Modes.Nicks[folded] != nil && ms != nil {
 			var pref []byte

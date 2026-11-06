@@ -494,6 +494,41 @@ func (rt *RequestTracker) SetWHOXClientFix(uplinkToken string, injectT bool, cli
 	}
 }
 
+// SerialHeadClient returns the client owning the head of cmd's serialized queue (e.g. whose
+// SILENCE enquiry the next 271/272 answer).
+func (rt *RequestTracker) SerialHeadClient(cmd string) (ClientID, bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if q := rt.serial[cmd]; len(q) > 0 {
+		return q[0].Client, true
+	}
+	return "", false
+}
+
+// WHOXReplyFields returns the field letters of the WHOX request a 354 answers, so its params
+// can be read: by the reply's label, or by the uplink token GoBNC put in params[1] (whose 't'
+// is then present even when the client did not ask for it). ok is false when the request is
+// unknown (e.g. a labeled request whose replies arrive in a batch without the label).
+func (rt *RequestTracker) WHOXReplyFields(msg irc.Message) (fields string, ok bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if label, has := msg.Tag("label"); has {
+		if req := rt.labeled[label]; req != nil && req.WHOXFields != "" {
+			return req.WHOXFields, true
+		}
+	}
+	if len(msg.Params) > 1 {
+		if req := rt.whox[msg.Params[1]]; req != nil && req.WHOXFields != "" {
+			fields = req.WHOXFields
+			if !strings.Contains(fields, "t") {
+				fields += "t"
+			}
+			return fields, true
+		}
+	}
+	return "", false
+}
+
 // ActiveClient returns the client owning the head of any serialized
 // (hold-write or FIFO) command queue, if any.
 func (rt *RequestTracker) ActiveClient() (ClientID, bool) {
