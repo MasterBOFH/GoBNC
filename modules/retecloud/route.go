@@ -55,8 +55,13 @@ func (m *Module) handleEvent(ev wire.Event) {
 		}
 	case wire.EventState:
 		var st wire.StateEvent
-		if json.Unmarshal(ev.Data, &st) == nil && st.Kind == wire.StateMembers {
-			m.refreshBufferState(st.Network, st.Buffer, true)
+		if json.Unmarshal(ev.Data, &st) == nil {
+			switch st.Kind {
+			case wire.StateMembers:
+				m.refreshBufferState(st.Network, st.Buffer, true)
+			case wire.StateSilence:
+				m.broadcastSilence(st.Network, st.Silence)
+			}
 		}
 	}
 }
@@ -362,6 +367,20 @@ func (m *Module) takeOwnAction(event, key string) (*wsConn, string) {
 
 // refreshBufferState sends a fresh buffer_state to the connections subscribed to buffer (after
 // a NAMES completes, or our own PART/KICK). withMembers=false sends topic/modes only.
+// broadcastSilence sends every connection following the network its whole SILENCE list, tier 0
+// (the brain emits the state event ahead of the SILENCE line that changed it).
+func (m *Module) broadcastSilence(network int64, masks []string) {
+	if masks == nil {
+		masks = []string{}
+	}
+	msg := ServerMessage{Type: frameSilence, SessionID: sessionID(network), Data: map[string]interface{}{"masks": masks}}
+	for c := range m.conns {
+		if c.sessions[network] != nil {
+			c.send(msg)
+		}
+	}
+}
+
 func (m *Module) refreshBufferState(network int64, buffer string, withMembers bool) {
 	n := m.nets[network]
 	if n == nil {

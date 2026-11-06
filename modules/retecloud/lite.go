@@ -191,6 +191,11 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 		putSection(out, cache, "capabilities", caps)
 		putSection(out, cache, "isupport", snap.ISupport)
 		putSection(out, cache, "identity", identityMap(snap.Self))
+		silence := snap.Silence
+		if silence == nil {
+			silence = []string{}
+		}
+		out["silence"] = silence
 		for _, ch := range snap.Channels {
 			add(ch.Name).Joined = true
 		}

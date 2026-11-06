@@ -82,10 +82,10 @@ type membersMode int
 const (
 	membersFull membersMode = iota
 	membersNone
-	membersCompact
 )
 
-// MembersOption is subscribe_buffer's "members": true/"full", false/"none", or "compact".
+// MembersOption is subscribe_buffer's "members": true/"full" or false/"none". The former
+// "compact" form is answered like "full".
 type MembersOption struct{ mode membersMode }
 
 func (m *MembersOption) UnmarshalJSON(b []byte) error {
@@ -101,14 +101,12 @@ func (m *MembersOption) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	switch s {
-	case "", "full":
+	case "", "full", "compact":
 		m.mode = membersFull
 	case "none":
 		m.mode = membersNone
-	case "compact":
-		m.mode = membersCompact
 	default:
-		return fmt.Errorf("members must be true, false, \"full\", \"none\" or \"compact\"")
+		return fmt.Errorf("members must be true, false, \"full\" or \"none\"")
 	}
 	return nil
 }
@@ -177,6 +175,7 @@ const (
 	frameIRCLine           = "irc_line"
 	frameActivity          = "activity"
 	frameBufferState       = "buffer_state"
+	frameSilence           = "silence"
 	frameSubscribeBuffer   = "subscribe_buffer"
 	frameUnsubscribeBuffer = "unsubscribe_buffer"
 )

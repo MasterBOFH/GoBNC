@@ -194,7 +194,7 @@ func bufferState(n *network, snap wire.Snapshot, buffer string, members membersM
 			if n.key(mem.Nick) == key {
 				out["user"] = map[string]interface{}{
 					"nick": mem.Nick, "username": mem.User, "hostname": mem.Host, "realname": "",
-					"account": mem.Account, "away": mem.Away, "bot": false, "secure": false, "oper": false,
+					"account": mem.Account, "away": mem.Away, "bot": mem.Bot, "secure": false, "oper": mem.Oper,
 				}
 				return out
 			}
@@ -219,18 +219,15 @@ func channelState(ch wire.Channel, members membersMode, prefix string) map[strin
 		"modes":           ch.Modes,
 		"member_count":    len(ch.Members),
 	}
-	modes, symbols := prefixRanks(prefix)
-	switch members {
-	case membersFull:
+	if members == membersFull {
+		modes, symbols := prefixRanks(prefix)
 		users := make([]map[string]interface{}, 0, len(ch.Members))
 		for _, mem := range ch.Members {
-			users = append(users, map[string]interface{}{"nick": mem.Nick, "modes": modeLetters(mem.Prefixes, modes, symbols)})
-		}
-		out["users"] = users
-	case membersCompact:
-		users := make([]string, 0, len(ch.Members))
-		for _, mem := range ch.Members {
-			users = append(users, compactMember(mem.Nick, mem.Prefixes, modes, symbols))
+			// What retecloud-api's full sync has for the nick (WEBSOCKET_PROTOCOL_LITE.md,
+			// Member entries); GoBNC's own knowledge may lag (no WHO since the last change).
+			users = append(users, map[string]interface{}{"nick": mem.Nick, "modes": modeLetters(mem.Prefixes, modes, symbols),
+				"username": mem.User, "hostname": mem.Host, "account": mem.Account, "away": mem.Away,
+				"oper": mem.Oper, "bot": mem.Bot})
 		}
 		out["users"] = users
 	}
@@ -258,27 +255,6 @@ func modeLetters(prefixes, modes, symbols string) string {
 			b.WriteByte(modes[j])
 		}
 	}
-	return b.String()
-}
-
-// compactMember renders "@+nick" (highest rank first) from symbols or mode letters.
-func compactMember(nick, memberModes, modes, symbols string) string {
-	have := make([]bool, len(symbols))
-	for i := 0; i < len(memberModes); i++ {
-		ch := memberModes[i]
-		if j := strings.IndexByte(modes, ch); j >= 0 && j < len(symbols) {
-			have[j] = true
-		} else if j := strings.IndexByte(symbols, ch); j >= 0 {
-			have[j] = true
-		}
-	}
-	var b strings.Builder
-	for j, ok := range have {
-		if ok {
-			b.WriteByte(symbols[j])
-		}
-	}
-	b.WriteString(nick)
 	return b.String()
 }
 
