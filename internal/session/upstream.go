@@ -827,6 +827,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		return
 	}
 	ids := s.maybeStoreHistory(msg, s.currentLineSeq()) // before applyState so QUIT/NICK still see channel membership
+	s.renameQueryLocked(msg)                            // after storing: the query's copy needs the old rows to exist
 	s.applyState(msg)
 
 	s.mu.RLock()
@@ -1165,15 +1166,20 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 		}
 		return []string{cm.Canonical(t)}
 	case "QUIT", "NICK":
-		s.mu.RLock()
-		defer s.mu.RUnlock()
 		nick := msg.Nick()
 		folded := cm.Canonical(nick)
 		var out []string
+		s.mu.RLock()
 		for key, ch := range s.channels {
 			if _, ok := ch.Members[folded]; ok {
 				out = append(out, key)
 			}
+		}
+		s.mu.RUnlock()
+		// A peer's nick change is also their query's line: stored under the new nick, the name
+		// the query has from now on (renameQueryLocked), whether or not they share a channel.
+		if msg.Command == "NICK" && msg.Param(0) != "" && !s.isSelfNick(nick) && s.queryExists(folded) {
+			out = append(out, cm.Canonical(msg.Param(0)))
 		}
 		return out
 	default:

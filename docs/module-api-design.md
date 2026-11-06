@@ -115,6 +115,15 @@ floor raised to id−1) and emits `buffer_open` reason `message` before the line
 ReteCloud, only a PRIVMSG opens a query (ours included, CTCP ACTION included; notices, other CTCP,
 server lines and `$` masks never). `devices.seed` gives a new device the queries with unread lines.
 
+A peer's NICK renames their query on every device with a row for the old nick, open or closed
+(`renameQueryLocked`, `store.RenameBuffer`): the row becomes the new nick's, keeping `is_open` and the
+floor, merged into the device's row for the new nick when it has one (open if either was, the
+higher floor), and `renamed_from` keeps the name the device's last sync listed it under until
+`devices.clear_renames` clears it. `buffer_rename` is emitted per device before the line's own
+event. When the query exists (stored lines or a device row), the NICK is also stored under the new
+nick, and the line event lists the query under the new nick with that copy's id. Our own NICK
+renames nothing.
+
 The rule applies to devices that follow the network (`device_networks.subscribed`), and never
 reopens a buffer closed after the line (a keeper replay of a stored line). Seeding runs once per
 device and network (`seeded`). Known limits: the reopen and seeding queries run under `busMu`
@@ -186,7 +195,7 @@ Features and their methods (a method of a feature not granted → `not_granted`)
 | `read_markers` | `read_markers.get`, `read_markers.set` |
 | `clients` | `clients.attach`, `clients.detach` |
 | `send` | `send.line` (requires `clients` too) |
-| `devices` | `devices.touch`, `devices.networks`, `devices.set_network`, `devices.buffers`, `devices.open`, `devices.close`, `devices.seed` |
+| `devices` | `devices.touch`, `devices.networks`, `devices.set_network`, `devices.buffers`, `devices.open`, `devices.close`, `devices.seed`, `devices.clear_renames` |
 | `auth` | `auth.check` |
 | `storage` | `storage.get`, `storage.set`, `storage.delete`, `storage.list` |
 | `commands` | `commands.register`, `commands.reply` |
@@ -246,7 +255,10 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 - `devices.touch {"client_id","name"?}` → `{"created": bool}`.
 - `devices.networks {"client_id"}` → `{"networks": [{"network","subscribed"}]}` (every network;
   missing rows = `false`). `devices.set_network {"client_id","network","subscribed"}` → `{}`.
-- `devices.buffers {"client_id","network"}` → `{"buffers": [{"buffer","key","open","closed_at_id"}]}`.
+- `devices.buffers {"client_id","network"}` → `{"buffers": [{"buffer","key","open","closed_at_id","renamed_from"?}]}`
+  (`renamed_from`: a peer's NICK renamed the row since the device's last sync; the old name).
+- `devices.clear_renames {"client_id","network","buffers": [{"key","renamed_from"}]}` → `{}`: the
+  renames a sync reported are cleared; a row renamed again since (another `renamed_from`) keeps its own.
 - `devices.open {"client_id","network","buffer"}` → `{}`; emits `buffer_open` reason `"user"`.
 - `devices.close {"client_id","network","buffer"}` → `{"closed_at_id"}` (newest id in that buffer);
   emits `buffer_close`.
@@ -285,7 +297,8 @@ Events (brain → module):
   query) the peer's nick, `Server` for server-sourced / `$mask` messages not to a channel (stored
   under `Server`, so they have an id there; history.activity does not count server-sourced ones as
   unread); QUIT/NICK/AWAY/ACCOUNT/CHGHOST/SETNAME list every channel the user
-  shared with us before the change plus their query buffer if one exists in history; `id` present
+  shared with us before the change plus their query buffer if one exists in history (for a NICK
+  whose copy was stored for the query, the query under the new nick, with that copy's id); `id` present
   when that buffer stored the line (numerics and `ERROR` are not stored, so have none). `self` true when the source is us. `label` present on the echo
   of a module's own `send.line`. Solicited replies routed by `RequestTracker` to a specific client
   emit **no** `line` event (they go to the asker only, as `client_line` for a virtual client).
@@ -293,7 +306,9 @@ Events (brain → module):
 - `state` — see Snapshot.
 - `read_marker {"network","buffer","key","id","time"}`.
 - `buffer_open {"network","client_id","buffer","key","reason"}` (`reason` ∈ `message`, `user`,
-  `seed`); `buffer_close {"network","client_id","buffer","key","closed_at_id"}`.
+  `seed`); `buffer_close {"network","client_id","buffer","key","closed_at_id"}`;
+  `buffer_rename {"network","client_id","from","from_key","to","to_key"}` (a peer's NICK renamed the
+  device's query, before the line's own event).
 - `device_network {"client_id","network","subscribed"}`.
 - `command` — see `commands.register`.
 - `overflow {}` written best-effort before the brain closes a module whose queue is full.

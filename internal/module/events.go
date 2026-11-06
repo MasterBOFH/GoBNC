@@ -36,6 +36,8 @@ func eventName(ev any) string {
 		return wire.EventBufferOpen
 	case wire.BufferCloseEvent:
 		return wire.EventBufferClose
+	case wire.BufferRenameEvent:
+		return wire.EventBufferRename
 	case wire.ClientLineEvent:
 		return wire.EventClientLine
 	}

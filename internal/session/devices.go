@@ -185,4 +185,41 @@ func (s *Session) CloseBufferForDevice(clientID, buffer string) (int64, error) {
 	return closedAt, nil
 }
 
+// queryExists reports whether we have a query with the folded nick: stored lines under it, or a
+// device row (open or closed) for it.
+func (s *Session) queryExists(key string) bool {
+	if s.store == nil || s.Network.ID == 0 {
+		return false
+	}
+	ctx := context.Background()
+	if ok, err := s.store.HasTarget(ctx, s.Network.ID, key); err == nil && ok {
+		return true
+	}
+	ok, err := s.store.HasBufferRows(ctx, s.Network.ID, key)
+	return err == nil && ok
+}
+
+// renameQueryLocked follows a peer's NICK in every device's buffer rows (store.RenameBuffer:
+// open/closed and the floor kept, merged into a row for the new nick) and emits buffer_rename
+// for each device whose rows changed — before the line's own event. Our own NICK renames
+// nothing. Call before applyState, holding busMu.
+func (s *Session) renameQueryLocked(msg irc.Message) {
+	if msg.Command != "NICK" || s.store == nil || s.Network.ID == 0 {
+		return
+	}
+	from, to := msg.Nick(), msg.Param(0)
+	if from == "" || to == "" || s.isSelfNick(from) {
+		return
+	}
+	fromKey, toKey := s.Fold(from), s.Fold(to)
+	changed, err := s.store.RenameBuffer(context.Background(), s.Network.ID, fromKey, toKey, to)
+	if err != nil {
+		s.log.Warn("rename query for devices", "from", fromKey, "to", toKey, "err", err)
+		return
+	}
+	for _, c := range changed {
+		s.emitLocked(wire.BufferRenameEvent{Network: s.Network.ID, ClientID: c, From: from, FromKey: fromKey, To: to, ToKey: toKey})
+	}
+}
+
 var errNoStore = errors.New("session: no store")

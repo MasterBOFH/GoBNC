@@ -228,13 +228,14 @@ const (
 
 	MethodSendLine = "send.line"
 
-	MethodDevicesTouch      = "devices.touch"
-	MethodDevicesNetworks   = "devices.networks"
-	MethodDevicesSetNetwork = "devices.set_network"
-	MethodDevicesBuffers    = "devices.buffers"
-	MethodDevicesOpen       = "devices.open"
-	MethodDevicesClose      = "devices.close"
-	MethodDevicesSeed       = "devices.seed"
+	MethodDevicesTouch        = "devices.touch"
+	MethodDevicesNetworks     = "devices.networks"
+	MethodDevicesSetNetwork   = "devices.set_network"
+	MethodDevicesBuffers      = "devices.buffers"
+	MethodDevicesOpen         = "devices.open"
+	MethodDevicesClose        = "devices.close"
+	MethodDevicesSeed         = "devices.seed"
+	MethodDevicesClearRenames = "devices.clear_renames"
 
 	MethodAuthCheck = "auth.check"
 
@@ -256,7 +257,7 @@ var FeatureMethods = map[string][]string{
 	FeatureClients:     {MethodClientsAttach, MethodClientsDetach},
 	FeatureSend:        {MethodSendLine},
 	FeatureDevices: {MethodDevicesTouch, MethodDevicesNetworks, MethodDevicesSetNetwork, MethodDevicesBuffers,
-		MethodDevicesOpen, MethodDevicesClose, MethodDevicesSeed},
+		MethodDevicesOpen, MethodDevicesClose, MethodDevicesSeed, MethodDevicesClearRenames},
 	FeatureAuth:     {MethodAuthCheck},
 	FeatureStorage:  {MethodStorageGet, MethodStorageSet, MethodStorageDelete, MethodStorageList},
 	FeatureCommands: {MethodCommandsRegister, MethodCommandsReply},
@@ -278,6 +279,7 @@ const (
 	EventReadMarker    = "read_marker"
 	EventBufferOpen    = "buffer_open"
 	EventBufferClose   = "buffer_close"
+	EventBufferRename  = "buffer_rename"
 	EventDeviceNetwork = "device_network"
 	EventCommand       = "command"
 	EventOverflow      = "overflow"

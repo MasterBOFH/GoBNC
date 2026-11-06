@@ -48,6 +48,11 @@ func (m *Module) handleEvent(ev wire.Event) {
 		if json.Unmarshal(ev.Data, &bc) == nil {
 			m.onBufferClose(bc)
 		}
+	case wire.EventBufferRename:
+		var br wire.BufferRenameEvent
+		if json.Unmarshal(ev.Data, &br) == nil {
+			m.onBufferRename(br)
+		}
 	case wire.EventState:
 		var st wire.StateEvent
 		if json.Unmarshal(ev.Data, &st) == nil && st.Kind == wire.StateMembers {
@@ -320,6 +325,24 @@ func (m *Module) onBufferClose(bc wire.BufferCloseEvent) {
 			c.send(ServerMessage{Type: "close_buffer", SessionID: sessionID(bc.Network),
 				Data: map[string]interface{}{"buffer": bc.Buffer, "client_id": bc.ClientID}})
 		}
+	}
+}
+
+// onBufferRename is a query peer's NICK renaming the device's buffer row: its connections move
+// the open set to the new name and hear rename_buffer, ahead of the NICK line. (The client keeps
+// the buffer's unread count across the rename; activity counts stay per name, as the store's.)
+func (m *Module) onBufferRename(br wire.BufferRenameEvent) {
+	for c := range m.conns {
+		ls := c.sessions[br.Network]
+		if ls == nil || c.deviceID != br.ClientID {
+			continue
+		}
+		if ls.open[br.FromKey] {
+			delete(ls.open, br.FromKey)
+			ls.open[br.ToKey] = true
+		}
+		c.send(ServerMessage{Type: "rename_buffer", SessionID: sessionID(br.Network),
+			Data: map[string]interface{}{"from": br.From, "to": br.To}})
 	}
 }
 

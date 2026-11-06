@@ -10,13 +10,14 @@ import (
 
 func init() {
 	for method, h := range map[string]Handler{
-		wire.MethodDevicesTouch:      handleDevicesTouch,
-		wire.MethodDevicesNetworks:   handleDevicesNetworks,
-		wire.MethodDevicesSetNetwork: handleDevicesSetNetwork,
-		wire.MethodDevicesBuffers:    handleDevicesBuffers,
-		wire.MethodDevicesOpen:       handleDevicesOpen,
-		wire.MethodDevicesClose:      handleDevicesClose,
-		wire.MethodDevicesSeed:       handleDevicesSeed,
+		wire.MethodDevicesTouch:        handleDevicesTouch,
+		wire.MethodDevicesNetworks:     handleDevicesNetworks,
+		wire.MethodDevicesSetNetwork:   handleDevicesSetNetwork,
+		wire.MethodDevicesBuffers:      handleDevicesBuffers,
+		wire.MethodDevicesOpen:         handleDevicesOpen,
+		wire.MethodDevicesClose:        handleDevicesClose,
+		wire.MethodDevicesSeed:         handleDevicesSeed,
+		wire.MethodDevicesClearRenames: handleDevicesClearRenames,
 	} {
 		registerMethod(method, h, wire.FeatureDevices)
 	}
@@ -104,9 +105,31 @@ func handleDevicesBuffers(ctx context.Context, c *Conn, params json.RawMessage) 
 	}
 	res := wire.DeviceBuffersResult{Buffers: []wire.DeviceBuffer{}}
 	for _, b := range rows {
-		res.Buffers = append(res.Buffers, wire.DeviceBuffer{Buffer: b.Display, Key: b.Target, Open: b.Open, ClosedAtID: b.ClosedAtID})
+		res.Buffers = append(res.Buffers, wire.DeviceBuffer{Buffer: b.Display, Key: b.Target, Open: b.Open,
+			ClosedAtID: b.ClosedAtID, RenamedFrom: b.RenamedFrom})
 	}
 	return res, nil
+}
+
+// handleDevicesClearRenames forgets the renamed_from a sync reported, row by row; a row renamed
+// again since (another renamed_from) keeps its own.
+func handleDevicesClearRenames(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
+	p, err := decodeParams[wire.DeviceClearRenamesParams](params)
+	if err != nil {
+		return nil, err
+	}
+	if err := needClientID(p.ClientID); err != nil {
+		return nil, err
+	}
+	for _, b := range p.Buffers {
+		if b.RenamedFrom == "" {
+			continue
+		}
+		if err := c.srv.backend.Store().ClearRenamedFrom(ctx, p.ClientID, p.Network, b.Key, b.RenamedFrom); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 func handleDevicesOpen(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {

@@ -115,7 +115,10 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 			for _, name := range pre.channels {
 				add(name)
 			}
-			if nick := msg.Nick(); nick != "" && !pre.self && s.hasQuery(nick) {
+			nick := msg.Nick()
+			if newNick := msg.Param(0); msg.Command == "NICK" && newNick != "" && ids[cm.Canonical(newNick)] > 0 {
+				add(newNick) // the query's copy, stored under the name the query now has
+			} else if nick != "" && !pre.self && s.hasQuery(nick) {
 				add(nick)
 			}
 			break

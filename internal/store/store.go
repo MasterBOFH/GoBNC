@@ -168,6 +168,8 @@ func (s *Store) migrate() error {
 	// index below, which references the column.
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN keeper_seq INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE device_networks ADD COLUMN seeded INTEGER NOT NULL DEFAULT 0`)
+	// The name a peer's NICK renamed a device's buffer row from, until its next sync reports it.
+	_, _ = s.db.Exec(`ALTER TABLE open_buffers ADD COLUMN renamed_from TEXT NOT NULL DEFAULT ''`)
 	// keeper_seq is the keeper's own per-network line sequence number (see
 	// internal/keeper.LineMsg.Seq) — a stable, deterministic identity for
 	// "this exact wire line" that survives however many times a brain

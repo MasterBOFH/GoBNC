@@ -54,6 +54,9 @@ type OpenBuffer struct {
 	Display    string
 	Open       bool
 	ClosedAtID int64
+	// RenamedFrom is the name the device's last sync listed the row under, when a peer's NICK
+	// renamed it since (RenameBuffer); the next sync reports it and clears it.
+	RenamedFrom string
 }
 
 func nowText() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -116,7 +119,7 @@ func (s *Store) SetDeviceNetwork(ctx context.Context, clientID string, networkID
 
 // ListOpenBuffers returns the device's buffer rows on a network (open and closed).
 func (s *Store) ListOpenBuffers(ctx context.Context, clientID string, networkID int64) ([]OpenBuffer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT target, display, is_open, closed_at_id FROM open_buffers
+	rows, err := s.db.QueryContext(ctx, `SELECT target, display, is_open, closed_at_id, renamed_from FROM open_buffers
 		WHERE client_id=? AND network_id=? ORDER BY target`, clientID, networkID)
 	if err != nil {
 		return nil, err
@@ -125,7 +128,7 @@ func (s *Store) ListOpenBuffers(ctx context.Context, clientID string, networkID 
 	var out []OpenBuffer
 	for rows.Next() {
 		var b OpenBuffer
-		if err := rows.Scan(&b.Target, &b.Display, &b.Open, &b.ClosedAtID); err != nil {
+		if err := rows.Scan(&b.Target, &b.Display, &b.Open, &b.ClosedAtID, &b.RenamedFrom); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

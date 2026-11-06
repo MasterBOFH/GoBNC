@@ -339,6 +339,16 @@ type DeviceBuffer struct {
 	Key        string `json:"key"`
 	Open       bool   `json:"open"`
 	ClosedAtID int64  `json:"closed_at_id"`
+	// RenamedFrom: a peer's NICK renamed the row since the device's last sync; the name it had.
+	RenamedFrom string `json:"renamed_from,omitempty"`
+}
+
+// DeviceClearRenamesParams: devices.clear_renames, the rows (key and renamed_from as
+// devices.buffers listed them) whose rename a sync reported.
+type DeviceClearRenamesParams struct {
+	ClientID string         `json:"client_id"`
+	Network  int64          `json:"network"`
+	Buffers  []DeviceBuffer `json:"buffers"`
 }
 
 type DeviceBufferParams struct {
@@ -376,6 +386,16 @@ type BufferCloseEvent struct {
 	Buffer     string `json:"buffer"`
 	Key        string `json:"key"`
 	ClosedAtID int64  `json:"closed_at_id"`
+}
+
+// BufferRenameEvent: a query peer's NICK renamed the device's buffer row From to To.
+type BufferRenameEvent struct {
+	Network  int64  `json:"network"`
+	ClientID string `json:"client_id"`
+	From     string `json:"from"`
+	FromKey  string `json:"from_key"`
+	To       string `json:"to"`
+	ToKey    string `json:"to_key"`
 }
 
 type DeviceNetworkEvent struct {

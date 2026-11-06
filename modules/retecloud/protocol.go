@@ -161,6 +161,8 @@ type LiteBuffer struct {
 	Unread     int    `json:"unread,omitempty"`
 	Highlights int    `json:"highlights,omitempty"`
 	ReadID     int64  `json:"read_id,omitempty"`
+	// RenamedFrom: the peer changed nick since the device's previous bootstrap; the old name.
+	RenamedFrom string `json:"renamed_from,omitempty"`
 }
 
 type liteActivityEntry struct {

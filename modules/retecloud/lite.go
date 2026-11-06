@@ -195,10 +195,18 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 			add(ch.Name).Joined = true
 		}
 	}
+	var renamed []wire.DeviceBuffer
 	for _, b := range bufs.Buffers {
 		if b.Open {
-			add(b.Buffer)
+			add(b.Buffer).RenamedFrom = b.RenamedFrom
 		}
+		if b.RenamedFrom != "" {
+			renamed = append(renamed, b)
+		}
+	}
+	if len(renamed) > 0 {
+		// Reported once: this bootstrap clears every rename it read, a closed row's unreported.
+		_ = m.call(wire.MethodDevicesClearRenames, wire.DeviceClearRenamesParams{ClientID: deviceID, Network: n.id, Buffers: renamed}, nil)
 	}
 	for _, a := range activity.Buffers {
 		if a.Unread <= 0 && a.Highlights <= 0 {
