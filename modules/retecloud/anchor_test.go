@@ -1,9 +1,12 @@
 package retecloud
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // subscribe_buffer { anchor_id }: a page centred on that row; anchor_missing falls back to the
@@ -54,16 +57,24 @@ func TestSubscribeAnchorID(t *testing.T) {
 	// With a cursor: the first-unread page and its anchor.
 	read := newestA - 20
 	c.call("read_cursor", sid, map[string]any{"buffer": "#a", "last_message_id": read})
+	// (The cursor is kept as a time: lines stored in the same millisecond share it, so read the
+	// id it stands for.)
+	var mark wire.ReadMarkerGetResult
+	if err := e.mod.brain.Call(context.Background(), wire.MethodReadMarkersGet,
+		wire.ReadMarkerGetParams{Network: e.nets["undernet"], Buffer: "#a"}, &mark); err != nil || mark.ID < read {
+		t.Fatalf("read marker %v %v", mark, err)
+	}
+	first := mark.ID + 1
 	d = subscribeData(t, c, sid, map[string]any{"buffer": "#a", "history": 6, "anchor_id": int64(1 << 40)})
-	if d["anchor_missing"] != true || d["anchor_id"] != float64(read+1) {
-		t.Fatalf("missing, with cursor: %v", d)
+	if d["anchor_missing"] != true || d["anchor_id"] != float64(first) {
+		t.Fatalf("missing, with cursor: %v (first unread %d)", d, first)
 	}
 	found := false
 	for _, id := range messageIDs(d) {
-		found = found || id == read+1
+		found = found || id == first
 	}
 	if !found {
-		t.Fatalf("first unread %d not in %v", read+1, messageIDs(d))
+		t.Fatalf("first unread %d not in %v", first, messageIDs(d))
 	}
 
 	// Not with after_id or anchor.
