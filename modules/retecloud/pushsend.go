@@ -82,7 +82,7 @@ func (m *Module) pushLine(n *network, line wire.LineEvent) {
 			m.log.Warn("push: seal", "client_id", id, "err", err)
 			continue
 		}
-		m.notePushed(id, n.id, b.Key, b.Name, b.ID)
+		m.notePushed(id, n.id, b.Key, b.ID)
 		m.relaySend(id, d.reg, push.NewRelayRequest(push.TypeMessage, eid, at.Unix(), blob))
 	}
 }
@@ -164,7 +164,6 @@ type clearKey struct {
 
 // clearState is what one device was pushed in one buffer, and its clears.
 type clearState struct {
-	buffer   string  // the buffer's name as pushed
 	pushed   []int64 // ids pushed above cleared, ascending
 	cleared  int64   // the last read_id cleared (or moved by the device itself)
 	lastSent time.Time
@@ -204,14 +203,13 @@ func (st *clearState) markCleared(readID int64) {
 	}
 }
 
-func (m *Module) notePushed(device string, network int64, key, buffer string, id int64) {
+func (m *Module) notePushed(device string, network int64, key string, id int64) {
 	k := clearKey{device, network, key}
 	st := m.push.clears[k]
 	if st == nil {
 		st = &clearState{}
 		m.push.clears[k] = st
 	}
-	st.buffer = buffer
 	st.pushed = append(st.pushed, id)
 }
 
@@ -281,7 +279,7 @@ func (m *Module) sendClear(k clearKey, st *clearState, readID int64, at time.Tim
 	}
 	eid := push.NewEventID()
 	pt, err := push.ClearPlaintext(push.Clear{EID: eid, Src: push.SourceGoBNC, Profile: d.reg.Profile,
-		SessionID: sessionID(k.network), Buffer: st.buffer, ReadID: readID, Time: at.Unix()})
+		SessionID: sessionID(k.network), Buffer: k.key, ReadID: readID, Time: at.Unix()})
 	if err != nil {
 		m.log.Warn("push: clear content", "err", err)
 		return

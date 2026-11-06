@@ -600,3 +600,26 @@ func TestClearsReadElsewhere(t *testing.T) {
 	desk.call("read_cursor", sid, map[string]any{"buffer": "#a", "last_message_id": five})
 	relay.none(mark, "clear", "already cleared by the phone")
 }
+
+// A clear names the buffer by its folded key (as read_cursor broadcasts do), whatever spelling
+// the message push carried.
+func TestClearNamesTheFoldedBuffer(t *testing.T) {
+	e, relay, _ := newPushEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #Rete[1]")
+	e.phone(relay, "ios-1", "rrk_1", "undernet")
+	sid := e.sid("undernet")
+	desk := e.dial(false)
+	desk.authenticate("desk")
+	desk.liteSync(sid, "desk", nil)
+
+	mark := relay.count()
+	e.feed("undernet", ":x!x@h PRIVMSG #Rete[1] :me there")
+	msg := relay.waitType(mark, "message", 1)[0]
+	if msg.content["buffer"] != "#Rete[1]" {
+		t.Fatalf("message buffer = %v", msg.content["buffer"])
+	}
+	desk.call("read_cursor", sid, map[string]any{"buffer": "#RETE{1}", "last_message_id": int64(msg.content["id"].(float64))})
+	if c := relay.waitType(mark, "clear", 1)[0].content; c["buffer"] != "#rete{1}" {
+		t.Fatalf("clear buffer = %v", c["buffer"])
+	}
+}
