@@ -240,7 +240,7 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `highlights`: among those, lines in a query, or whose text contains our current nick as a whole
   word under CASEMAPPING (word characters: `A-Za-z0-9_-[]\`^{}|`). A stopped network (no
   Session) is counted from the store with the same rules: its stored channel list stands in for
-  the joined channels, "our nick" is the network's configured nick and names fold under rfc1459
+  the joined channels, "our nick" is the nick the network last had (the alternate after a collision, or a later NICK), else its configured nick, and names fold under rfc1459
   (no ISUPPORT without an uplink). Only a network the store does not have is `not_found`.
 - `read_markers.get {"network","buffer"}` → `{"id","time"}` (`id` = newest message id at or before
   the stored time; 0/"" if none); a stopped network's markers are read from the store as well.
