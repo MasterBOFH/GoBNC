@@ -190,7 +190,9 @@ func (m *Module) countActivity(c *wsConn, n *network, ls *liteSession, line wire
 		ls.activity[b.Key] = a
 	}
 	a.unread++
-	hl := !n.isChannel(b.Name) || session.IsHighlight(lineParam(line.Raw, 1), n.nick, n.cm)
+	// A server-sourced line (a server notice to a channel) counts but never highlights.
+	hl := !session.ServerSource(line.Source) &&
+		(!n.isChannel(b.Name) || session.IsHighlight(lineParam(line.Raw, 1), n.nick, n.cm))
 	if hl {
 		a.highlights++
 	}

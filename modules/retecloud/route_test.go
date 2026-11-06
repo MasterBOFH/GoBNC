@@ -222,6 +222,24 @@ func TestNickReachesOnlySharedSubscribers(t *testing.T) {
 	}
 }
 
+// A server notice to a channel counts as unread but is never a highlight, even when it names
+// us (owner: highlights and push never come from server-sourced lines).
+func TestServerNoticeNamingUsInChannelIsNotAHighlight(t *testing.T) {
+	old := liteActivityFlushDelay
+	liteActivityFlushDelay = 100 * time.Millisecond
+	defer func() { liteActivityFlushDelay = old }()
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #a", ":me!u@h JOIN #b")
+	c := e.syncedClient("ios-1", "undernet", "#a")
+	mark := c.count()
+	e.feed("undernet", ":irc.example.net NOTICE #b :me: netsplit ahead")
+	act := c.waitFor(mark, 5*time.Second, isType("activity"))
+	entry := act["data"].(map[string]any)["buffers"].([]any)[0].(map[string]any)
+	if entry["buffer"] != "#b" || entry["unread"] != float64(1) || entry["highlights"] != float64(0) {
+		t.Fatalf("activity = %v, want #b with 1 unread and no highlight", act)
+	}
+}
+
 func TestHighlightFlushesActivityImmediately(t *testing.T) {
 	old := liteActivityFlushDelay
 	liteActivityFlushDelay = time.Hour
