@@ -73,9 +73,10 @@ is released. Emitting is a non-blocking enqueue; the brain never waits on a modu
 Known limits of the bus, from review (not needed by gobnc-retecloud, which takes fresh snapshots):
 
 - A solicited reply routed to one client emits no line, so state it changes (a client's own NAMES
-  rebuilding a roster that was already complete, WHO updating hosts, MODE nick updating umodes)
-  reaches modules only through their next snapshot. A roster that becomes complete still emits
-  `state`/`members`.
+  rebuilding a roster that was already complete, MODE nick updating umodes) reaches modules only
+  through their next snapshot. A roster that becomes complete still emits `state`/`members`, and
+  so does the end of a WHO (`315`, a client's or GoBNC's own silent WHOX) for every joined
+  channel its replies named, with the hosts, accounts and away/oper/bot flags they taught.
 - A CTCP request in `edge` or `disable` mode emits nothing; a host it teaches (`applyState`'s
   prefix tracking) likewise waits for the next snapshot.
 - An uplink disconnect resets Session state under `busMu` but emits no line; modules learn it from
@@ -226,7 +227,8 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `seq`/`last_id`). `members_complete` is false for a
   channel seeded from the keeper blob after a brain restart until its NAMES refresh lands, at which
   point a `state` event `{"network","kind":"members","buffer","key","members":[...],"complete":true}`
-  replaces the list. A `state` event `{"network","kind":"silence","silence"?:[...]}` replaces the
+  replaces the list; the same event follows the end of a WHO that named a joined channel. A
+  `state` event `{"network","kind":"silence","silence"?:[...]}` replaces the
   SILENCE list whenever it changes, ahead of the `SILENCE` line that changed it.
 - `history.messages {"network","buffer","before_id"?|"after_id"?|"around_id"?|"anchor"?,"limit"?,"device"?}`:
   exactly one of the four selectors (none = latest). `anchor` ∈ `"first_unread"`, `"latest"`;

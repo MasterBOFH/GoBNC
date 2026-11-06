@@ -114,6 +114,8 @@ func (s *Session) applyState(msg irc.Message) {
 		if whoxKnown {
 			s.state354Locked(msg, whoxFields)
 		}
+	case "315":
+		s.state315Locked(msg)
 	case "SILENCE":
 		s.stateSILENCELocked(msg)
 	case "271":

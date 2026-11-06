@@ -85,7 +85,44 @@ func (s *Session) noteWHOLocked(channel string) {
 	if channel == "" || !isChannelName(channel) {
 		return
 	}
-	s.noteWHOAtLocked(s.isupport.CaseMapping.Canonical(channel), time.Now())
+	key := s.isupport.CaseMapping.Canonical(channel)
+	s.noteWHOAtLocked(key, time.Now())
+	s.noteWHONamedLocked(key)
+}
+
+// noteWHONamedLocked remembers that a WHO reply named channel (folded), so the WHO's end sends
+// its members, with what the replies taught, to modules. Caller holds s.mu.
+func (s *Session) noteWHONamedLocked(key string) {
+	for _, k := range s.whoNamed {
+		if k == key {
+			return
+		}
+	}
+	s.whoNamed = append(s.whoNamed, key)
+}
+
+// state315Locked ends a WHO (RPL_ENDOFWHO): every joined channel a reply named, or the WHO's own
+// channel mask, has its members sent to modules (emitRosterDoneLocked), so a lite client already
+// subscribed sees the flags and hosts the replies taught. Caller holds s.mu.
+func (s *Session) state315Locked(msg irc.Message) {
+	if mask := msg.Param(1); isChannelName(mask) {
+		s.noteWHONamedLocked(s.isupport.CaseMapping.Canonical(mask))
+	}
+	named := s.whoNamed
+	s.whoNamed = nil
+	for _, key := range named {
+		ch := s.channels[key]
+		if ch == nil || !ch.RosterKnown {
+			continue // its 366 sends the roster
+		}
+		dup := false
+		for _, k := range s.rosterDone {
+			dup = dup || k == key
+		}
+		if !dup {
+			s.rosterDone = append(s.rosterDone, key)
+		}
+	}
 }
 
 func (s *Session) noteWHOAtLocked(key string, at time.Time) {

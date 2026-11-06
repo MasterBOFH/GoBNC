@@ -112,7 +112,8 @@ func (s *Session) membersLocked(ch *ChannelState) []wire.Member {
 }
 
 // emitRosterDoneLocked emits a state/members event for every channel whose roster a NAMES
-// reply (366) just confirmed, and forgets them. Caller holds busMu.
+// reply (366) just confirmed or whose members a WHO (315) just named, and forgets them.
+// Caller holds busMu.
 func (s *Session) emitRosterDoneLocked() {
 	s.mu.Lock()
 	done := s.rosterDone

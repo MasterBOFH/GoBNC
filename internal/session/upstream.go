@@ -629,6 +629,7 @@ func (s *Session) HandleDisconnect(err error) {
 	s.uplinkServer = ""
 	s.ircd = ""
 	s.channels = make(map[string]*ChannelState)
+	s.whoNamed = nil
 	s.pendingJoinKeys = make(map[string]string)
 	s.selfEcho = nil
 	s.selfEchoSeq = 0
