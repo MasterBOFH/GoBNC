@@ -990,6 +990,7 @@ func (s *Server) StopNetwork(name string) error {
 	if !ok {
 		return fmt.Errorf("network %q not running", name)
 	}
+	s.recordLastNick(sess.Network, sess)
 	if err := s.driver.StopNetwork(sess.NetworkID()); err != nil {
 		return err
 	}

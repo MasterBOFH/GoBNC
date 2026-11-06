@@ -84,7 +84,8 @@ func (s *Server) storeCtx() context.Context {
 	return context.Background()
 }
 
-// networkInfo is n as modules see it: stopped unless a Session runs it.
+// networkInfo is n as modules see it: stopped, with the nick it last had, unless a Session
+// runs it.
 func (s *Server) networkInfo(n store.Network) wire.NetworkInfo {
 	info := wire.NetworkInfo{ID: n.ID, Name: n.Name, State: wire.NetStopped, Nick: n.Nick}
 	if sess := s.sessionByNetwork(keeper.NetworkID(n.ID)); sess != nil {
@@ -92,6 +93,8 @@ func (s *Server) networkInfo(n store.Network) wire.NetworkInfo {
 		if nick := sess.Nick(); nick != "" {
 			info.Nick = nick
 		}
+	} else {
+		info.Nick = s.stoppedNick(n)
 	}
 	return info
 }
@@ -144,13 +147,21 @@ func (s *Server) notifyNetwork(n store.Network, sess *session.Session, change st
 		if nick := sess.Nick(); nick != "" {
 			ev.Nick = nick
 		}
+	} else {
+		ev.Nick = s.stoppedNick(n)
 	}
 	m.NetworkChanged(ev)
 }
 
-// watchSessionState forwards sess's state changes to modules as network events.
+// watchSessionState forwards sess's state changes to modules as network events, and records
+// the nick the uplink registered with as the network's last nick.
 func (s *Server) watchSessionState(sess *session.Session, n store.Network) {
-	sess.SetStateHook(func(string) { s.notifyNetwork(n, sess, wire.ChangeState) })
+	sess.SetStateHook(func(state string) {
+		if state == wire.NetRegistered {
+			s.recordLastNick(n, sess)
+		}
+		s.notifyNetwork(n, sess, wire.ChangeState)
+	})
 }
 
 // moduleCommand runs args[0] as a module command when a module registered it (BNC <name> ... or

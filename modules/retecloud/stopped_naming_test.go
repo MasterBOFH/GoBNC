@@ -61,3 +61,41 @@ func TestLiteSyncNeverRunNetworkLabelsChannels(t *testing.T) {
 		t.Fatalf("#c = %v, want kind channel", ch)
 	}
 }
+
+// A stopped network's highlights in a lite bootstrap name the nick it last had (the alternate
+// after a collision, as the brain records it), not its configured one.
+func TestLiteSyncStoppedNetworkHighlightsLastNick(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	ctx := context.Background()
+	nid := e.nets["undernet"]
+	if err := e.be.db.AddChannel(ctx, nid, "#c", ""); err != nil {
+		t.Fatal(err)
+	}
+	e.feed("undernet", ":me!u@h JOIN #c")
+	sid := e.sid("undernet")
+	c := e.dial(false)
+	c.authenticate("ios-1")
+	c.liteSync(sid, "ios-1", nil)
+
+	if err := e.be.db.SetLastNick(ctx, nid, "me_"); err != nil { // configured nick "me"
+		t.Fatal(err)
+	}
+	t0 := time.Now().Add(-time.Hour).UTC()
+	for i, text := range []string{"me_: ping", "hello all"} {
+		if _, err := e.be.db.InsertMessage(ctx, store.Message{NetworkID: nid, Target: "#c",
+			Time: t0.Add(time.Duration(i) * time.Second), Command: "PRIVMSG", Source: "peer!p@h", Raw: "x", Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := c.count()
+	e.stopNetwork("undernet")
+	c.waitFor(mark, 5*time.Second, func(f map[string]any) bool {
+		d, _ := f["data"].(map[string]any)
+		return f["type"] == "session_state" && d["state"] == "disconnected"
+	})
+	_, frames := c.liteSync(sid, "ios-1", nil)
+	ch := liteBuffers(t, successData(t, frames))["#c"]
+	if ch == nil || ch["unread"] != float64(2) || ch["highlights"] != float64(1) {
+		t.Fatalf("#c = %v, want 2 unread, 1 highlight (the line naming me_)", ch)
+	}
+}

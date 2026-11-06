@@ -22,8 +22,9 @@ type bufferView interface {
 // storedNetwork stands in for the Session of a network the brain runs none for (stopped, or
 // never started): its history, read markers and device rows are still in the store. With no
 // uplink there is no ISUPPORT and no self-nick, so it folds and classifies names the way a
-// Session does before the server's 005 (rfc1459, channel prefixes #&+!) and takes the
-// network's configured nick as ours. Its channels are the network's stored channel list (the
+// Session does before the server's 005 (rfc1459, channel prefixes #&+!) and takes the nick
+// the network last had (store.LastNick: the alternate after a collision, say) as ours, or its
+// configured nick when none was recorded. Its channels are the network's stored channel list (the
 // ones it joins on connect), standing in for the joined channels a Session reports.
 type storedNetwork struct {
 	nick     string
@@ -65,7 +66,14 @@ func (s *Server) view(ctx context.Context, network int64) (bufferView, error) {
 		if err != nil {
 			return nil, err
 		}
-		v := storedNetwork{nick: n.Nick, cm: irc.NewISUPPORT().CaseMapping}
+		nick, err := db.LastNick(ctx, network)
+		if err != nil {
+			return nil, err
+		}
+		if nick == "" {
+			nick = n.Nick
+		}
+		v := storedNetwork{nick: nick, cm: irc.NewISUPPORT().CaseMapping}
 		for _, ch := range chs {
 			v.channels = append(v.channels, ch.Name)
 		}
