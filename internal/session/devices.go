@@ -42,6 +42,12 @@ func (s *Session) reopenQueryLocked(msg irc.Message, target string, id int64) {
 	if s.isSelfNick(display) {
 		display = msg.Param(0) // our own line: the query is the target's
 	}
+	if s.Fold(display) != target {
+		// A query row is keyed on its peer's folded nick; one shown under another name could
+		// never be closed by the name it was shown as.
+		s.log.Warn("reopen query: display does not fold to its key", "target", target, "display", display)
+		return
+	}
 	changed, err := s.store.ReopenForMessage(context.Background(), s.Network.ID, target, display, id)
 	if err != nil {
 		s.log.Warn("reopen query for devices", "target", target, "err", err)
