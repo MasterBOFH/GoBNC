@@ -1137,12 +1137,16 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 			// envelope reports it.
 			return []string{cm.Canonical(ch)}
 		}
-		if !isChannelName(t) && s.isSelfNick(t) {
-			// Inbound private message: Param(0) is our own nick, not the
-			// other party. Key by the sender instead, so replies from a
-			// query partner land under the same target as what we sent
-			// them (see historyTargets' self-echo caller, which already
-			// keys outgoing PMs by Param(0) == the peer).
+		s.mu.RLock()
+		chantypes := s.isupport.Raw["CHANTYPES"]
+		s.mu.RUnlock()
+		if !isChannelName(t) && !isChannelTarget(t, chantypes) && !s.isSelfNick(msg.Nick()) {
+			// Inbound private message: addressed to us, so Param(0) is our own nick, not the
+			// other party. Key by the sender instead, so replies from a query partner land
+			// under the same target as what we sent them (our own line, below, is keyed by
+			// Param(0) == the peer). Decided by the source alone, as the envelope does: a line
+			// from anyone but us is to us even when Param(0) is not the nick we know as ours
+			// (not learned yet after a resume, or still the configured one).
 			nick := msg.Nick()
 			if nick == "" {
 				return nil

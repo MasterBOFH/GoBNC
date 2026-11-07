@@ -246,11 +246,13 @@ func (m *Module) bootstrap(c *wsConn, n *network, deviceID string, cache map[str
 // bootstrapLive makes the bootstrap's calls on the network's Session: seed the device's open
 // buffers, attach the virtual client, count activity, take the snapshot. stopped reports a
 // network the brain runs no Session for (not_found); any other failure, not_ready included, is
-// an error.
+// an error. The device's first seed is its first sync: with baseline, every buffer nobody has
+// read gets its read marker at its newest line first (read_marker events, so every follower
+// hears read_cursor), and the counts below start from there.
 func (m *Module) bootstrapLive(c *wsConn, n *network, deviceID string, snap *wire.Snapshot, activity *wire.HistoryActivityResult) (stopped bool, err error) {
 	calls := []func() error{
 		func() error {
-			return m.call(wire.MethodDevicesSeed, wire.DeviceNetworkParams{ClientID: deviceID, Network: n.id}, nil)
+			return m.call(wire.MethodDevicesSeed, wire.DeviceSeedParams{ClientID: deviceID, Network: n.id, Baseline: true}, nil)
 		},
 		func() error {
 			return m.call(wire.MethodClientsAttach, wire.ClientParams{Network: n.id, Client: c.clientName}, nil)

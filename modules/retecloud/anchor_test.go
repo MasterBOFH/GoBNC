@@ -23,6 +23,7 @@ func TestSubscribeAnchorID(t *testing.T) {
 	c := e.dial(false)
 	c.authenticate("ios-1")
 	sid := e.sid("undernet")
+	e.knownDevice("ios-1", "undernet") // not a first sync: #a keeps no read cursor
 	c.liteSync(sid, "ios-1", nil)
 
 	anchor := newestA - 15

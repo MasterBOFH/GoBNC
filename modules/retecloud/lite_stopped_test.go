@@ -114,6 +114,7 @@ func TestLiteSyncStoppedNetworkCarriesUnreadCounts(t *testing.T) {
 	sid := e.sid("undernet")
 	c := e.dial(false)
 	c.authenticate("ios-1")
+	e.knownDevice("ios-1", "undernet") // not a first sync: the backdated lines below stay unread
 	c.liteSync(sid, "ios-1", nil)
 	mark := c.count()
 	rid := c.request("open_buffer", map[string]any{"buffer": "friend"}, sid)

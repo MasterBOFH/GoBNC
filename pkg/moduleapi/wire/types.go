@@ -371,6 +371,14 @@ type DeviceCloseResult struct {
 	ClosedAtID int64 `json:"closed_at_id"`
 }
 
+// DeviceSeedParams: devices.seed. Baseline (requires read_markers): on the device's first seed,
+// first set the read marker of every buffer with history and no marker to its newest line.
+type DeviceSeedParams struct {
+	ClientID string `json:"client_id"`
+	Network  int64  `json:"network"`
+	Baseline bool   `json:"baseline,omitempty"`
+}
+
 type DeviceSeedResult struct {
 	Seeded []string `json:"seeded"`
 }

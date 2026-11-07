@@ -170,18 +170,21 @@ func handleDevicesClose(ctx context.Context, c *Conn, params json.RawMessage) (a
 }
 
 func handleDevicesSeed(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
-	p, err := decodeParams[wire.DeviceNetworkParams](params)
+	p, err := decodeParams[wire.DeviceSeedParams](params)
 	if err != nil {
 		return nil, err
 	}
 	if err := needClientID(p.ClientID); err != nil {
 		return nil, err
 	}
+	if p.Baseline && !c.Granted(wire.FeatureReadMarkers) {
+		return nil, wire.Errorf(wire.CodeNotGranted, "baseline requires feature %q", wire.FeatureReadMarkers)
+	}
 	sess, err := c.srv.session(p.Network)
 	if err != nil {
 		return nil, err
 	}
-	seeded, err := sess.SeedDevice(p.ClientID)
+	seeded, err := sess.SeedDevice(p.ClientID, p.Baseline)
 	if seeded == nil {
 		seeded = []string{}
 	}

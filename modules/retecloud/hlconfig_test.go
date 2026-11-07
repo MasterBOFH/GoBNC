@@ -332,6 +332,7 @@ func TestBootstrapHighlightsHonourSwitchAndRules(t *testing.T) {
 		t.Helper()
 		c := e.dial(false)
 		c.authenticate(device)
+		e.knownDevice(device, "undernet") // not a first sync: the lines count from no cursor
 		_, frames := c.liteSync(sid, device, nil)
 		bufs := liteBuffers(t, successData(t, frames))
 		want := map[string][2]any{"#a": {float64(1), nil}, "#b": {float64(2), float64(1)}, "#c": {float64(1), nil}}
