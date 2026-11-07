@@ -96,8 +96,9 @@ func (s *Session) seedDevice(clientID string, baseline bool) ([]string, []irc.Me
 	var seededBufs []string
 	for _, target := range targets {
 		if target == "" || target == s.Fold(wire.ServerBuffer) || target[0] == '$' ||
-			strings.IndexByte(statusmsg, target[0]) >= 0 || isChannelTarget(target, chantypes) {
-			continue
+			strings.IndexByte(statusmsg, target[0]) >= 0 || isChannelTarget(target, chantypes) ||
+			s.isSelfNick(target) {
+			continue // not a query: our own nick holds lines addressed to us, not a peer's
 		}
 		var marker time.Time
 		if ts, ok, err := s.store.GetReadMarker(ctx, s.Network.ID, target); err != nil {
@@ -109,15 +110,20 @@ func (s *Session) seedDevice(clientID string, baseline bool) ([]string, []irc.Me
 		if err != nil {
 			return seededBufs, marks, err
 		}
+		// The row is keyed on target, so it is displayed as the target's own nick: the newest
+		// unread line from the peer whose nick folds to the target (its current spelling). A
+		// target whose unread lines all come from someone else (a service address, an old nick
+		// of ours) is not that sender's query and is not seeded: the client closes a row by the
+		// name it shows, which must fold back to the key (A3005).
 		display := ""
-		for _, l := range a.Unread { // newest first: the peer's current spelling
+		for _, l := range a.Unread { // newest first
 			if l.Command != "PRIVMSG" || !strings.Contains(l.Source, "!") {
 				continue
 			}
 			if verb, _, ok := parseCTCP(l.Text); ok && !strings.EqualFold(verb, "ACTION") {
 				continue
 			}
-			if nick := sourceNickOf(l.Source); !s.isSelfNick(nick) {
+			if nick := sourceNickOf(l.Source); s.Fold(nick) == target {
 				display = nick
 				break
 			}
@@ -212,6 +218,13 @@ func (s *Session) OpenBufferForDevice(clientID, buffer string) error {
 // CloseBufferForDevice closes buffer on one device: its floor becomes the buffer's newest
 // message id (what is unread now stays dismissed there) and buffer_close is emitted. It returns
 // that floor.
+//
+// It also closes every other open row of the device on this network that is displayed as
+// buffer (its display folds to the key) under a different key: a row an earlier seed opened
+// under the wrong target (A3005). The client knows such a row only by that display, so this
+// close is the only one it can send for it. Each such row gets its own floor and its own
+// buffer_close after the real key's, so the device's other connections drop its key from their
+// open set (they would otherwise keep pushing that key's activity).
 func (s *Session) CloseBufferForDevice(clientID, buffer string) (int64, error) {
 	if s.store == nil || s.Network.ID == 0 {
 		return 0, errNoStore
@@ -235,7 +248,37 @@ func (s *Session) CloseBufferForDevice(clientID, buffer string) (int64, error) {
 		return 0, err
 	}
 	s.emitLocked(wire.BufferCloseEvent{Network: s.Network.ID, ClientID: clientID, Buffer: buffer, Key: key, ClosedAtID: closedAt})
-	return closedAt, nil
+	return closedAt, s.closeMisKeyedLocked(ctx, clientID, key)
+}
+
+// closeMisKeyedLocked closes the device's open rows displayed as key under another target
+// (CloseBufferForDevice). Caller holds busMu.
+func (s *Session) closeMisKeyedLocked(ctx context.Context, clientID, key string) error {
+	rows, err := s.store.ListOpenBuffers(ctx, clientID, s.Network.ID)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if !r.Open || r.Target == key || s.Fold(r.Display) != key {
+			continue
+		}
+		latest, err := s.store.MessagesLatest(ctx, s.Network.ID, r.Target, 1)
+		if err != nil {
+			return err
+		}
+		var floor int64
+		if len(latest) == 1 {
+			floor = latest[0].ID
+		}
+		if err := s.store.SetBufferOpen(ctx, clientID, s.Network.ID, r.Target, r.Display, false, floor); err != nil {
+			return err
+		}
+		if floor, err = s.store.BufferClosedAt(ctx, clientID, s.Network.ID, r.Target); err != nil {
+			return err
+		}
+		s.emitLocked(wire.BufferCloseEvent{Network: s.Network.ID, ClientID: clientID, Buffer: r.Display, Key: r.Target, ClosedAtID: floor})
+	}
+	return nil
 }
 
 // queryExists reports whether we have a query with the folded nick: stored lines under it, or a
