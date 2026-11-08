@@ -46,6 +46,7 @@ type pushState struct {
 	readMoves   map[int64]map[string]time.Time // network → origin device ("" = not a lite device) → last move
 	clears      map[clearKey]*clearState
 	relayPaused map[string]time.Time // relay_url → no requests until then (503)
+	coalesce    *push.Coalescer      // one notification per conversation; cool-down and cap per buffer
 }
 
 // relayTimeout bounds one relay request.
@@ -56,7 +57,7 @@ const relayUnavailablePause = time.Hour
 
 func newPushState() pushState {
 	return pushState{devices: map[string]*pushDevice{}, readMoves: map[int64]map[string]time.Time{},
-		clears: map[clearKey]*clearState{}, relayPaused: map[string]time.Time{}}
+		clears: map[clearKey]*clearState{}, relayPaused: map[string]time.Time{}, coalesce: push.NewCoalescer(nil)}
 }
 
 func defaultRelay() *push.Relay {
@@ -244,6 +245,7 @@ func (m *Module) handlePushUnregister(c *wsConn, msg *ClientMessage) {
 
 func (m *Module) forgetPushDevice(id string) {
 	delete(m.push.devices, id)
+	m.push.coalesce.Forget(id)
 	for k, st := range m.push.clears {
 		if k.device == id {
 			st.stop()

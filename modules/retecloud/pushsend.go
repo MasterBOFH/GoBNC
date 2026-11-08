@@ -11,8 +11,9 @@ import (
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
-// The push trigger (WEBSOCKET_PROTOCOL_LITE.md, "When a device is pushed") and the clears of
-// notifications read elsewhere (PUSH_ENCRYPTION.md, "Clearing notifications read elsewhere").
+// The push trigger (WEBSOCKET_PROTOCOL_LITE.md, "When a device is pushed"), coalescing a flood
+// (PUSH_ENCRYPTION.md, "Coalescing a flood"; push/coalesce.go) and the clears of notifications
+// read elsewhere (PUSH_ENCRYPTION.md, "Clearing notifications read elsewhere").
 
 var (
 	// readingElsewhereWindow: a read cursor moved by another client this recently means someone
@@ -69,10 +70,15 @@ func (m *Module) pushLine(n *network, line wire.LineEvent) {
 			m.relayPausedNow(d.reg.RelayURL) {
 			continue
 		}
+		decision := m.push.coalesce.Decide(push.Conversation{ClientID: id, SessionID: sessionID(n.id), Buffer: b.Key,
+			Sender: n.key(line.Nick)}, now)
+		if !decision.Send {
+			continue // over the buffer's cap: the conversation's next push reports it
+		}
 		eid := push.NewEventID()
 		pt, err := push.MessagePlaintext(push.Message{EID: eid, Src: push.SourceGoBNC, Profile: d.reg.Profile,
 			SessionID: sessionID(n.id), Network: n.name, Buffer: b.Name, Kind: kind, Sender: line.Nick, Text: text,
-			Action: action, Time: at.Unix(), ID: b.ID})
+			Action: action, Time: at.Unix(), ID: b.ID, Skipped: decision.Skipped})
 		if err != nil {
 			m.log.Warn("push: content", "network", n.id, "id", b.ID, "err", err)
 			continue
@@ -83,7 +89,9 @@ func (m *Module) pushLine(n *network, line wire.LineEvent) {
 			continue
 		}
 		m.notePushed(id, n.id, b.Key, b.ID)
-		m.relaySend(id, d.reg, push.NewRelayRequest(push.TypeMessage, eid, at.Unix(), blob))
+		req := push.NewRelayRequest(push.TypeMessage, eid, at.Unix(), blob)
+		req.CollapseID, req.Silent = decision.CollapseID, decision.Silent
+		m.relaySend(id, d.reg, req)
 	}
 }
 

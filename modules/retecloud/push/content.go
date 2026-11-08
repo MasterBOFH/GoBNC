@@ -51,6 +51,7 @@ type Message struct {
 	Action    bool   `json:"action,omitempty"`
 	Time      int64  `json:"time"`
 	ID        int64  `json:"id"`
+	Skipped   int    `json:"skipped,omitempty"` // lines held back by the buffer's cap (coalesce.go)
 }
 
 // Clear is a clear push's plaintext.
