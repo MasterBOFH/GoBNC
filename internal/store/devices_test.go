@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -14,6 +15,42 @@ func deviceStore(t *testing.T) (*Store, int64) {
 		t.Fatal(err)
 	}
 	return s, nid
+}
+
+// HasDevices is false until a device row exists (TouchDevice, or a row that needs one), and is
+// read back from the database when it is opened again.
+func TestHasDevices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.HasDevices() {
+		t.Fatal("a new store has devices")
+	}
+	if _, err := s.TouchDevice(context.Background(), "phone", "Phone"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasDevices() {
+		t.Fatal("no devices after TouchDevice")
+	}
+	_ = s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !s.HasDevices() {
+		t.Fatal("reopened store forgot its devices")
+	}
+
+	other, nid := deviceStore(t)
+	if err := other.SetDeviceNetwork(context.Background(), "pad", nid, true); err != nil {
+		t.Fatal(err)
+	}
+	if !other.HasDevices() {
+		t.Fatal("no devices after a row that needs one")
+	}
 }
 
 func TestTouchDeviceAndToggles(t *testing.T) {

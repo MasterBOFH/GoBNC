@@ -21,7 +21,8 @@ const (
 	maxHistoryLimit     = 500
 )
 
-// handleHistoryMessages pages one buffer's history by message id: before_id, after_id,
+// handleHistoryMessages pages one buffer's history by message id: before_id, after_id, both
+// (the rows between them, oldest first; has_after then means rows remain below before_id),
 // around_id, anchor (first_unread / latest) or, with none of them, the latest page. A stopped
 // network's history is read from the store as well (see storedNetwork).
 func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage) (any, error) {
@@ -29,14 +30,16 @@ func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
+	// before_id and after_id together are one selector: the rows between them (a gap fill).
+	between := p.BeforeID != nil && p.AfterID != nil
 	selectors := 0
-	for _, set := range []bool{p.BeforeID != nil, p.AfterID != nil, p.AroundID != nil, p.Anchor != ""} {
+	for _, set := range []bool{p.BeforeID != nil || p.AfterID != nil, p.AroundID != nil, p.Anchor != ""} {
 		if set {
 			selectors++
 		}
 	}
 	if selectors > 1 {
-		return nil, wire.Errorf(wire.CodeBadParams, "at most one of before_id, after_id, around_id, anchor")
+		return nil, wire.Errorf(wire.CodeBadParams, "at most one of before_id/after_id, around_id, anchor")
 	}
 	if p.Limit == 0 {
 		p.Limit = defaultHistoryLimit
@@ -66,7 +69,14 @@ func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage)
 	}
 	key := sess.Fold(p.Buffer)
 	var msgs []store.Message
+	moreInside := false // between only: rows remain in the range after this page
 	switch {
+	case between:
+		// One row past the page says whether more remain below before_id.
+		msgs, err = db.MessagesBetween(ctx, p.Network, key, *p.AfterID, *p.BeforeID, p.Limit+1)
+		if len(msgs) > p.Limit {
+			msgs, moreInside = msgs[:p.Limit], true
+		}
 	case p.BeforeID != nil:
 		msgs, err = db.MessagesBefore(ctx, p.Network, key, *p.BeforeID, p.Limit)
 	case p.AfterID != nil:
@@ -89,7 +99,10 @@ func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage)
 		if res.HasBefore, err = db.HasMessageBefore(ctx, p.Network, key, msgs[0].ID); err != nil {
 			return nil, err
 		}
-		if res.HasAfter, err = db.HasMessageAfter(ctx, p.Network, key, msgs[len(msgs)-1].ID); err != nil {
+		if between {
+			// A bounded page's newer side is the range's: the gap fill closes on false.
+			res.HasAfter = moreInside
+		} else if res.HasAfter, err = db.HasMessageAfter(ctx, p.Network, key, msgs[len(msgs)-1].ID); err != nil {
 			return nil, err
 		}
 	}

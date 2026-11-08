@@ -357,6 +357,9 @@ func TestModulesValidation(t *testing.T) {
 	if err := loadModules(t, `[{"name":"retecloud","features":["events","send","devices"]}]`); err != nil {
 		t.Fatalf("valid modules rejected: %v", err)
 	}
+	if err := loadModules(t, `[{"name":"retecloud","features":["events","member_meta","silence","channel_meta"]}]`); err != nil {
+		t.Fatalf("state features rejected: %v", err)
+	}
 	err := loadModules(t, `[{"name":"a","features":[]},{"name":"a","features":[]}]`)
 	if err == nil || err.Error() != `module "a": duplicate name` {
 		t.Fatalf("duplicate name: err = %v", err)

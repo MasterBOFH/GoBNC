@@ -73,11 +73,11 @@ func (m *Module) handleGetMessages(c *wsConn, msg *ClientMessage) {
 	case aroundID != nil:
 		p.AroundID = aroundID
 		page["anchor_id"] = *aroundID
-	case req.BeforeID != nil:
-		p.BeforeID = req.BeforeID
-	case req.AfterID != nil:
-		p.AfterID = req.AfterID
+	default:
+		// Both bounds (the gap fill) page the rows between them, oldest first.
+		p.BeforeID, p.AfterID = req.BeforeID, req.AfterID
 	}
+	between := p.BeforeID != nil && p.AfterID != nil
 	var res wire.HistoryMessagesResult
 	if err := m.call(wire.MethodHistoryMessages, p, &res); err != nil {
 		c.send(errorFrame("get_messages", msg.RequestID, "Error retrieving messages"))
@@ -93,7 +93,11 @@ func (m *Module) handleGetMessages(c *wsConn, msg *ClientMessage) {
 		page["oldest_id"] = res.Messages[0].ID
 		page["newest_id"] = res.Messages[len(res.Messages)-1].ID
 	}
-	data := map[string]interface{}{"messages": out, "has_more": res.HasBefore}
+	hasMore := res.HasBefore
+	if between {
+		hasMore = res.HasAfter // fetched ascending: more remain inside the range (ReteCloud's has_more)
+	}
+	data := map[string]interface{}{"messages": out, "has_more": hasMore}
 	for k, v := range page {
 		data[k] = v
 	}

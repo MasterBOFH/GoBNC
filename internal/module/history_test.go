@@ -70,7 +70,9 @@ func ptr(v int64) *int64 { return &v }
 func TestHistoryMessagesSelectorValidation(t *testing.T) {
 	tc, _, nid, _ := historyFixture(t, "history")
 	for name, p := range map[string]wire.HistoryMessagesParams{
-		"two selectors":          {Network: nid, Buffer: "#c", BeforeID: ptr(5), AfterID: ptr(1)},
+		"two selectors":          {Network: nid, Buffer: "#c", BeforeID: ptr(5), AroundID: ptr(1)},
+		"bounds and around":      {Network: nid, Buffer: "#c", BeforeID: ptr(5), AfterID: ptr(1), AroundID: ptr(3)},
+		"after and anchor":       {Network: nid, Buffer: "#c", AfterID: ptr(1), Anchor: wire.AnchorLatest},
 		"anchor and id":          {Network: nid, Buffer: "#c", AroundID: ptr(5), Anchor: wire.AnchorLatest},
 		"limit too big":          {Network: nid, Buffer: "#c", Limit: 501},
 		"negative limit":         {Network: nid, Buffer: "#c", Limit: -1},
@@ -101,6 +103,43 @@ func TestHistoryMessagesPagesByID(t *testing.T) {
 	tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: "#c", AfterID: ptr(ids[0]), Limit: 500}, &res)
 	if len(res.Messages) != 119 || !res.HasBefore || res.HasAfter {
 		t.Fatalf("after page: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
+	}
+}
+
+// Both bounds are the gap fill: the rows strictly between them, oldest first. has_after says
+// rows remain inside the range (below before_id), not merely somewhere newer in the buffer;
+// has_before keeps its meaning (older rows exist in the buffer).
+func TestHistoryMessagesBetweenBounds(t *testing.T) {
+	tc, db, nid, _ := historyFixture(t, "history")
+	ids := seedHistory(t, db, nid, "#c", 30)
+	call := func(after, before int64, limit int) wire.HistoryMessagesResult {
+		t.Helper()
+		var res wire.HistoryMessagesResult
+		tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: "#c",
+			AfterID: ptr(after), BeforeID: ptr(before), Limit: limit}, &res)
+		return res
+	}
+	// Empty range: adjacent rows.
+	if res := call(ids[10], ids[11], 50); len(res.Messages) != 0 || res.HasAfter || res.HasBefore {
+		t.Fatalf("empty: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
+	}
+	// Partial page: everything inside, and nothing left inside though newer rows exist.
+	res := call(ids[10], ids[16], 50)
+	if len(res.Messages) != 5 || res.Messages[0].ID != ids[11] || res.Messages[4].ID != ids[15] || res.HasAfter || !res.HasBefore {
+		t.Fatalf("partial: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
+	}
+	// Full page: the oldest rows after after_id, more inside.
+	res = call(ids[10], ids[25], 5)
+	if len(res.Messages) != 5 || res.Messages[0].ID != ids[11] || res.Messages[4].ID != ids[15] || !res.HasAfter || !res.HasBefore {
+		t.Fatalf("full: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
+	}
+	// Exactly the range's size: a full page with nothing left inside.
+	if res = call(ids[10], ids[16], 5); len(res.Messages) != 5 || res.HasAfter {
+		t.Fatalf("exact: %d msgs, has_after %v", len(res.Messages), res.HasAfter)
+	}
+	// From the buffer's start (the fixture's own JOIN, then ids 0..2): no older rows.
+	if res = call(0, ids[3], 50); len(res.Messages) != 4 || res.Messages[3].ID != ids[2] || res.HasBefore || res.HasAfter {
+		t.Fatalf("start: %d msgs, has_before %v has_after %v", len(res.Messages), res.HasBefore, res.HasAfter)
 	}
 }
 

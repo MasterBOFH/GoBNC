@@ -112,12 +112,16 @@ type Channel struct {
 	ChanKey         string   `json:"chankey"`
 	MembersComplete bool     `json:"members_complete"`
 	Members         []Member `json:"members"`
+	// ModesKnown / TopicKnown: Modes / Topic are the channel's (a reply or our JOIN's burst said
+	// so), not merely empty. A channel resumed after a brain reload knows neither until asked.
+	ModesKnown bool `json:"modes_known,omitempty"`
+	TopicKnown bool `json:"topic_known,omitempty"`
 }
 
 type Topic struct {
 	Text   string `json:"text"`
-	Setter string `json:"setter"`
-	Time   string `json:"time"` // RFC 3339, "" when unknown
+	Setter string `json:"setter"` // "" when unknown
+	Time   string `json:"time"`   // RFC 3339, "" when unknown
 }
 
 type Member struct {
@@ -188,10 +192,13 @@ type ClientLineEvent struct {
 const (
 	StateMembers = "members"
 	StateSilence = "silence"
+	StateChannel = "channel"
 )
 
 // StateEvent: kind "members" replaces a channel's member list (Complete true once NAMES landed);
-// kind "silence" replaces the SILENCE list (Silence, no buffer).
+// kind "silence" replaces the SILENCE list (Silence, no buffer); kind "channel" says a reply
+// (to anyone's MODE or TOPIC, or our JOIN's burst) made the channel's modes or topic known or
+// changed them, which no line event says (take a snapshot).
 type StateEvent struct {
 	Network  int64    `json:"network"`
 	Kind     string   `json:"kind"`

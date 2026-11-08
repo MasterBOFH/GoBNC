@@ -204,6 +204,19 @@ Features and their methods (a method of a feature not granted → `not_granted`)
 | `auth` | `auth.check` |
 | `storage` | `storage.get`, `storage.set`, `storage.delete`, `storage.list` |
 | `commands` | `commands.register`, `commands.reply` |
+| `member_meta` | none: state feature (below) |
+| `silence` | none: state feature (below) |
+| `channel_meta` | none: state feature (below) |
+
+**State features** have no methods. They make the brain keep, or ask the server for, state that
+IRC clients poll for themselves, so a bouncer with no module granted them pays nothing for it.
+The brain computes the set from the features **configured** for every module in `gobnc.json`
+(at start and on REHASH), whether or not the module is connected: `member_meta` requests
+`userhost-in-names` and lets the brain poll WHOX itself for member hosts, accounts and flags
+(only while a module is subscribed); `silence` queries the SILENCE list after registration;
+`channel_meta` asks every channel's `MODE` and `TOPIC` again after a brain reload.
+`gobnc-retecloud` needs all three. Independently of features, the per-device query rules
+(`devices`) run only once a device exists in the store.
 
 Method shapes (`network` is the GoBNC network id, int64; `buffer` is a display name; `key` is its
 CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
@@ -216,10 +229,17 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   fresh snapshot. `events.unsubscribe {"network"}` → `{}`.
 - Snapshot: `{"network", "state", "last_id", "seq", "self": {"nick","user","host","account","umodes","away"},
   "isupport": {"KEY": "value", ...}, "caps": [...], "channels": [{"name","key","topic":
-  {"text","setter","time"},"modes","chankey","members_complete",
+  {"text","setter","time"},"modes","chankey","members_complete","modes_known"?,"topic_known"?,
   "members": [{"nick","prefixes","user","host","account","away","oper"?,"bot"?}]}],
   "silence"?: [...]}`. `oper` / `bot` are omitted when false, `silence` (the server's SILENCE list,
-  queried silently after registration) when empty. `last_id` = newest
+  queried silently after the `silence` feature's registration query) when empty.
+  `modes_known` / `topic_known` (omitted when false) say `modes` / `topic.text` are the channel's
+  rather than merely empty: set by a 324, or by 332/331/a live TOPIC/our JOIN's burst; a channel
+  seeded after a brain restart knows neither until asked (with `channel_meta`, the brain asks
+  every channel again, one per WHOX seed tick). `topic.setter` / `topic.time` come from 333 or a
+  live TOPIC, `""` when unknown. A `state` event `{"network","kind":"channel","buffer","key"}`
+  says a reply made a channel's modes or topic known or changed them; take a snapshot.
+  `last_id` = newest
   `messages.id` of the network at snapshot time (0 if none). `seq` = seq of the last `line` event
   emitted before the snapshot, so a module that re-subscribes for a fresh snapshot can place it in
   the stream it is consuming. History read after a snapshot is not part of it: a line can be
@@ -233,7 +253,9 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `state` event `{"network","kind":"silence","silence"?:[...]}` replaces the
   SILENCE list whenever it changes, ahead of the `SILENCE` line that changed it.
 - `history.messages {"network","buffer","before_id"?|"after_id"?|"around_id"?|"anchor"?,"limit"?,"device"?}`:
-  exactly one of the four selectors (none = latest). `anchor` ∈ `"first_unread"`, `"latest"`;
+  at most one selector (none = latest), where `before_id` and `after_id` together count as one:
+  the rows strictly between them, oldest first (a gap fill), whose `has_after` then means rows
+  remain below `before_id`. `anchor` ∈ `"first_unread"`, `"latest"`;
   `first_unread` needs `device` (to apply its closed-at floor) and returns the page starting at the
   first line after the read marker. `limit` 1..500, default 50. → `{"messages": [Message],
   "has_before": bool, "has_after": bool}`, ascending by id. Message:
@@ -460,7 +482,8 @@ a failed call keeps `Failed to update read cursor`.
   "socket": "",
   "list": [
     {"name": "retecloud", "exec": "/usr/local/bin/gobnc-retecloud",
-     "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage"],
+     "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage",
+                  "member_meta", "silence", "channel_meta"],
      "config": {"listen_addr": "0.0.0.0:8443", "tls_cert": "certs/server.crt", "tls_key": "certs/server.key"}}
   ]
 }

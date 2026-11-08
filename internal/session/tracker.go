@@ -310,7 +310,7 @@ type BeginOpts struct {
 //   - a hold-write kind (LIST, plain WHO, …) already has the same command in
 //     flight — the line sits on the request until TakeReady after the end-numeric;
 //   - an identical keyed enquiry is already in flight (NAMES same channel
-//     and server, MODE same channel+letters, STATS same token and server,
+//     and server, MODE same channel+letters, TOPIC same channel, STATS same token and server,
 //     WHOIS same nick and local/remote form, WHOX same flags+fields+mask —
 //     the querytype token is not part of the match)
 //     — the caller is attached as a coalesced recipient of that one uplink
@@ -420,9 +420,14 @@ func (rt *RequestTracker) Begin(opts BeginOpts) (label, whoxToken string, writeN
 		rt.stats[letter] = []*pendingRequest{req}
 		return "", "", true
 	}
-	// TOPIC: demux by channel (no coalesce — not in the identical-enquiry set).
+	// TOPIC: demux by channel. The same channel's enquiry in flight coalesces, as MODE's does
+	// (a client's TOPIC #c and GoBNC's own channel_meta fetch share one write).
 	if cmd == "TOPIC" && opts.EnquiryTarget != "" {
-		rt.topic[opts.EnquiryTarget] = append(rt.topic[opts.EnquiryTarget], req)
+		if q := rt.topic[opts.EnquiryTarget]; len(q) > 0 {
+			q[0].coalesce(req)
+			return "", "", false
+		}
+		rt.topic[opts.EnquiryTarget] = []*pendingRequest{req}
 		return "", "", true
 	}
 	// MODE: demux by channel/nick + list letters. Same (target, letters)

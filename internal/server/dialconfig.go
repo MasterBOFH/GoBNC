@@ -5,6 +5,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/config"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	"github.com/MasterBOFH/GoBNC/internal/registration"
+	"github.com/MasterBOFH/GoBNC/internal/session"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 )
 
@@ -65,11 +66,23 @@ func (s *Server) networkConfigForLocked(n store.Network) brain.NetworkConfig {
 			Pass:          n.SASLPass,
 			HasClientCert: hasClientCert,
 		},
-		Pass:     n.Pass,
-		Username: n.Username,
-		Realname: n.Realname,
-		Name:     n.Name,
+		UserhostInNames: s.stateFeaturesLocked().Has(session.StateMemberMeta),
+		Pass:            n.Pass,
+		Username:        n.Username,
+		Realname:        n.Realname,
+		Name:            n.Name,
 	}
+}
+
+// stateFeaturesLocked is the module-only state every Session keeps: the state features
+// (member_meta, silence, channel_meta) granted to any configured module. With no module
+// granted one, a Session is core alone. Caller holds at least s.mu's read lock.
+func (s *Server) stateFeaturesLocked() session.StateFeatures {
+	var f session.StateFeatures
+	for _, m := range s.cfg.Modules.List {
+		f |= session.StateFeaturesOf(m.Features)
+	}
+	return f
 }
 
 // channelJoinsFor converts store.Channel rows to brain.ChannelJoin — the

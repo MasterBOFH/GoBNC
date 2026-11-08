@@ -13,10 +13,13 @@ import (
 // client's own query of our list (271s naming our nick) refreshes it as well; a query of
 // another nick's list passes through and changes nothing.
 
-// RefreshSilence queries the SILENCE list silently when the network advertises SILENCE. Call
-// only where writing to the uplink is allowed: after a live registration completes, or after
-// LiveReady for a resumed network.
+// RefreshSilence queries the SILENCE list silently when the network advertises SILENCE and a
+// module is granted the silence feature (StateSilence). Call only where writing to the uplink
+// is allowed: after a live registration completes, or after LiveReady for a resumed network.
 func (s *Session) RefreshSilence() {
+	if !s.StateFeatures().Has(StateSilence) {
+		return
+	}
 	s.mu.RLock()
 	_, has := s.isupport.Raw["SILENCE"]
 	ok := s.registered && has

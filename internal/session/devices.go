@@ -28,7 +28,7 @@ func opensQuery(msg irc.Message) bool {
 // query opens on every device where it is not open, and each such device's buffer_open (reason
 // "message") is emitted now — before the line's own event. Caller holds busMu.
 func (s *Session) reopenQueryLocked(msg irc.Message, target string, id int64) {
-	if s.store == nil || s.Network.ID == 0 || id == 0 || !opensQuery(msg) {
+	if !s.hasDevices() || id == 0 || !opensQuery(msg) {
 		return
 	}
 	s.mu.RLock()
@@ -287,6 +287,13 @@ func (s *Session) closeMisKeyedLocked(ctx context.Context, clientID, key string)
 	return nil
 }
 
+// hasDevices reports whether the per-device query rules have anyone to serve: a store with at
+// least one device (store.HasDevices, cached). Without one, an IRC-only bouncer skips their
+// queries and transactions.
+func (s *Session) hasDevices() bool {
+	return s.store != nil && s.Network.ID != 0 && s.store.HasDevices()
+}
+
 // queryExists reports whether we have a query with the folded nick: stored lines under it, or a
 // device row (open or closed) for it.
 func (s *Session) queryExists(key string) bool {
@@ -316,7 +323,7 @@ func (s *Session) queryKeptOld(fromKey, toKey string) bool {
 // emits buffer_rename for each device whose rows were renamed — before the line's own event. Our
 // own NICK renames nothing. Call before applyState, holding busMu.
 func (s *Session) renameQueryLocked(msg irc.Message) {
-	if msg.Command != "NICK" || s.store == nil || s.Network.ID == 0 {
+	if msg.Command != "NICK" || !s.hasDevices() {
 		return
 	}
 	from, to := msg.Nick(), msg.Param(0)

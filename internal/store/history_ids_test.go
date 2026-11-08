@@ -89,3 +89,46 @@ func TestIDPaging(t *testing.T) {
 		t.Fatalf("max id = %d", max)
 	}
 }
+
+// MessagesBetween is the gap fill's page: ascending from after, never reaching before, scoped
+// to one network and target like the other id pages.
+func TestMessagesBetween(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	nid, err := s.UpsertNetwork(ctx, Network{Name: "n", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.UpsertNetwork(ctx, Network{Name: "o", Host: "h", Port: 1, Nick: "x", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ids := seedIDs(t, s, nid, t0, 20)
+	// Rows of another network and another target take ids in between (ids are global).
+	seedIDs(t, s, other, t0, 3)
+	if _, err := s.InsertMessage(ctx, Message{NetworkID: nid, Target: "#d", Time: t0, Command: "PRIVMSG", Source: "a!b@c", Raw: "x", Text: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	more := seedIDs(t, s, nid, t0.Add(time.Hour), 5)
+
+	// Adjacent bounds: nothing between.
+	if got, err := s.MessagesBetween(ctx, nid, "#c", ids[4], ids[5], 50); err != nil || len(got) != 0 {
+		t.Fatalf("adjacent = %v, %v", pageIDs(got), err)
+	}
+	// Partial page: every row strictly inside, ascending.
+	got, err := s.MessagesBetween(ctx, nid, "#c", ids[2], ids[8], 50)
+	if p := pageIDs(got); err != nil || len(p) != 5 || p[0] != ids[3] || p[4] != ids[7] {
+		t.Fatalf("partial = %v, %v; want %d..%d", p, err, ids[3], ids[7])
+	}
+	// Full page: the oldest limit rows after the lower bound.
+	got, _ = s.MessagesBetween(ctx, nid, "#c", ids[0], ids[19], 4)
+	if p := pageIDs(got); len(p) != 4 || p[0] != ids[1] || p[3] != ids[4] {
+		t.Fatalf("full = %v", p)
+	}
+	// Across the other network's and target's rows: only (nid, #c).
+	got, _ = s.MessagesBetween(ctx, nid, "#c", ids[19], more[1], 50)
+	if p := pageIDs(got); len(p) != 1 || p[0] != more[0] {
+		t.Fatalf("scoped = %v, want [%d]", p, more[0])
+	}
+}

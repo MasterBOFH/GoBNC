@@ -173,6 +173,8 @@ func (e *testEnv) addNetwork(name string) int64 {
 	}
 	n, _ := e.be.db.NetworkByName(context.Background(), name)
 	sess := session.New(n, e.be.db, history.New(e.be.db), nil, nil)
+	// What internal/server does for a module granted the state features.
+	sess.SetStateFeatures(session.StateFeaturesOf(Features))
 	sess.SetStateHook(func(state string) { // what internal/server does
 		e.be.mu.Lock()
 		srv := e.srv

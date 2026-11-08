@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
@@ -55,8 +56,12 @@ func (s *Session) snapshotLocked() wire.Snapshot {
 	sort.Strings(snap.Caps)
 	cm := s.isupport.CaseMapping
 	for folded, ch := range s.channels {
-		c := wire.Channel{Name: ch.Name, Key: folded, Topic: wire.Topic{Text: ch.Topic},
-			ChanKey: ch.Key, MembersComplete: ch.RosterKnown, Members: s.membersLocked(ch)}
+		c := wire.Channel{Name: ch.Name, Key: folded, Topic: wire.Topic{Text: ch.Topic, Setter: ch.TopicSetter},
+			ChanKey: ch.Key, MembersComplete: ch.RosterKnown, Members: s.membersLocked(ch),
+			ModesKnown: ch.ModesKnown, TopicKnown: ch.TopicKnown}
+		if ch.TopicTime > 0 {
+			c.Topic.Time = time.Unix(ch.TopicTime, 0).UTC().Format(time.RFC3339)
+		}
 		if ch.Modes != nil {
 			modes, args := ch.Modes.ModeString()
 			c.Modes = strings.TrimSpace(strings.Join(append([]string{modes}, args...), " "))

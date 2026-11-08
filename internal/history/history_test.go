@@ -93,8 +93,12 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 	storeLine(3, "PART", ":bob!u@h PART #c :bye")
 	storeLine(4, "MODE", ":chan!serv@h MODE #c +o a")
 	storeLine(5, "QUIT", ":bob!u@h QUIT :Ping timeout")
+	storeLine(6, "NICK", ":carol!c@h NICK :carol2")
+	storeLine(7, "KICK", ":chan!serv@h KICK #c dave :bye")
+	storeLine(8, "TOPIC", ":a!b@c TOPIC #c :new")
 
-	// Without event-playback: only PRIVMSG/NOTICE.
+	// Without event-playback: only PRIVMSG/NOTICE (IRCv3: events are replayed only to clients
+	// that negotiated event-playback).
 	plain := &fakeSender{caps: map[string]bool{"chathistory": true}}
 	if err := h.HandleCHATHISTORY(plain, id, irc.Message{
 		Command: "CHATHISTORY",
@@ -106,7 +110,8 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 		t.Fatalf("plain privmsgs=%d sent=%v", countPRIVMSG(plain.sent), cmds(plain.sent))
 	}
 	for _, m := range plain.sent {
-		if m.Command == "JOIN" || m.Command == "PART" || m.Command == "MODE" || m.Command == "QUIT" {
+		switch m.Command {
+		case "JOIN", "PART", "MODE", "QUIT", "NICK", "KICK", "TOPIC":
 			t.Fatalf("plain client got event %s", m.Command)
 		}
 	}
@@ -125,8 +130,10 @@ func TestCHATHISTORYEventPlayback(t *testing.T) {
 	if countPRIVMSG(full.sent) != 2 {
 		t.Fatalf("full privmsgs=%d got=%v", countPRIVMSG(full.sent), got)
 	}
-	if !containsCmd(got, "JOIN") || !containsCmd(got, "PART") || !containsCmd(got, "MODE") || !containsCmd(got, "QUIT") {
-		t.Fatalf("expected events in batch: %v", got)
+	for _, want := range []string{"JOIN", "PART", "MODE", "QUIT", "NICK", "KICK", "TOPIC"} {
+		if !containsCmd(got, want) {
+			t.Fatalf("expected %s in batch: %v", want, got)
+		}
 	}
 	for _, m := range full.sent {
 		if m.Command != "QUIT" {

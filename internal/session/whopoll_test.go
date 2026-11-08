@@ -44,10 +44,12 @@ func (w *writeRec) reset() {
 }
 
 // newMetaSession is a registered "me" on a WHOX network, in #c and #d with alice and bob, one
-// IRC client attached and one module subscribed; writes to the uplink are recorded.
+// IRC client attached and one module subscribed, with the member_meta and silence features (a
+// module granted them, as gobnc-retecloud is); writes to the uplink are recorded.
 func newMetaSession(t *testing.T) (*Session, *fakeDL, *recSink, *writeRec) {
 	t.Helper()
 	s := newBusSession(t) // registered, in #c
+	s.SetStateFeatures(StateMemberMeta | StateSilence)
 	w := &writeRec{}
 	s.writeHook = w.write
 	feed(s, ":srv 005 me WHOX SILENCE=15 PREFIX=(ov)@+ :are supported by this server",

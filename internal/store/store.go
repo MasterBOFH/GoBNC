@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,6 +17,9 @@ import (
 // Store wraps a SQLite database.
 type Store struct {
 	db *sql.DB
+	// hasDevices caches whether any device row exists (HasDevices): read once at Open, set when
+	// one is created.
+	hasDevices atomic.Bool
 }
 
 // Open opens (or creates) a SQLite database and migrates schema.
@@ -34,6 +38,12 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	has, err := s.exists(context.Background(), `SELECT 1 FROM devices LIMIT 1`)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s.hasDevices.Store(has)
 	// SQLite may create sidecar files; keep the main DB owner-only after first write.
 	_ = os.Chmod(path, 0o600)
 	return s, nil
@@ -590,21 +600,26 @@ type TargetActivity struct {
 // message is outside the selection, even when it has other messages inside
 // it, so this only ever looks at MAX(time) per target, never individual
 // rows. Ordered by that latest time, descending if desc else ascending.
-// limit <= 0 means unlimited.
-func (s *Store) TargetsBetween(ctx context.Context, networkID int64, lo, hi time.Time, commands []string, limit int, desc bool) ([]TargetActivity, error) {
+// limit <= 0 means unlimited. Targets in exclude are never listed.
+func (s *Store) TargetsBetween(ctx context.Context, networkID int64, lo, hi time.Time, commands []string, limit int, desc bool, exclude ...string) ([]TargetActivity, error) {
 	where := "network_id=?"
 	args := []any{networkID}
-	if len(commands) > 0 {
-		where += " AND command IN ("
-		for i, c := range commands {
+	in := func(col, op string, vals []string) {
+		if len(vals) == 0 {
+			return
+		}
+		where += " AND " + col + " " + op + " ("
+		for i, v := range vals {
 			if i > 0 {
 				where += ","
 			}
 			where += "?"
-			args = append(args, c)
+			args = append(args, v)
 		}
 		where += ")"
 	}
+	in("command", "IN", commands)
+	in("target", "NOT IN", exclude)
 	args = append(args, formatTime(lo), formatTime(hi))
 	order := "ASC"
 	if desc {

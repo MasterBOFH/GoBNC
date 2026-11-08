@@ -36,6 +36,44 @@ func TestGetMessagesPages(t *testing.T) {
 	}
 }
 
+// The lite gap fill sends both bounds: the page is the rows strictly between them, oldest
+// first, and has_more_after (and has_more) say rows remain inside the range — never the newest
+// page below before_id.
+func TestGetMessagesBothBounds(t *testing.T) {
+	e := newTestEnv(t, "undernet")
+	e.feed("undernet", ":me!u@h JOIN #c")
+	for i := 1; i <= 30; i++ {
+		e.feed("undernet", fmt.Sprintf(":peer!p@h PRIVMSG #c :n-%d", i))
+	}
+	c := e.syncedClient("ios-1", "undernet")
+	rid := c.request("get_messages", map[string]any{"buffer": "#c", "limit": 100}, e.sid("undernet"))
+	all := c.waitFor(0, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+	if len(all) != 31 {
+		t.Fatalf("seed: %d msgs", len(all))
+	}
+	id := func(i int) float64 { return all[i].(map[string]any)["id"].(float64) } // 0 = JOIN, i = n-i
+	page := func(after, before float64, limit int) map[string]any {
+		t.Helper()
+		mark := c.count()
+		rid := c.request("get_messages", map[string]any{"buffer": "#c", "limit": limit, "after_id": after, "before_id": before}, e.sid("undernet"))
+		return c.waitFor(mark, 5*time.Second, reply(rid, "get_messages_success", "get_messages_error"))["data"].(map[string]any)
+	}
+
+	d := page(id(5), id(20), 100) // partial: n-6..n-19
+	msgs := d["messages"].([]any)
+	if len(msgs) != 14 || d["oldest_id"] != id(6) || d["newest_id"] != id(19) || d["has_more_after"] != false || d["has_more"] != false {
+		t.Fatalf("partial page: %d msgs, %v", len(msgs), d)
+	}
+	d = page(id(5), id(20), 5) // full: n-6..n-10, more inside
+	if n := len(d["messages"].([]any)); n != 5 || d["oldest_id"] != id(6) || d["newest_id"] != id(10) || d["has_more_after"] != true || d["has_more"] != true {
+		t.Fatalf("full page: %d msgs, %v", n, d)
+	}
+	d = page(id(5), id(6), 100) // empty: adjacent rows
+	if n := len(d["messages"].([]any)); n != 0 || d["has_more_after"] != false || d["has_more"] != false {
+		t.Fatalf("empty page: %d msgs, %v", n, d)
+	}
+}
+
 func TestReadCursorBroadcastsToOtherFollowers(t *testing.T) {
 	e := newTestEnv(t, "undernet")
 	e.feed("undernet", ":me!u@h JOIN #c", ":peer!p@h PRIVMSG #c :read me")

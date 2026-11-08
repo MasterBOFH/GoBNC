@@ -145,7 +145,8 @@ The first module, `gobnc-retecloud`, lets Rete on iOS use the bouncer: it serves
     {
       "name": "retecloud",
       "exec": "/usr/local/bin/gobnc-retecloud",
-      "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage"],
+      "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage",
+                   "member_meta", "silence", "channel_meta"],
       "config": {
         "listen_addr": "0.0.0.0:8443",
         "tls_cert": "/etc/gobnc/certs/server.crt",
@@ -155,6 +156,8 @@ The first module, `gobnc-retecloud`, lets Rete on iOS use the bouncer: it serves
   ]
 }
 ```
+
+`gobnc-retecloud` needs the three state features as well: `member_meta` (member hosts, accounts and away/oper/bot flags: `userhost-in-names` and the bouncer's own WHOX polls), `silence` (the SILENCE list, queried after connecting) and `channel_meta` (channel modes and topics, asked again after `gobnc reload`). IRC clients ask for these themselves, so with no module granted them the bouncer keeps none of it and sends none of those queries.
 
 `config` is the module's own: for `gobnc-retecloud`, `listen_addr` (default `127.0.0.1:8443`), `tls_cert` / `tls_key` (required; the bouncer's own `certs/server.*` work), `max_connections` (default 16), `allowed_ips`, and `compression_level` (deflate-stream; negative turns it off). `modules.socket` defaults to `gobnc-modules.sock` next to the control socket. Build it with `go build -o bin/gobnc-retecloud ./cmd/gobnc-retecloud`; `cmd/gobnc-modlog` is a small example module that prints every message.
 

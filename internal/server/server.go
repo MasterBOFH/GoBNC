@@ -454,8 +454,9 @@ func (s *Server) retentionLoop(ctx context.Context) {
 var WHOPollTick time.Duration
 
 // whoPollLoop lets every network poll a channel's WHOX when one is due (Session.PollWHO decides,
-// and paces: one channel per seed pace while seeding, one per 90 s after). The settings are read
-// each tick, so a rehash applies.
+// and paces: one channel per seed pace while seeding, one per 90 s after), and ask one queued
+// channel's MODE/TOPIC (Session.RefreshChannelMeta) per tick. Each needs its state feature. The
+// settings are read each tick, so a rehash applies.
 func (s *Server) whoPollLoop(ctx context.Context) {
 	t := time.NewTicker(s.whoPollTick())
 	defer t.Stop()
@@ -483,16 +484,21 @@ func (s *Server) whoPollTick() time.Duration {
 func (s *Server) pollWHO(now time.Time) {
 	s.mu.RLock()
 	p := session.WHOPoll{Interval: s.cfg.WHOPollInterval(), SeedPace: s.cfg.WHOSeedPace(), Pace: config.WHOPollPace}
+	features := s.stateFeaturesLocked()
 	sessions := make([]*session.Session, 0, len(s.sess))
 	for _, sess := range s.sess {
 		sessions = append(sessions, sess)
 	}
 	s.mu.RUnlock()
-	if p.Interval <= 0 {
-		return
-	}
 	for _, sess := range sessions {
-		sess.PollWHO(now, p)
+		// channel_meta: one queued channel's MODE/TOPIC per tick (after a reload, every channel).
+		if features.Has(session.StateChannelMeta) {
+			sess.RefreshChannelMeta()
+		}
+		// No module granted member_meta: GoBNC never polls WHOX.
+		if p.Interval > 0 && features.Has(session.StateMemberMeta) {
+			sess.PollWHO(now, p)
+		}
 	}
 }
 
@@ -915,6 +921,7 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	}
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name), s.driver)
 	sess.SetCTCPConfig(s.ctcpCfg)
+	sess.SetStateFeatures(s.stateFeaturesLocked())
 	netID := sess.NetworkID()
 	s.attachAdmin(sess)
 	if s.logSink != nil {
@@ -1181,8 +1188,10 @@ func (s *Server) Rehash(cfgPath string) error {
 	s.cfg = newCfg
 	dl := s.dl
 	names := make([]string, 0, len(s.sess))
-	for name := range s.sess {
+	features := s.stateFeaturesLocked()
+	for name, sess := range s.sess {
 		names = append(names, name)
+		sess.SetStateFeatures(features) // module grants changed: the state Sessions keep follows
 	}
 	s.mu.Unlock()
 	if m := s.modules.Load(); m != nil {
