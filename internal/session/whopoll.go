@@ -38,11 +38,11 @@ type WHOPoll struct {
 // PollWHO sends at most one silent WHOX poll. A channel no WHO reply has named on this
 // connection comes first (by key), at SeedPace; otherwise the channel a reply named longest ago,
 // provided that was at least Interval before now, at Pace. A channel any client WHO'd within the
-// interval is skipped. It polls only while a module is subscribed (nothing else reads the
-// metadata), the network is registered and has WHOX, and Interval > 0. It returns the polled
-// channel's name, or "".
+// interval is skipped. It polls only with the member_meta feature (StateMemberMeta) and while a
+// module is subscribed (nothing else reads the metadata), the network is registered and has
+// WHOX, and Interval > 0. It returns the polled channel's name, or "".
 func (s *Session) PollWHO(now time.Time, p WHOPoll) string {
-	if p.Interval <= 0 {
+	if p.Interval <= 0 || !s.StateFeatures().Has(StateMemberMeta) {
 		return ""
 	}
 	s.busMu.Lock()

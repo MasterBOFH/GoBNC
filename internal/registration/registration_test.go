@@ -261,6 +261,32 @@ func TestMultiLineCAPLSAccumulates(t *testing.T) {
 	}
 }
 
+// userhost-in-names is requested only when the caller wants it (a module's member_meta).
+func TestUserhostInNamesRequestedOnlyWhenWanted(t *testing.T) {
+	ls, err := irc.Parse(":srv CAP * LS :userhost-in-names away-notify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqOf := func(s State) string {
+		_, acts := Step(s, Input{Msg: ls})
+		for _, a := range acts {
+			if a.Kind == ActionSend && strings.HasPrefix(a.Line, "CAP REQ") {
+				return a.Line
+			}
+		}
+		return ""
+	}
+	s := New("me", "", false, SASLConfig{})
+	if req := reqOf(s); strings.Contains(req, "userhost-in-names") || !strings.Contains(req, "away-notify") {
+		t.Fatalf("unwanted: %q", req)
+	}
+	s = New("me", "", false, SASLConfig{})
+	s.UserhostInNames = true
+	if req := reqOf(s); !strings.Contains(req, "userhost-in-names") {
+		t.Fatalf("wanted: %q", req)
+	}
+}
+
 // TestUnknownFieldsDoNotCrash / general robustness: a message Step has no
 // case for must be a no-op, not a panic — every fixture already exercises
 // many such lines (251-266, NOTICE, MOTD body), but this pins the property

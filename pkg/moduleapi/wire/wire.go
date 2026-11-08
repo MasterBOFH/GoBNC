@@ -203,6 +203,15 @@ const (
 	FeatureAuth        = "auth"
 	FeatureStorage     = "storage"
 	FeatureCommands    = "commands"
+
+	// State features have no methods: granting one to a configured module makes the brain keep,
+	// or ask the server for, state IRC clients poll for themselves (off for IRC-only users).
+	// member_meta: userhost-in-names and GoBNC's own WHOX polls (member hosts, accounts, flags);
+	// silence: the SILENCE list query after registration; channel_meta: channel modes and
+	// topics re-asked after a brain reload.
+	FeatureMemberMeta  = "member_meta"
+	FeatureSilence     = "silence"
+	FeatureChannelMeta = "channel_meta"
 )
 
 // Methods.
@@ -261,6 +270,10 @@ var FeatureMethods = map[string][]string{
 	FeatureAuth:     {MethodAuthCheck},
 	FeatureStorage:  {MethodStorageGet, MethodStorageSet, MethodStorageDelete, MethodStorageList},
 	FeatureCommands: {MethodCommandsRegister, MethodCommandsReply},
+
+	FeatureMemberMeta:  nil,
+	FeatureSilence:     nil,
+	FeatureChannelMeta: nil,
 }
 
 // KnownFeature reports whether name is a feature of this API version.

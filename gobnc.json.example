@@ -107,7 +107,8 @@
       //   "name": "retecloud",
       //   "exec": "/usr/local/bin/gobnc-retecloud",
       //   "features": ["networks", "events", "history", "read_markers", "clients",
-      //                "send", "devices", "auth", "storage"],
+      //                "send", "devices", "auth", "storage",
+      //                "member_meta", "silence", "channel_meta"],
       //   "config": {"listen_addr": "0.0.0.0:8443",
       //              "tls_cert": "certs/server.crt", "tls_key": "certs/server.key"}
       // }

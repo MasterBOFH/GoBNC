@@ -204,6 +204,19 @@ Features and their methods (a method of a feature not granted → `not_granted`)
 | `auth` | `auth.check` |
 | `storage` | `storage.get`, `storage.set`, `storage.delete`, `storage.list` |
 | `commands` | `commands.register`, `commands.reply` |
+| `member_meta` | none: state feature (below) |
+| `silence` | none: state feature (below) |
+| `channel_meta` | none: state feature (below) |
+
+**State features** have no methods. They make the brain keep, or ask the server for, state that
+IRC clients poll for themselves, so a bouncer with no module granted them pays nothing for it.
+The brain computes the set from the features **configured** for every module in `gobnc.json`
+(at start and on REHASH), whether or not the module is connected: `member_meta` requests
+`userhost-in-names` and lets the brain poll WHOX itself for member hosts, accounts and flags
+(only while a module is subscribed); `silence` queries the SILENCE list after registration;
+`channel_meta` asks every channel's `MODE` and `TOPIC` again after a brain reload.
+`gobnc-retecloud` needs all three. Independently of features, the per-device query rules
+(`devices`) run only once a device exists in the store.
 
 Method shapes (`network` is the GoBNC network id, int64; `buffer` is a display name; `key` is its
 CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
@@ -462,7 +475,8 @@ a failed call keeps `Failed to update read cursor`.
   "socket": "",
   "list": [
     {"name": "retecloud", "exec": "/usr/local/bin/gobnc-retecloud",
-     "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage"],
+     "features": ["networks", "events", "history", "read_markers", "clients", "send", "devices", "auth", "storage",
+                  "member_meta", "silence", "channel_meta"],
      "config": {"listen_addr": "0.0.0.0:8443", "tls_cert": "certs/server.crt", "tls_key": "certs/server.key"}}
   ]
 }

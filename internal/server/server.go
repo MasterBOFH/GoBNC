@@ -483,12 +483,13 @@ func (s *Server) whoPollTick() time.Duration {
 func (s *Server) pollWHO(now time.Time) {
 	s.mu.RLock()
 	p := session.WHOPoll{Interval: s.cfg.WHOPollInterval(), SeedPace: s.cfg.WHOSeedPace(), Pace: config.WHOPollPace}
+	memberMeta := s.stateFeaturesLocked().Has(session.StateMemberMeta)
 	sessions := make([]*session.Session, 0, len(s.sess))
 	for _, sess := range s.sess {
 		sessions = append(sessions, sess)
 	}
 	s.mu.RUnlock()
-	if p.Interval <= 0 {
+	if p.Interval <= 0 || !memberMeta { // no module granted member_meta: GoBNC never polls
 		return
 	}
 	for _, sess := range sessions {
@@ -915,6 +916,7 @@ func (s *Server) registerNetworkLocked(n store.Network) (*session.Session, error
 	}
 	sess := session.New(n, s.store, s.hist, s.log.With("network", n.Name), s.driver)
 	sess.SetCTCPConfig(s.ctcpCfg)
+	sess.SetStateFeatures(s.stateFeaturesLocked())
 	netID := sess.NetworkID()
 	s.attachAdmin(sess)
 	if s.logSink != nil {
@@ -1181,8 +1183,10 @@ func (s *Server) Rehash(cfgPath string) error {
 	s.cfg = newCfg
 	dl := s.dl
 	names := make([]string, 0, len(s.sess))
-	for name := range s.sess {
+	features := s.stateFeaturesLocked()
+	for name, sess := range s.sess {
 		names = append(names, name)
+		sess.SetStateFeatures(features) // module grants changed: the state Sessions keep follows
 	}
 	s.mu.Unlock()
 	if m := s.modules.Load(); m != nil {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MasterBOFH/GoBNC/internal/brain"
@@ -131,6 +132,8 @@ type Session struct {
 	silenceReply     []string
 	silenceReplyOurs bool
 	silenceDirty     bool
+	// features is the module-only state this Session keeps (StateFeatures; features.go).
+	features atomic.Uint32
 	// writeHook, when set (tests), receives uplink writes instead of the driver.
 	writeHook func(irc.Message) error
 	downlinks map[ClientID]Downlink

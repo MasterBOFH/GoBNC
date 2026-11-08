@@ -434,15 +434,7 @@ func (s *Session) handleCAPLine(msg irc.Message, registered bool) {
 			}
 			s.syncSASLOffer()
 		}
-		var req []string
-		for _, want := range DesiredCaps {
-			if want == "sasl" && !bouncerTry {
-				continue
-			}
-			if _, ok := available[want]; ok && !s.HasUpCap(want) {
-				req = append(req, want)
-			}
-		}
+		req := s.capNewRequest(available, bouncerTry)
 		if len(req) > 0 && s.driver != nil {
 			_ = s.driver.WriteRaw(s.netID, "CAP REQ :"+strings.Join(req, " "))
 		}
@@ -518,6 +510,25 @@ func (s *Session) noteSASLOfferLocked(val string) {
 	if len(mechs) > 0 {
 		s.upSASLMechs = mechs
 	}
+}
+
+// capNewRequest is what a CAP NEW offering available makes us REQ: the DesiredCaps offered and
+// not already enabled; sasl only when the bouncer will try it (bouncerTry), userhost-in-names
+// only for a module's member metadata (StateMemberMeta) — IRC clients WHO for hosts.
+func (s *Session) capNewRequest(available map[string]string, bouncerTry bool) []string {
+	var req []string
+	for _, want := range DesiredCaps {
+		if want == "sasl" && !bouncerTry {
+			continue
+		}
+		if want == "userhost-in-names" && !s.StateFeatures().Has(StateMemberMeta) {
+			continue
+		}
+		if _, ok := available[want]; ok && !s.HasUpCap(want) {
+			req = append(req, want)
+		}
+	}
+	return req
 }
 
 // parseCapList parses a CAP 302 list into name → value (value may be

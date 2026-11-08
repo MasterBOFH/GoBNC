@@ -15,9 +15,13 @@ import (
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
-// Features are the module API features gobnc-retecloud uses (grant them in gobnc.json).
+// Features are the module API features gobnc-retecloud uses (grant them in gobnc.json). The
+// state features (member_meta, silence, channel_meta) make the brain keep what lite snapshots
+// carry and IRC clients would ask for themselves: member hosts and flags, the SILENCE list,
+// channel modes and topics.
 var Features = []string{wire.FeatureNetworks, wire.FeatureEvents, wire.FeatureHistory, wire.FeatureReadMarkers,
-	wire.FeatureClients, wire.FeatureSend, wire.FeatureDevices, wire.FeatureAuth, wire.FeatureStorage}
+	wire.FeatureClients, wire.FeatureSend, wire.FeatureDevices, wire.FeatureAuth, wire.FeatureStorage,
+	wire.FeatureMemberMeta, wire.FeatureSilence, wire.FeatureChannelMeta}
 
 // Brain is what the module needs from its brain connection (*moduleapi.Client).
 type Brain interface {

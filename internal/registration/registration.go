@@ -110,6 +110,10 @@ type State struct {
 
 	SASL SASLConfig
 
+	// UserhostInNames requests userhost-in-names when offered: only for a module's member
+	// metadata (the member_meta feature), which the caller sets after New.
+	UserhostInNames bool
+
 	saslMech  string
 	scramConv scramConversation
 
@@ -340,6 +344,9 @@ func stepCAP(s State, in Input) (State, []Action) {
 		var req []string
 		for _, want := range DesiredCaps {
 			if want == "sasl" && !s.SASL.Wanted {
+				continue
+			}
+			if want == "userhost-in-names" && !s.UserhostInNames {
 				continue
 			}
 			if _, ok := s.Offered[want]; ok {

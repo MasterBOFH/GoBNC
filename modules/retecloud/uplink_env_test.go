@@ -197,8 +197,9 @@ func uplinkSession(t *testing.T, netCfg store.Network, ircd *fakeIRCd, db *store
 		hist = history.New(db)
 	}
 	sess := session.New(netCfg, db, hist, nil, driver)
+	sess.SetStateFeatures(session.StateFeaturesOf(Features)) // what internal/server does for a granted module
 	netID := sess.NetworkID()
-	driver.RegisterNetwork(netID, brain.NetworkConfig{PrimaryNick: "me", Username: "u", Realname: "r"})
+	driver.RegisterNetwork(netID, brain.NetworkConfig{PrimaryNick: "me", Username: "u", Realname: "r", UserhostInNames: true})
 	driver.SetChannels(netID, nil)
 	rctx, rcancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {

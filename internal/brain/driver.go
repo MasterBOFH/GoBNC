@@ -68,6 +68,9 @@ type NetworkConfig struct {
 	AltNick      string
 	NickRecovery bool
 	SASL         registration.SASLConfig
+	// UserhostInNames requests userhost-in-names at registration (registration.State's field):
+	// set when a module is granted member_meta.
+	UserhostInNames bool
 
 	Pass     string
 	Username string
@@ -376,6 +379,7 @@ func (d *Driver) RegisterResumedNetwork(id keeper.NetworkID, cfg NetworkConfig) 
 	defer d.mu.Unlock()
 	d.configs[id] = cfg
 	state := registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state.UserhostInNames = cfg.UserhostInNames
 	state.Phase = registration.PhaseComplete
 	state.GotWelcome = true
 	d.states[id] = state
@@ -449,7 +453,9 @@ func (d *Driver) UpdateNetworkConfig(id keeper.NetworkID, cfg NetworkConfig) {
 // treatment a first-time registration does; the difference is only where
 // cfg comes from). Caller must hold d.mu.
 func (d *Driver) resetStateLocked(id keeper.NetworkID, cfg NetworkConfig) {
-	d.states[id] = registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state := registration.New(cfg.PrimaryNick, cfg.AltNick, cfg.NickRecovery, cfg.SASL)
+	state.UserhostInNames = cfg.UserhostInNames
+	d.states[id] = state
 	delete(d.currentNick, id)
 	if t, ok := d.deadlines[id]; ok {
 		t.Stop()
