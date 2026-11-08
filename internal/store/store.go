@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,6 +17,9 @@ import (
 // Store wraps a SQLite database.
 type Store struct {
 	db *sql.DB
+	// hasDevices caches whether any device row exists (HasDevices): read once at Open, set when
+	// one is created.
+	hasDevices atomic.Bool
 }
 
 // Open opens (or creates) a SQLite database and migrates schema.
@@ -34,6 +38,12 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	has, err := s.exists(context.Background(), `SELECT 1 FROM devices LIMIT 1`)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s.hasDevices.Store(has)
 	// SQLite may create sidecar files; keep the main DB owner-only after first write.
 	_ = os.Chmod(path, 0o600)
 	return s, nil

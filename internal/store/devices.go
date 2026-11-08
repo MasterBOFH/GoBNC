@@ -61,6 +61,12 @@ type OpenBuffer struct {
 
 func nowText() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+// HasDevices reports whether any device (a ReteCloud client) was ever recorded: without one the
+// per-device query rules (open on a new line, rename on a peer's NICK) have nothing to do, so
+// an IRC-only bouncer skips their queries. Cached: read at Open, set when a device is created
+// (a deleted device leaves it set, which only costs the queries).
+func (s *Store) HasDevices() bool { return s.hasDevices.Load() }
+
 // TouchDevice records that the device was seen (creating it, and naming it when name is set).
 func (s *Store) TouchDevice(ctx context.Context, clientID, name string) (created bool, err error) {
 	now := nowText()
@@ -69,6 +75,7 @@ func (s *Store) TouchDevice(ctx context.Context, clientID, name string) (created
 	if err != nil {
 		return false, err
 	}
+	s.hasDevices.Store(true)
 	if n, _ := res.RowsAffected(); n == 1 {
 		return true, nil
 	}
@@ -85,6 +92,9 @@ func (s *Store) ensureDevice(ctx context.Context, clientID string) error {
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO devices (client_id, created_at, last_seen) VALUES (?, ?, ?)`,
 		clientID, now, now)
+	if err == nil {
+		s.hasDevices.Store(true)
+	}
 	return err
 }
 
