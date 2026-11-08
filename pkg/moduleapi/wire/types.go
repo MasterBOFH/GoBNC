@@ -162,6 +162,23 @@ const (
 // ServerBuffer is the buffer of server-sourced and $mask lines.
 const ServerBuffer = "Server"
 
+// ServerBufferKey is the Server buffer's key: "*", which no nick, channel or server can be. Its
+// lines are stored under each server's own name (a notice from irc.example.net under
+// "irc.example.net"); the Server buffer is all of those targets together. A real nick
+// "Server" keeps a query of its own (keyed by its fold, "server").
+const ServerBufferKey = "*"
+
+// BufferKey is the key of the buffer a module names: ServerBufferKey for a name that folds
+// like ServerBuffer (module buffer names are compared under the network's CASEMAPPING, so on
+// the module API "Server" in any case is the Server buffer), else fold(name).
+func BufferKey(fold func(string) string, name string) string {
+	key := fold(name)
+	if key == fold(ServerBuffer) {
+		return ServerBufferKey
+	}
+	return key
+}
+
 type LineEvent struct {
 	Network int64        `json:"network"`
 	Seq     uint64       `json:"seq"`

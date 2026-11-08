@@ -108,3 +108,31 @@ func TestSeedSkipsStatusmsgMaskAndNoticeOnlyTargets(t *testing.T) {
 		t.Fatalf("seeded = %v, want peer and Carol only", seeded)
 	}
 }
+
+// A real nick "Server" with an unread line is an ordinary query a new device seeds (keyed
+// "server"); the Server buffer (keyed "*") is never seeded as a query.
+func TestSeedOpensANickServerQueryButNotTheServerBuffer(t *testing.T) {
+	s, _ := newEnvelopeSession(t)
+	feed(s, ":srv.example NOTICE me :*** Notice -- snotice", ":oper!o@h NOTICE $*.example :global",
+		":Server!s@h PRIVMSG me :hi from a nick")
+	seeded, err := s.SeedDevice("fresh", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, b := range seeded {
+		got[b] = true
+	}
+	if !got["peer"] || !got["Server"] || got[wire.ServerBufferKey] || len(seeded) != 2 {
+		t.Fatalf("seeded = %v, want peer and the query Server", seeded)
+	}
+	rows, err := s.store.ListOpenBuffers(context.Background(), "fresh", s.Network.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Target == wire.ServerBufferKey || (r.Display == "Server" && r.Target != "server") {
+			t.Fatalf("open row %+v: the query Server is keyed server and * is never a row", r)
+		}
+	}
+}

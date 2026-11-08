@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
@@ -28,7 +29,7 @@ func handleReadMarkersGet(ctx context.Context, c *Conn, params json.RawMessage) 
 	if db == nil {
 		return nil, wire.Errorf(wire.CodeInternal, "no store")
 	}
-	key := sess.Fold(p.Buffer)
+	key := wire.BufferKey(sess.Fold, p.Buffer)
 	ts, ok, err := db.GetReadMarker(ctx, p.Network, key)
 	if err != nil || !ok {
 		return wire.ReadMarkerGetResult{}, err
@@ -54,8 +55,8 @@ func handleReadMarkersSet(ctx context.Context, c *Conn, params json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	key := sess.Fold(p.Buffer)
-	if m == nil || m.Target != key {
+	key := wire.BufferKey(sess.Fold, p.Buffer)
+	if m == nil || !store.InBuffer(m.Target, key) {
 		return nil, wire.Errorf(wire.CodeNotFound, "no message %d in %s", p.ID, p.Buffer)
 	}
 	stored, updated, err := sess.SetReadMarkerFromModule(p.Buffer, m.Time.UTC().Format(time.RFC3339Nano))
