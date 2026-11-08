@@ -18,6 +18,10 @@ type RelayRequest struct {
 	EventID string `json:"event_id"`
 	Time    int64  `json:"time"`
 	Enc     string `json:"enc"`
+	// A message's conversation and cool-down (coalesce.go); absent: the relay collapses on the
+	// event id and the push sounds.
+	CollapseID string `json:"collapse_id,omitempty"`
+	Silent     bool   `json:"silent,omitempty"`
 }
 
 // NewRelayRequest wraps a sealed blob.
