@@ -195,7 +195,9 @@ func TestStatusMsgLineIsStoredUnderTheChannel(t *testing.T) {
 }
 
 // A server-sourced line not to a channel (to us, to "*" or AUTH before registration, a $mask)
-// stays in the Server buffer and is stored there, under the Server buffer's key, with its id.
+// stays in the Server buffer (module key "*") and is stored under the server's own name, with
+// its id: its source's, or for a line naming no server (no source, a person's $mask notice)
+// the server we registered to (001's source).
 func TestEnvelopeServerSourcedNotToChannelIsServerWithID(t *testing.T) {
 	for _, line := range []string{
 		":srv.example NOTICE me :*** Notice -- snotice",
@@ -208,14 +210,42 @@ func TestEnvelopeServerSourcedNotToChannelIsServerWithID(t *testing.T) {
 			s, sink := newEnvelopeSession(t)
 			feed(s, line)
 			ev := lastLine(t, sink)
-			if len(ev.Buffers) != 1 || ev.Buffers[0].Name != wire.ServerBuffer || ev.Buffers[0].ID <= 0 {
-				t.Fatalf("envelope buffers = %+v, want Server with an id", ev.Buffers)
+			if len(ev.Buffers) != 1 || ev.Buffers[0].Name != wire.ServerBuffer || ev.Buffers[0].Key != wire.ServerBufferKey ||
+				ev.Buffers[0].ID <= 0 {
+				t.Fatalf("envelope buffers = %+v, want Server keyed * with an id", ev.Buffers)
 			}
 			m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
-			if err != nil || m == nil || m.Target != s.Fold(wire.ServerBuffer) {
-				t.Fatalf("stored row for id %d = %+v (err %v), want the Server buffer's key", ev.Buffers[0].ID, m, err)
+			if err != nil || m == nil || m.Target != "srv.example" {
+				t.Fatalf("stored row for id %d = %+v (err %v), want the server's name srv.example", ev.Buffers[0].ID, m, err)
 			}
 		})
+	}
+}
+
+// A real nick "Server" is an ordinary query: its lines (to us and ours to it) are keyed by the
+// nick's fold, "server", never by the Server buffer's key "*", and server notices do not land
+// in its query.
+func TestEnvelopeNickServerIsAQuery(t *testing.T) {
+	s, sink := newEnvelopeSession(t)
+	feed(s, ":srv.example NOTICE me :*** Notice -- snotice")
+	for _, line := range []string{":Server!s@h PRIVMSG me :hi from a nick", ":me!u@h PRIVMSG Server :hi back"} {
+		feed(s, line)
+		ev := lastLine(t, sink)
+		if len(ev.Buffers) != 1 || ev.Buffers[0].Name != "Server" || ev.Buffers[0].Key != "server" || ev.Buffers[0].ID <= 0 {
+			t.Fatalf("%s: envelope buffers = %+v, want the query Server keyed server", line, ev.Buffers)
+		}
+		m, err := s.store.MessageByID(context.Background(), s.Network.ID, ev.Buffers[0].ID)
+		if err != nil || m == nil || m.Target != "server" {
+			t.Fatalf("%s: stored row = %+v (err %v), want target server", line, m, err)
+		}
+	}
+	q, err := s.store.MessagesLatest(context.Background(), s.Network.ID, "server", 10)
+	if err != nil || len(q) != 2 {
+		t.Fatalf("query server rows = %d (err %v), want the two query lines only", len(q), err)
+	}
+	srv, err := s.store.MessagesLatest(context.Background(), s.Network.ID, "srv.example", 10)
+	if err != nil || len(srv) != 1 || srv[0].Source != "srv.example" {
+		t.Fatalf("Server buffer rows = %+v (err %v), want the server notice only", srv, err)
 	}
 }
 

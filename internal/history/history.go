@@ -13,7 +13,6 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/store"
-	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // Record is a chat line to persist.
@@ -112,12 +111,6 @@ func (h *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string,
 	return h.db.DistinctTargets(ctx, networkID)
 }
 
-// serverTarget is the folded key the "Server" buffer (server notices, $mask lines) is stored
-// under for modules (wire.ServerBuffer folds to it under every CASEMAPPING). It is no
-// chathistory target — IRCv3 targets are channels and nicks — so IRC clients are never served
-// it nor shown it in TARGETS; its rows stay.
-var serverTarget = strings.ToLower(wire.ServerBuffer)
-
 // HandleCHATHISTORY serves LATEST, BEFORE, AFTER, AROUND, BETWEEN, TARGETS. msg's target is
 // already folded (internal/session casemaps it).
 func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) error {
@@ -129,9 +122,6 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	}
 	sub := strings.ToUpper(msg.Params[0])
 	target := msg.Params[1]
-	if sub != "TARGETS" && target == serverTarget {
-		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "INVALID_TARGET", sub, target, "Messages could not be retrieved"}})
-	}
 	limit := 50
 	q := store.HistoryQuery{NetworkID: networkID, Target: target}
 	ctx := context.Background()
@@ -458,7 +448,7 @@ func (h *Store) handleTargets(s Sender, networkID int64, aRaw, bRaw, limitRaw st
 	}
 	// One extra row detects the last page, as in HandleCHATHISTORY. Rows
 	// arrive in the requested direction, so the extra one is always last.
-	targets, err := h.db.TargetsBetween(context.Background(), networkID, lo, hi, historyCommandsFor(s), limit+1, desc, serverTarget)
+	targets, err := h.db.TargetsBetween(context.Background(), networkID, lo, hi, historyCommandsFor(s), limit+1, desc)
 	if err != nil {
 		return s.Send(irc.Message{Command: "FAIL", Params: []string{"CHATHISTORY", "TEMPORARILY_UNAVAILABLE", "history unavailable"}})
 	}

@@ -17,6 +17,7 @@ import (
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
 	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/internal/version"
+	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 )
 
 // Downlink is the session's view of a connected client.
@@ -462,12 +463,16 @@ func (s *Session) WriteMessage(msg irc.Message) error {
 	return s.driver.WriteRaw(s.netID, msg.Wire())
 }
 
-// Fold is name under the network's CASEMAPPING — the key history and modules use for a buffer.
+// Fold is name under the network's CASEMAPPING — the key history and modules use for a buffer
+// (the Server buffer's excepted: see bufferKey).
 func (s *Session) Fold(name string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isupport.CaseMapping.Canonical(name)
 }
+
+// bufferKey is the key of a buffer a module names (wire.BufferKey): "*" for the Server buffer.
+func (s *Session) bufferKey(name string) string { return wire.BufferKey(s.Fold, name) }
 
 // CaseMapping is the network's ISUPPORT CASEMAPPING.
 func (s *Session) CaseMapping() irc.CaseMapping {

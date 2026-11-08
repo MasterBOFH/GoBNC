@@ -221,6 +221,20 @@ The brain computes the set from the features **configured** for every module in 
 Method shapes (`network` is the GoBNC network id, int64; `buffer` is a display name; `key` is its
 CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
 
+**The `Server` buffer.** Server-sourced lines not to a channel (server notices, a server's
+PRIVMSG) are stored under the **server's own name** as their history target (a notice from
+`irc.example.net` under `irc.example.net`); a line naming no server (no source, or a person's
+`$mask` notice) under the server we registered to (001's source, or the network's configured
+host until that is known). A server name contains a dot, so it is never a nick: it is an
+ordinary CHATHISTORY target, listed by `TARGETS`, for every IRC client. On the module API these
+targets together are one buffer, `Server` (`wire.ServerBuffer`), with key `*`
+(`wire.ServerBufferKey`): every method and event taking a buffer name reads `Server` (in any case,
+being compared under CASEMAPPING) as that buffer — its history pages every server-name target
+together by id, and its read marker and device rows are kept under `*`. A server's name is never
+a module buffer of its own. A real nick `Server` therefore has an ordinary query (key `server`)
+for IRC clients, which the module API cannot name.
+
+
 - `networks.list {}` → `{"networks": [{"id", "name", "state", "nick"}]}`; `state` ∈ `"stopped"`,
   `"connecting"`, `"registered"`, `"disconnected"`.
 - `networks.connect|disconnect|reconnect {"network"}` → `{}`; before ready → `not_ready`.
@@ -300,7 +314,10 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   first call starts by setting the read marker of every buffer with stored history and no marker
   (channels, queries and `Server`; not `$` masks or status-message targets) to its newest line,
   exactly as `read_markers.set` would (MARKREAD to IRC clients with `draft/read-marker`,
-  `read_marker` emitted), so only queries with lines after an existing marker are opened. This is
+  `read_marker` emitted), so only queries with lines after an existing marker are opened. Each
+  server-name target gets its own marker and MARKREAD for IRC clients; modules get one
+  `read_marker` for `Server` (key `*`). A marker set on `Server` through `read_markers.set` is the
+  modules' own: IRC clients get no MARKREAD for it. This is
   the lite protocol's "new device's first sync" rule.
 - `auth.check {"password"} | {"cert_sha256"}` plus `"remote_ip"` → `{"ok": bool}`, plus on a
   refusal `"reason"`: `"invalid"` or `"rate_limited"` with `"retry_after"` (whole seconds, rounded
@@ -330,9 +347,9 @@ Events (brain → module):
   CTCP other than ACTION), `ctcp_reply` (NOTICE CTCP), `tagmsg`, `join`, `part`, `quit`, `kick`,
   `nick`, `mode`, `topic`, `invite`, `away`, `account`, `chghost`, `setname`, `numeric`, `error`,
   `other`. `buffers`: for messages the channel (whatever the source, a server's included) or (for a
-  query) the peer's nick, `Server` for server-sourced / `$mask` messages not to a channel (stored
-  under `Server`, so they have an id there; history.activity does not count server-sourced ones as
-  unread); QUIT/NICK/AWAY/ACCOUNT/CHGHOST/SETNAME list every channel the user
+  query) the peer's nick, `Server` (key `*`) for server-sourced / `$mask` messages not to a channel
+  (stored under the server's name, see **The `Server` buffer**, so they have an id there;
+  history.activity does not count server-sourced ones as unread); QUIT/NICK/AWAY/ACCOUNT/CHGHOST/SETNAME list every channel the user
   shared with us before the change plus their query buffer if one exists in history (for a NICK
   whose copy was stored for the query, the query under the new nick, with that copy's id); `id` present
   when that buffer stored the line (numerics and `ERROR` are not stored, so have none). `self` true when the source is us. `label` present on the echo

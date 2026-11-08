@@ -184,10 +184,10 @@ func TestHistoryActivityServerNoticesAreNotUnreadInServer(t *testing.T) {
 	tc, db, nid, _ := historyFixture(t, "history")
 	t0 := time.Now().Add(-time.Hour).UTC()
 	for i, l := range []struct{ target, src, text string }{
-		{"server", "srv.example", "*** Looking up your hostname"},
-		{"server", "", "*** no prefix"},
-		{"server", "srv.example", "*** Notice -- snotice"},
-		{"server", "oper!o@h", "global notice"},
+		{"srv.example", "srv.example", "*** Looking up your hostname"},
+		{"irc.example", "", "*** no prefix"},
+		{"srv.example", "srv.example", "*** Notice -- snotice"},
+		{"irc.example", "oper!o@h", "global notice"},
 		{"#c", "srv.example", "channel maintenance"},
 	} {
 		if _, err := db.InsertMessage(context.Background(), store.Message{NetworkID: nid, Target: l.target,

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -22,14 +23,34 @@ func (s *Store) HasTarget(ctx context.Context, networkID int64, target string) (
 }
 
 // IDAtOrBefore is the newest message id of (networkID, target) with time ≤ t (0 when none).
+// target "*" is the Server buffer (messagesOf), as in the Messages* reads.
 func (s *Store) IDAtOrBefore(ctx context.Context, networkID int64, target string, t time.Time) (int64, error) {
+	where, args, err := s.messagesOf(ctx, networkID, target)
+	if err != nil {
+		return 0, err
+	}
 	var id sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM messages WHERE network_id=? AND target=? AND time<=?`,
-		networkID, target, formatTime(t)).Scan(&id)
+	err = s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM messages WHERE `+where+` AND time<=?`,
+		append(args, formatTime(t))...).Scan(&id)
 	return id.Int64, err
 }
 
 const idCols = `id, network_id, target, time, msgid, command, source, raw, text`
+
+// queryBuffer runs a query on the rows of the buffer keyed target: query holds "%s" where its
+// WHERE clause goes (messagesOf), args follow that clause's own.
+func (s *Store) queryBuffer(ctx context.Context, networkID int64, target, query string, args ...any) ([]Message, error) {
+	where, wargs, err := s.messagesOf(ctx, networkID, target)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, strings.Replace(query, "%s", where, 1), append(wargs, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
 
 func (s *Store) queryIDPage(ctx context.Context, query string, args ...any) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -48,26 +69,27 @@ func reverseMessages(ms []Message) []Message {
 }
 
 // The Messages* queries page one buffer's history by messages.id (the module API's cursor),
-// ascending. target is the folded name historyTargets stores under.
+// ascending. target is the folded name historyTargets stores under, or "*" for the Server
+// buffer: every server-name target of the network together (messagesOf).
 
 // MessagesBefore returns up to limit messages with id < before.
 func (s *Store) MessagesBefore(ctx context.Context, networkID int64, target string, before int64, limit int) ([]Message, error) {
-	ms, err := s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND target=? AND id<?
-		ORDER BY id DESC LIMIT ?`, networkID, target, before, limit)
+	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id<?
+		ORDER BY id DESC LIMIT ?`, before, limit)
 	return reverseMessages(ms), err
 }
 
 // MessagesAfter returns up to limit messages with id > after.
 func (s *Store) MessagesAfter(ctx context.Context, networkID int64, target string, after int64, limit int) ([]Message, error) {
-	return s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND target=? AND id>?
-		ORDER BY id ASC LIMIT ?`, networkID, target, after, limit)
+	return s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>?
+		ORDER BY id ASC LIMIT ?`, after, limit)
 }
 
 // MessagesBetween returns up to limit messages with after < id < before, oldest first: the
 // gap fill's page, which starts at the gap's older edge.
 func (s *Store) MessagesBetween(ctx context.Context, networkID int64, target string, after, before int64, limit int) ([]Message, error) {
-	return s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND target=? AND id>? AND id<?
-		ORDER BY id ASC LIMIT ?`, networkID, target, after, before, limit)
+	return s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>? AND id<?
+		ORDER BY id ASC LIMIT ?`, after, before, limit)
 }
 
 // MessagesAround returns up to limit messages centred on id: about half before it, the rest
@@ -87,19 +109,21 @@ func (s *Store) MessagesAround(ctx context.Context, networkID int64, target stri
 
 // MessagesLatest returns the newest limit messages.
 func (s *Store) MessagesLatest(ctx context.Context, networkID int64, target string, limit int) ([]Message, error) {
-	ms, err := s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND target=?
-		ORDER BY id DESC LIMIT ?`, networkID, target, limit)
+	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s
+		ORDER BY id DESC LIMIT ?`, limit)
 	return reverseMessages(ms), err
 }
 
 // HasMessageBefore reports whether a message with id < id exists.
 func (s *Store) HasMessageBefore(ctx context.Context, networkID int64, target string, id int64) (bool, error) {
-	return s.exists(ctx, `SELECT 1 FROM messages WHERE network_id=? AND target=? AND id<? LIMIT 1`, networkID, target, id)
+	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id<? ORDER BY id DESC LIMIT 1`, id)
+	return len(ms) > 0, err
 }
 
 // HasMessageAfter reports whether a message with id > id exists.
 func (s *Store) HasMessageAfter(ctx context.Context, networkID int64, target string, id int64) (bool, error) {
-	return s.exists(ctx, `SELECT 1 FROM messages WHERE network_id=? AND target=? AND id>? LIMIT 1`, networkID, target, id)
+	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>? ORDER BY id ASC LIMIT 1`, id)
+	return len(ms) > 0, err
 }
 
 func (s *Store) exists(ctx context.Context, query string, args ...any) (bool, error) {
@@ -114,9 +138,13 @@ func (s *Store) exists(ctx context.Context, query string, args ...any) (bool, er
 // FirstUnreadID is the oldest message id after the read marker (time > marker; a zero marker
 // means none read) and above floorID (a device's closed-at floor); 0 when none.
 func (s *Store) FirstUnreadID(ctx context.Context, networkID int64, target string, marker time.Time, floorID int64) (int64, error) {
+	where, args, err := s.messagesOf(ctx, networkID, target)
+	if err != nil {
+		return 0, err
+	}
 	var id sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MIN(id) FROM messages WHERE network_id=? AND target=? AND time>? AND id>?`,
-		networkID, target, formatTime(marker), floorID).Scan(&id)
+	err = s.db.QueryRowContext(ctx, `SELECT MIN(id) FROM messages WHERE `+where+` AND time>? AND id>?`,
+		append(args, formatTime(marker), floorID)...).Scan(&id)
 	return id.Int64, err
 }
 

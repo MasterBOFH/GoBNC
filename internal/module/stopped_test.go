@@ -63,7 +63,7 @@ func TestHistoryActivityReadsTheStoreForAStoppedNetwork(t *testing.T) {
 		got[b.Key] = b
 	}
 	if len(act.Buffers) != 4 || got["#d"].Buffer != "#d" || got["friend"].Buffer != "friend" || got["#e"].Buffer != "#E" ||
-		got["server"].Buffer != wire.ServerBuffer {
+		got[wire.ServerBufferKey].Buffer != wire.ServerBuffer {
 		t.Fatalf("activity buffers = %+v, want #E (the channel list), #d, friend and Server", act.Buffers)
 	}
 	if d := got["#d"]; d.Unread != 2 || d.Highlights != 1 || d.LastID != ids[3] || d.LastTime == "" {

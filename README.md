@@ -177,6 +177,7 @@ Release tags build `.deb` / macOS `.pkg` / FreeBSD `.tar.gz` — see `packaging/
 - Control socket defaults under `$XDG_RUNTIME_DIR/gobnc` or `~/.gobnc` (dir `0700`, socket `0600`, same-UID only).
 - Line limits: client 4608 bytes (`417` if longer); uplink 8703 (dropped). Default `max_clients` 32.
 - Tunables in `gobnc.json.example`: `max_flood_queue`, `legacy_playback_max`, `chathistory_max`, `history_retention_days`, `ping_idle_seconds`, `ping_grace_seconds`. Legacy attach playback uses a **shared** per-network/per-target cursor.
+- Server notices (and anything else a server sends us outside a channel) are stored under the **server's own name** — a notice from `irc.example.net` is history target `irc.example.net`. A server name contains a dot, so it can never be a nick: it is an ordinary `CHATHISTORY` target, listed by `CHATHISTORY TARGETS` and paged like a query, for every client, no capability needed. A line naming no server (no source, or a `$mask` global notice) goes to the server we registered to. `Server` is an ordinary nick: its query is `CHATHISTORY Server`. Rows stored by an older build under the shared `server` key move to their server's name when the database is opened.
 - Downlink client keepalive: after `ping_idle_seconds` (default 300) of silence from a client, gobnc PINGs it; no reply within `ping_grace_seconds` (default 120) closes the connection. Raise these if a client's own periodic keepalive ping runs on a longer interval — otherwise it can get closed between two of its own pings even though every one was answered.
 
 ## Debug

@@ -261,8 +261,11 @@ func (n *network) applySnapshot(s wire.Snapshot) {
 	n.seedMembers(s)
 }
 
-// key folds a buffer name the way the network compares names.
-func (n *network) key(name string) string { return n.cm.Canonical(strings.TrimSpace(name)) }
+// key folds a buffer name the way the network compares names; the Server buffer's key is the
+// brain's "*" (wire.BufferKey).
+func (n *network) key(name string) string {
+	return wire.BufferKey(n.cm.Canonical, strings.TrimSpace(name))
+}
 
 func (n *network) isChannel(name string) bool {
 	return name != "" && strings.IndexByte(n.chantypes, name[0]) >= 0

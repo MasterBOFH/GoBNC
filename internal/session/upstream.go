@@ -1140,9 +1140,12 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 			return nil
 		}
 		if s.inServerBuffer(msg) {
-			// The envelope's Server buffer (a server notice to us, a $mask): stored under
-			// that buffer's key, not as a query named after the server.
-			return []string{cm.Canonical(wire.ServerBuffer)}
+			// The envelope's Server buffer (a server notice to us, a $mask): stored under the
+			// server's own name, not under "server", which is a real nick Server's query.
+			if target := s.serverTargetOf(msg); target != "" {
+				return []string{target}
+			}
+			return nil
 		}
 		if ch, ok := s.statusMsgChannel(t); ok {
 			// @#chan / +#chan: the channel's line, stored under the channel's key, as the

@@ -101,7 +101,7 @@ func (s *Session) seedDevice(clientID string, baseline bool) ([]string, []irc.Me
 	}
 	var seededBufs []string
 	for _, target := range targets {
-		if target == "" || target == s.Fold(wire.ServerBuffer) || target[0] == '$' ||
+		if target == "" || irc.IsServerName(target) || target[0] == '$' ||
 			strings.IndexByte(statusmsg, target[0]) >= 0 || isChannelTarget(target, chantypes) ||
 			s.isSelfNick(target) {
 			continue // not a query: our own nick holds lines addressed to us, not a peer's
@@ -149,9 +149,20 @@ func (s *Session) seedDevice(clientID string, baseline bool) ([]string, []irc.Me
 // baselineMarkersLocked sets the read marker of every target with history and no marker to its
 // newest line's time, emitting read_marker for each, and returns the MARKREAD lines the caller
 // sends IRC clients once busMu is released (as SetReadMarkerFromModule does). Status-message
-// and $mask targets are not buffers and are skipped. Caller holds busMu.
+// and $mask targets are not buffers and are skipped. A server-name target is no module buffer:
+// it gets its marker and MARKREAD, and modules instead get the Server buffer's ("*", every
+// server-name target together), which is baselined the same way. Caller holds busMu.
 func (s *Session) baselineMarkersLocked(ctx context.Context, targets []string, statusmsg string) ([]irc.Message, error) {
 	var marks []irc.Message
+	servers := false
+	for _, target := range targets {
+		if irc.IsServerName(target) {
+			servers = true
+		}
+	}
+	if servers {
+		targets = append(targets, wire.ServerBufferKey)
+	}
 	for _, target := range targets {
 		if target == "" || target[0] == '$' || strings.IndexByte(statusmsg, target[0]) >= 0 {
 			continue
@@ -172,7 +183,13 @@ func (s *Session) baselineMarkersLocked(ctx context.Context, targets []string, s
 		if err != nil {
 			return marks, err
 		}
-		if updated {
+		switch {
+		case !updated:
+		case target == wire.ServerBufferKey:
+			s.emitReadMarkerLocked(wire.ServerBuffer, target, stored)
+		case irc.IsServerName(target):
+			marks = append(marks, s.markReadMsg(target, stored))
+		default:
 			s.emitReadMarkerLocked(target, target, stored)
 			marks = append(marks, s.markReadMsg(target, stored))
 		}
@@ -211,7 +228,7 @@ func (s *Session) OpenBufferForDevice(clientID, buffer string) error {
 	if s.store == nil || s.Network.ID == 0 {
 		return errNoStore
 	}
-	key := s.Fold(buffer)
+	key := s.bufferKey(buffer)
 	s.busMu.Lock()
 	defer s.busMu.Unlock()
 	if err := s.store.SetBufferOpen(context.Background(), clientID, s.Network.ID, key, buffer, true, 0); err != nil {
@@ -236,7 +253,7 @@ func (s *Session) CloseBufferForDevice(clientID, buffer string) (int64, error) {
 		return 0, errNoStore
 	}
 	ctx := context.Background()
-	key := s.Fold(buffer)
+	key := s.bufferKey(buffer)
 	s.busMu.Lock()
 	defer s.busMu.Unlock()
 	latest, err := s.store.MessagesLatest(ctx, s.Network.ID, key, 1)

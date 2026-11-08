@@ -67,7 +67,7 @@ func handleHistoryMessages(ctx context.Context, c *Conn, params json.RawMessage)
 	if db == nil {
 		return nil, wire.Errorf(wire.CodeInternal, "no history store")
 	}
-	key := sess.Fold(p.Buffer)
+	key := wire.BufferKey(sess.Fold, p.Buffer)
 	var msgs []store.Message
 	moreInside := false // between only: rows remain in the range after this page
 	switch {
@@ -165,7 +165,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 	cm := sess.CaseMapping()
 	self := sess.Nick()
 	selfKey := cm.Canonical(self)
-	serverKey := cm.Canonical(wire.ServerBuffer)
+	serverKey := wire.ServerBufferKey
 	type shown struct {
 		name  string
 		query bool
@@ -173,7 +173,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 	var buffers []shown
 	seen := map[string]bool{}
 	add := func(name string, query bool) {
-		if k := cm.Canonical(name); !seen[k] {
+		if k := wire.BufferKey(cm.Canonical, name); !seen[k] {
 			seen[k] = true
 			buffers = append(buffers, shown{name, query})
 		}
@@ -188,7 +188,7 @@ func handleHistoryActivity(ctx context.Context, c *Conn, params json.RawMessage)
 
 	res := wire.HistoryActivityResult{Buffers: make([]wire.BufferActivity, 0, len(buffers))}
 	for _, b := range buffers {
-		key := cm.Canonical(b.name)
+		key := wire.BufferKey(cm.Canonical, b.name)
 		var marker time.Time
 		if ts, ok, err := db.GetReadMarker(ctx, p.Network, key); err != nil {
 			return nil, err

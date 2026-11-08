@@ -56,20 +56,23 @@ func (s *Session) handleMARKREAD(d Downlink, msg irc.Message) error {
 
 // SetReadMarkerFromModule moves target's read marker forward to ts on behalf of a module: like
 // a client MARKREAD set, it updates the store, sends MARKREAD to IRC clients with
-// draft/read-marker and emits read_marker. It never moves the marker back.
+// draft/read-marker (not for the Server buffer) and emits read_marker. It never moves the marker
+// back.
 func (s *Session) SetReadMarkerFromModule(target, ts string) (stored string, updated bool, err error) {
 	norm, err := normalizeMarkReadTimestamp(ts)
 	if err != nil {
 		return "", false, err
 	}
-	folded := s.Fold(target)
+	folded := s.bufferKey(target)
 	s.busMu.Lock()
 	stored, updated, err = s.setReadMarkerIfNewer(folded, norm)
 	if err == nil && updated {
 		s.emitReadMarkerLocked(target, folded, stored)
 	}
 	s.busMu.Unlock()
-	if err == nil && updated {
+	if err == nil && updated && folded != wire.ServerBufferKey {
+		// The Server buffer is no IRC target ("Server" would name a nick's query): its marker
+		// is the modules' own.
 		s.broadcastMarkRead("", s.markReadMsg(target, stored))
 	}
 	return stored, updated, err

@@ -20,6 +20,8 @@ type Store struct {
 	// hasDevices caches whether any device row exists (HasDevices): read once at Open, set when
 	// one is created.
 	hasDevices atomic.Bool
+	// serverTargets caches each network's server-name targets (ServerTargets).
+	serverTargets serverTargetCache
 }
 
 // Open opens (or creates) a SQLite database and migrates schema.
@@ -200,6 +202,11 @@ func (s *Store) migrate() error {
 		time TEXT NOT NULL,
 		UNIQUE(network_id, target)
 	)`)
+	// The Server buffer's rows move from "server" to their servers' names (after keeper_seq's
+	// unique index, which the move must respect).
+	if err := s.migrateServerKey(context.Background()); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 	return nil
 }
 
@@ -559,6 +566,7 @@ func (s *Store) InsertMessage(ctx context.Context, m Message) (int64, error) {
 		return 0, err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 1 {
+		s.noteTarget(m.NetworkID, m.Target)
 		return res.LastInsertId()
 	}
 	// The keeper_seq unique index rejected a replayed line: report the row it already has.

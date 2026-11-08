@@ -63,8 +63,7 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 	statusmsg := s.isupport.Raw["STATUSMSG"]
 	s.mu.RUnlock()
 	isChan := func(name string) bool { return isChannelTarget(name, chantypes) }
-	add := func(name string, storedAs ...string) {
-		key := cm.Canonical(name)
+	addKey := func(name, key string, storedAs ...string) {
 		for _, b := range ev.Buffers {
 			if b.Key == key {
 				return
@@ -78,6 +77,11 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 		}
 		ev.Buffers = append(ev.Buffers, b)
 	}
+	add := func(name string, storedAs ...string) { addKey(name, cm.Canonical(name), storedAs...) }
+	// The Server buffer is keyed "*" (wire.ServerBufferKey), not by its name's fold: a real nick
+	// "Server" is an ordinary query. A stored line of it carries the id of its row under the
+	// server's name (serverTargetOf).
+	addServer := func(storedAs ...string) { addKey(wire.ServerBuffer, wire.ServerBufferKey, storedAs...) }
 
 	switch msg.Command {
 	case "PRIVMSG", "NOTICE", "TAGMSG":
@@ -86,7 +90,7 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 		case isChan(stripStatusMsg(t, statusmsg, isChan)):
 			add(stripStatusMsg(t, statusmsg, isChan), t) // whatever its source, a server's included
 		case s.inServerBuffer(msg):
-			add(wire.ServerBuffer)
+			addServer(s.serverTargetOf(msg))
 		case pre.self:
 			add(t) // our own line to someone: their query
 		default:
@@ -109,7 +113,7 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 			add(t)
 		}
 	case "ERROR":
-		add(wire.ServerBuffer)
+		addServer()
 	default:
 		if userWideCommands[msg.Command] {
 			for _, name := range pre.channels {
@@ -130,7 +134,7 @@ func (s *Session) envelopeLocked(msg irc.Message, ids map[string]int64, pre rout
 			if t := msg.Param(1); isChan(t) {
 				add(t)
 			} else {
-				add(wire.ServerBuffer)
+				addServer()
 			}
 		}
 	}
@@ -205,6 +209,23 @@ func (s *Session) inServerBuffer(msg irc.Message) bool {
 	return !isChan(stripStatusMsg(t, statusmsg, isChan))
 }
 
+// serverTargetOf is the history target a Server-buffer line (inServerBuffer) is stored under:
+// its server's own name, folded — a notice from irc.example.net under "irc.example.net", an
+// ordinary chathistory target that no nick can be. A line naming no server (no source, or a
+// person's $mask notice) goes to the server we registered to (001's source), or before that is
+// known to the network's configured host; "" (not stored) when neither is a server name.
+func (s *Session) serverTargetOf(msg irc.Message) string {
+	s.mu.RLock()
+	cm, uplink := s.isupport.CaseMapping, s.uplinkServer
+	s.mu.RUnlock()
+	for _, name := range []string{msg.Source, uplink, s.Network.Host} {
+		if name = strings.TrimSpace(name); irc.IsServerName(name) {
+			return cm.Canonical(name)
+		}
+	}
+	return ""
+}
+
 // statusMsgChannel returns the channel a STATUSMSG target (@#chan, +#chan) is addressed to;
 // ok is false for any other target.
 func (s *Session) statusMsgChannel(t string) (string, bool) {
@@ -223,11 +244,8 @@ func serverSourced(msg irc.Message) bool {
 	return ServerSource(msg.Source)
 }
 
-// ServerSource reports whether a line's source is a server rather than a person: none at all,
-// or a server name (no "!" or "@", contains ".").
-func ServerSource(src string) bool {
-	return src == "" || (!strings.Contains(src, "!") && !strings.Contains(src, "@") && strings.Contains(src, "."))
-}
+// ServerSource reports whether a line's source is a server rather than a person (irc.ServerSource).
+func ServerSource(src string) bool { return irc.ServerSource(src) }
 
 // stripStatusMsg removes ISUPPORT STATUSMSG prefixes (@#chan → #chan) from a channel target.
 func stripStatusMsg(t, statusmsg string, isChan func(string) bool) string {
