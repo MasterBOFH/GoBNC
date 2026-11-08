@@ -126,13 +126,6 @@ func (s *Session) state306Locked(msg irc.Message) {
 	s.self.Away = true
 }
 
-func (s *Session) state332Locked(msg irc.Message) {
-	chName := msg.Param(1)
-	if ch := s.channels[s.isupport.CaseMapping.Canonical(chName)]; ch != nil {
-		ch.Topic = msg.Trailing()
-	}
-}
-
 // state352Locked learns from RPL_WHOREPLY. target is the request's (casemapped) mask, known
 // when the tracker could tie the reply to a request; a plain WHO always carries the flags.
 func (s *Session) state352Locked(msg irc.Message, target string, known bool) {
@@ -221,6 +214,7 @@ func (s *Session) state366Locked(msg irc.Message) {
 			s.rosterDone = append(s.rosterDone, folded) // see emitRosterDoneLocked
 		}
 		ch.RosterKnown = true
+		s.endJoinBurstLocked(ch, folded)
 	}
 }
 

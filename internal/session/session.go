@@ -61,6 +61,19 @@ type ChannelState struct {
 	// ordinary way once it arrives, rather than fabricating an interim
 	// answer.
 	RosterKnown bool
+
+	// Channel metadata (chanmeta.go). ModesKnown: a 324 set Modes' flags and arguments (live MODE
+	// lines alone are deltas on an unknown set). TopicKnown: Topic is the channel's topic, ""
+	// meaning none set (332, 331, a live TOPIC, or our JOIN's burst without 332). TopicSetter and
+	// TopicTime (unix seconds) come from 333 or a live TOPIC; Created from 329. A resumed channel
+	// starts with none of it known.
+	ModesKnown  bool
+	TopicKnown  bool
+	TopicSetter string
+	TopicTime   int64
+	Created     int64
+	// joinBurst: our JOIN's burst is still arriving (its 366 without a 332 means no topic).
+	joinBurst bool
 }
 
 // Session is one network: one uplink, many downlinks.
@@ -109,6 +122,11 @@ type Session struct {
 	// rosterDone lists channels (folded) whose roster a 366 just confirmed, for the module
 	// state/members event (emitRosterDoneLocked).
 	rosterDone []string
+	// metaDone lists channels (folded) whose modes or topic a reply just made known or changed,
+	// for the module state/channel event (emitChannelMetaLocked). pendingChannelMeta is the
+	// channel_meta fetch queue RefreshChannelMeta drains, one channel per call (chanmeta.go).
+	metaDone           []string
+	pendingChannelMeta []channelMetaFetch
 	// pendingUserHostRefresh mirrors pendingNamesRefresh for
 	// RefreshSelfUserHost — true when SeedFromBlob left self.Host unknown.
 	pendingUserHostRefresh bool

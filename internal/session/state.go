@@ -106,8 +106,16 @@ func (s *Session) applyState(msg irc.Message) {
 		s.state305Locked(msg)
 	case "306":
 		s.state306Locked(msg)
+	case "324":
+		s.state324Locked(msg)
+	case "329":
+		s.state329Locked(msg)
+	case "331":
+		s.state331Locked(msg)
 	case "332":
 		s.state332Locked(msg)
+	case "333":
+		s.state333Locked(msg)
 	case "352":
 		s.state352Locked(msg, whoTarget, whoKnown)
 	case "354":

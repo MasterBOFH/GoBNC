@@ -454,8 +454,9 @@ func (s *Server) retentionLoop(ctx context.Context) {
 var WHOPollTick time.Duration
 
 // whoPollLoop lets every network poll a channel's WHOX when one is due (Session.PollWHO decides,
-// and paces: one channel per seed pace while seeding, one per 90 s after). The settings are read
-// each tick, so a rehash applies.
+// and paces: one channel per seed pace while seeding, one per 90 s after), and ask one queued
+// channel's MODE/TOPIC (Session.RefreshChannelMeta) per tick. Each needs its state feature. The
+// settings are read each tick, so a rehash applies.
 func (s *Server) whoPollLoop(ctx context.Context) {
 	t := time.NewTicker(s.whoPollTick())
 	defer t.Stop()
@@ -483,17 +484,21 @@ func (s *Server) whoPollTick() time.Duration {
 func (s *Server) pollWHO(now time.Time) {
 	s.mu.RLock()
 	p := session.WHOPoll{Interval: s.cfg.WHOPollInterval(), SeedPace: s.cfg.WHOSeedPace(), Pace: config.WHOPollPace}
-	memberMeta := s.stateFeaturesLocked().Has(session.StateMemberMeta)
+	features := s.stateFeaturesLocked()
 	sessions := make([]*session.Session, 0, len(s.sess))
 	for _, sess := range s.sess {
 		sessions = append(sessions, sess)
 	}
 	s.mu.RUnlock()
-	if p.Interval <= 0 || !memberMeta { // no module granted member_meta: GoBNC never polls
-		return
-	}
 	for _, sess := range sessions {
-		sess.PollWHO(now, p)
+		// channel_meta: one queued channel's MODE/TOPIC per tick (after a reload, every channel).
+		if features.Has(session.StateChannelMeta) {
+			sess.RefreshChannelMeta()
+		}
+		// No module granted member_meta: GoBNC never polls WHOX.
+		if p.Interval > 0 && features.Has(session.StateMemberMeta) {
+			sess.PollWHO(now, p)
+		}
 	}
 }
 

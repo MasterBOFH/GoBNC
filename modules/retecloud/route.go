@@ -68,6 +68,8 @@ func (m *Module) handleEvent(ev wire.Event) {
 				m.refreshBufferState(st.Network, st.Buffer, true)
 			case wire.StateSilence:
 				m.broadcastSilence(st.Network, st.Silence)
+			case wire.StateChannel: // modes/topic became known or changed by a reply
+				m.refreshBufferState(st.Network, st.Buffer, false)
 			}
 		}
 	}
@@ -376,7 +378,8 @@ func (m *Module) takeOwnAction(event, key string) (*wsConn, string) {
 }
 
 // refreshBufferState sends a fresh buffer_state to the connections subscribed to buffer (after
-// a NAMES completes, or our own PART/KICK). withMembers=false sends topic/modes only.
+// a NAMES completes, modes or topic become known, or our own PART/KICK). withMembers=false
+// sends topic/modes only.
 // broadcastSilence sends every connection following the network its whole SILENCE list, tier 0
 // (the brain emits the state event ahead of the SILENCE line that changed it).
 func (m *Module) broadcastSilence(network int64, masks []string) {

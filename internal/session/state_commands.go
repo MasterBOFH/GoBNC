@@ -15,7 +15,8 @@ func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string, blobOnl
 	}
 	folded := cm.Canonical(chName)
 	ch := s.channels[folded]
-	if ch == nil {
+	fresh := ch == nil
+	if fresh {
 		ch = &ChannelState{Name: chName, Modes: irc.NewChannelModes(), Members: map[string]struct{}{}}
 		s.channels[folded] = ch
 	}
@@ -26,6 +27,12 @@ func (s *Session) stateJOINLocked(msg irc.Message) (persist [][2]string, blobOnl
 	ch.Members[cm.Canonical(u.Nick)] = struct{}{}
 	if u == s.self {
 		ch.Name = chName
+		if fresh {
+			// Our JOIN's burst brings the topic (332/333, or nothing: see state366Locked) but
+			// not the modes, which channel_meta asks for (chanmeta.go).
+			ch.joinBurst = true
+			s.queueChannelMetaLocked(chName, true, false)
+		}
 		// Persist to SQL only after a confirmed self-JOIN from a client JOIN
 		// (pending key). Uplink auto-rejoin already has a DB row; do not
 		// upsert an empty key over it. The blob has no such row to fall back
@@ -89,13 +96,6 @@ func (s *Session) stateQUITLocked(msg irc.Message) {
 	}
 	if s.self == nil || !cm.Equal(nick, s.self.Nick) {
 		delete(s.users, folded)
-	}
-}
-
-func (s *Session) stateTOPICLocked(msg irc.Message) {
-	chName := msg.Param(0)
-	if ch := s.channels[s.isupport.CaseMapping.Canonical(chName)]; ch != nil {
-		ch.Topic = msg.Trailing()
 	}
 }
 

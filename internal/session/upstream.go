@@ -860,6 +860,7 @@ func (s *Session) HandleMessage(msg irc.Message) {
 		s.emitUplinkLineLocked(msg, ids, pre, "")
 	}
 	s.emitRosterDoneLocked()
+	s.emitChannelMetaLocked()
 	s.busMu.Unlock()
 	s.flushTrackerWrites()
 	if len(dests) > 0 {

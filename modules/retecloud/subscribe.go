@@ -236,21 +236,28 @@ func bufferState(n *network, snap wire.Snapshot, buffer string, members membersM
 	return out
 }
 
+// channelState is a joined channel's state. Modes and topic are sent only when the brain knows
+// them (A3031): "" would tell the client they were cleared (after a brain reload, until the
+// channel_meta fetch answers). The topic's setter and time are sent only when known as well.
 func channelState(ch wire.Channel, members membersMode, prefix string) map[string]interface{} {
-	var topicTime int64
-	if t, err := time.Parse(time.RFC3339, ch.Topic.Time); err == nil {
-		topicTime = t.Unix()
-	}
 	out := map[string]interface{}{
-		"buffer":          ch.Name,
-		"kind":            "channel",
-		"joined":          true,
-		"creation_id":     0,
-		"topic":           ch.Topic.Text,
-		"topic_setter":    ch.Topic.Setter,
-		"topic_timestamp": topicTime,
-		"modes":           ch.Modes,
-		"member_count":    len(ch.Members),
+		"buffer":       ch.Name,
+		"kind":         "channel",
+		"joined":       true,
+		"creation_id":  0,
+		"member_count": len(ch.Members),
+	}
+	if ch.ModesKnown {
+		out["modes"] = ch.Modes
+	}
+	if ch.TopicKnown {
+		out["topic"] = ch.Topic.Text
+		if ch.Topic.Setter != "" {
+			out["topic_setter"] = ch.Topic.Setter
+		}
+		if t, err := time.Parse(time.RFC3339, ch.Topic.Time); err == nil {
+			out["topic_timestamp"] = t.Unix()
+		}
 	}
 	if members == membersFull {
 		modes, symbols := prefixRanks(prefix)

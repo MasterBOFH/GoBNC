@@ -229,10 +229,17 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   fresh snapshot. `events.unsubscribe {"network"}` → `{}`.
 - Snapshot: `{"network", "state", "last_id", "seq", "self": {"nick","user","host","account","umodes","away"},
   "isupport": {"KEY": "value", ...}, "caps": [...], "channels": [{"name","key","topic":
-  {"text","setter","time"},"modes","chankey","members_complete",
+  {"text","setter","time"},"modes","chankey","members_complete","modes_known"?,"topic_known"?,
   "members": [{"nick","prefixes","user","host","account","away","oper"?,"bot"?}]}],
   "silence"?: [...]}`. `oper` / `bot` are omitted when false, `silence` (the server's SILENCE list,
-  queried silently after registration) when empty. `last_id` = newest
+  queried silently after the `silence` feature's registration query) when empty.
+  `modes_known` / `topic_known` (omitted when false) say `modes` / `topic.text` are the channel's
+  rather than merely empty: set by a 324, or by 332/331/a live TOPIC/our JOIN's burst; a channel
+  seeded after a brain restart knows neither until asked (with `channel_meta`, the brain asks
+  every channel again, one per WHOX seed tick). `topic.setter` / `topic.time` come from 333 or a
+  live TOPIC, `""` when unknown. A `state` event `{"network","kind":"channel","buffer","key"}`
+  says a reply made a channel's modes or topic known or changed them; take a snapshot.
+  `last_id` = newest
   `messages.id` of the network at snapshot time (0 if none). `seq` = seq of the last `line` event
   emitted before the snapshot, so a module that re-subscribes for a fresh snapshot can place it in
   the stream it is consuming. History read after a snapshot is not part of it: a line can be

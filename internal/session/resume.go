@@ -166,10 +166,17 @@ func (s *Session) SeedFromBlob(entries []keeper.BlobEntry) {
 // server-sent NAMES reply — the same thing a client's own manual /NAMES
 // would produce, just fired automatically instead of waiting for someone
 // to notice the roster is thin.
+//
+// With channel_meta, it also queues every resumed channel's MODE and TOPIC for
+// RefreshChannelMeta (chanmeta.go), which asks one channel per WHOX seed tick:
+// the blob carries neither, and the JOIN burst that would have is never resent.
 func (s *Session) RefreshResumedChannelNames() {
 	s.mu.Lock()
 	names := s.pendingNamesRefresh
 	s.pendingNamesRefresh = nil
+	for _, name := range names {
+		s.queueChannelMetaLocked(name, true, true)
+	}
 	s.mu.Unlock()
 	for _, name := range names {
 		_ = s.WriteMessage(irc.Message{Command: "NAMES", Params: []string{name}})

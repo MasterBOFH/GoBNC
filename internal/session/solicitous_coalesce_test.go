@@ -61,6 +61,25 @@ func TestRequestTrackerMODESameListLettersCoalesce(t *testing.T) {
 	requireDests(t, got, "c1", "c2", "c3")
 }
 
+// Identical TOPIC enquiries share one uplink write, as MODE's do: the second asker (an IRC
+// client, or GoBNC's own channel_meta fetch) gets the same 332/333 or 331.
+func TestRequestTrackerTOPICSameChannelCoalesce(t *testing.T) {
+	rt := NewRequestTracker()
+	cm := irc.CaseRFC1459
+	_, _, w1 := rt.Begin(BeginOpts{Client: "c1", Cmd: "TOPIC", EnquiryTarget: "#c"})
+	_, _, w2 := rt.Begin(BeginOpts{Client: "c2", Cmd: "TOPIC", EnquiryTarget: "#c"})
+	_, _, w3 := rt.Begin(BeginOpts{Client: "c3", Cmd: "TOPIC", EnquiryTarget: "#d"})
+	if !w1 || w2 || !w3 {
+		t.Fatal("TOPIC #c twice is one enquiry; #d is another", w1, w2, w3)
+	}
+	requireDests(t, rt.RouteAll(irc.Message{Command: "332", Params: []string{"me", "#c", "hello"}}, cm), "c1", "c2")
+	requireDests(t, rt.RouteAll(irc.Message{Command: "333", Params: []string{"me", "#c", "op", "1"}}, cm), "c1", "c2")
+	requireDests(t, rt.RouteAll(irc.Message{Command: "331", Params: []string{"me", "#d", "No topic is set."}}, cm), "c3")
+	if _, _, w := rt.Begin(BeginOpts{Client: "c2", Cmd: "TOPIC", EnquiryTarget: "#c"}); !w {
+		t.Fatal("a TOPIC after the exchange ended must write again")
+	}
+}
+
 func TestRequestTrackerWHOISPartialWire(t *testing.T) {
 	rt := NewRequestTracker()
 	cm := irc.CaseRFC1459
