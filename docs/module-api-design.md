@@ -233,7 +233,9 @@ CASEMAPPING fold under the network's ISUPPORT `CASEMAPPING`):
   `state` event `{"network","kind":"silence","silence"?:[...]}` replaces the
   SILENCE list whenever it changes, ahead of the `SILENCE` line that changed it.
 - `history.messages {"network","buffer","before_id"?|"after_id"?|"around_id"?|"anchor"?,"limit"?,"device"?}`:
-  exactly one of the four selectors (none = latest). `anchor` ∈ `"first_unread"`, `"latest"`;
+  at most one selector (none = latest), where `before_id` and `after_id` together count as one:
+  the rows strictly between them, oldest first (a gap fill), whose `has_after` then means rows
+  remain below `before_id`. `anchor` ∈ `"first_unread"`, `"latest"`;
   `first_unread` needs `device` (to apply its closed-at floor) and returns the page starting at the
   first line after the read marker. `limit` 1..500, default 50. → `{"messages": [Message],
   "has_before": bool, "has_after": bool}`, ascending by id. Message:

@@ -63,6 +63,13 @@ func (s *Store) MessagesAfter(ctx context.Context, networkID int64, target strin
 		ORDER BY id ASC LIMIT ?`, networkID, target, after, limit)
 }
 
+// MessagesBetween returns up to limit messages with after < id < before, oldest first: the
+// gap fill's page, which starts at the gap's older edge.
+func (s *Store) MessagesBetween(ctx context.Context, networkID int64, target string, after, before int64, limit int) ([]Message, error) {
+	return s.queryIDPage(ctx, `SELECT `+idCols+` FROM messages WHERE network_id=? AND target=? AND id>? AND id<?
+		ORDER BY id ASC LIMIT ?`, networkID, target, after, before, limit)
+}
+
 // MessagesAround returns up to limit messages centred on id: about half before it, the rest
 // from it on.
 func (s *Store) MessagesAround(ctx context.Context, networkID int64, target string, id int64, limit int) ([]Message, error) {
