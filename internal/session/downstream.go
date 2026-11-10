@@ -20,6 +20,7 @@ func (s *Session) Detach(id ClientID) {
 		_ = d.Close()
 	}
 	delete(s.awaitingUplink, id)
+	delete(s.awaitingNick, id)
 	if s.saslClient == id {
 		s.saslClient = ""
 	}

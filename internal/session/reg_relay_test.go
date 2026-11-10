@@ -743,7 +743,20 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	if got := welcomeNicks(snap); len(got) != 2 || got[0] != "taken" || got[1] != "alt" {
 		t.Fatalf("want pending 001 taken then real 001 alt, got %v in %+v", got, snap)
 	}
-	assertNoSelfNICK(t, snap)
+	// The early client was told "taken"; it must learn it is now "alt"
+	// via a self-NICK (clients ignore the nick in a second 001).
+	nicks := 0
+	for _, m := range snap {
+		if m.Command == "NICK" {
+			nicks++
+			if !strings.HasPrefix(m.Source, "taken!") || m.Param(0) != "alt" {
+				t.Fatalf("want self-NICK taken → alt: %+v", m)
+			}
+		}
+	}
+	if nicks != 1 {
+		t.Fatalf("want exactly one self-NICK, got %d in %+v", nicks, snap)
+	}
 	if got := s.Nick(); got != "alt" {
 		t.Fatalf("session nick after ladder: %q want alt", got)
 	}
@@ -770,10 +783,14 @@ func TestNickLadderSwallowsMid433(t *testing.T) {
 	}
 }
 
-func TestAttachPendingSeesTwo001sWhenAssignedNickDiffers(t *testing.T) {
-	// Case 1: downlink attached while the uplink is still connecting.
-	// Synthetic 001 uses the configured nick; the real 001 uses the
-	// assigned nick. 001 is the source of truth — no self-NICK.
+func TestAttachPendingGetsSelfNICKWhenAssignedNickDiffers(t *testing.T) {
+	// Downlink attached while the uplink is still connecting: the synthetic
+	// 001 told it the configured nick, the uplink then hit 433 and was
+	// assigned another. Clients take their nick from the first 001 and
+	// ignore a later one's, so without a self-NICK they keep addressing
+	// themselves by the configured nick (seen live: "MODE naka +i" → 502
+	// while the uplink nick was nakaka). Self-NICK must come before the
+	// real 001.
 	s := New(store.Network{Name: "n", Nick: "MrIron", Username: "u"}, nil, nil, nil, nil)
 	d := &fakeDL{id: "c1", caps: map[string]bool{}}
 	if err := s.Attach(d); err != nil {
@@ -784,13 +801,62 @@ func TestAttachPendingSeesTwo001sWhenAssignedNickDiffers(t *testing.T) {
 		Source: "irc.example", Command: "001", Params: []string{"MrIron_", "Welcome"},
 	})
 	snap := d.snapshot()
-	if got := welcomeNicks(snap); len(got) != 2 || got[0] != "MrIron" || got[1] != "MrIron_" {
-		t.Fatalf("want pending 001 MrIron then real 001 MrIron_, got %v in %+v", got, snap)
+	if len(snap) != 3 {
+		t.Fatalf("want pending 001, NICK, real 001; got %+v", snap)
 	}
-	if !strings.Contains(snap[0].Trailing(), "pending uplink") {
-		t.Fatalf("first 001 should be the synthetic pending welcome: %+v", snap[0])
+	if snap[0].Command != "001" || snap[0].Param(0) != "MrIron" || !strings.Contains(snap[0].Trailing(), "pending uplink") {
+		t.Fatalf("first should be the synthetic pending welcome for MrIron: %+v", snap[0])
+	}
+	nick := snap[1]
+	if nick.Command != "NICK" || nick.Param(0) != "MrIron_" || !strings.HasPrefix(nick.Source, "MrIron!u@") {
+		t.Fatalf("second should be self-NICK MrIron!u@… → MrIron_: %+v", nick)
+	}
+	if snap[2].Command != "001" || snap[2].Param(0) != "MrIron_" {
+		t.Fatalf("third should be the real 001 for MrIron_: %+v", snap[2])
+	}
+}
+
+func TestAttachPendingNoSelfNICKWhenAssignedNickMatches(t *testing.T) {
+	// Same nick modulo casemapping: nothing changed for the client.
+	s := New(store.Network{Name: "n", Nick: "MrIron"}, nil, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	s.HandleRegistrationLine(irc.Message{
+		Source: "irc.example", Command: "001", Params: []string{"mriron", "Welcome"},
+	})
+	snap := d.snapshot()
+	if got := welcomeNicks(snap); len(got) != 2 {
+		t.Fatalf("want pending + real 001, got %v in %+v", got, snap)
 	}
 	assertNoSelfNICK(t, snap)
+}
+
+func TestAwaitingSelfNICKTracksPreviousAssignedNickAcrossRetry(t *testing.T) {
+	// The uplink got a real 001 (nick me_) but dropped before 376, so the
+	// client stays awaiting. The retry is assigned me__: the NICK must go
+	// from me_ — the nick the client was last told — not the configured one.
+	s := New(store.Network{Name: "n", Nick: "me", Username: "u"}, nil, nil, nil, nil)
+	d := &fakeDL{id: "c1", caps: map[string]bool{}}
+	if err := s.Attach(d); err != nil {
+		t.Fatal(err)
+	}
+	s.HandleRegistrationLine(irc.Message{Source: "irc.example", Command: "001", Params: []string{"me_", "Welcome"}})
+	s.HandleDisconnect(fmt.Errorf("connection reset by peer"))
+	d.clearSent()
+
+	s.HandleRegistrationLine(irc.Message{Source: "irc.example", Command: "001", Params: []string{"me__", "Welcome"}})
+	snap := d.snapshot()
+	if len(snap) != 2 || snap[0].Command != "NICK" || !strings.HasPrefix(snap[0].Source, "me_!") || snap[0].Param(0) != "me__" {
+		t.Fatalf("want NICK me_ → me__ then 001, got %+v", snap)
+	}
+
+	// Retry assigned the nick the client already has: no NICK.
+	s.HandleDisconnect(fmt.Errorf("connection reset by peer"))
+	d.clearSent()
+	s.HandleRegistrationLine(irc.Message{Source: "irc.example", Command: "001", Params: []string{"me__", "Welcome"}})
+	assertNoSelfNICK(t, d.snapshot())
 }
 
 func TestAttachMidRegistrationAssignedNickNoNICK(t *testing.T) {
