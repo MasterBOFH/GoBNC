@@ -156,6 +156,14 @@ type Session struct {
 	// awaitingUplink marks downlinks that attached before uplink registration
 	// finished and should receive live/buffered registration traffic.
 	awaitingUplink map[ClientID]bool
+	// awaitingNick is, per awaiting downlink, the nick the last 001 it saw
+	// (the synthetic pending welcome or a relayed real one) told it is its
+	// own. When the real 001 assigns a different nick (the configured one
+	// was taken), the downlink gets a self-NICK first: clients take their
+	// nick from the first 001 and ignore the nick in a later one, so
+	// without it they keep addressing their own nick wrongly (MODE oldnick
+	// +i → 502). Entries live exactly as long as the awaitingUplink ones.
+	awaitingNick map[ClientID]string
 	// regBuffer holds client-visible registration lines until uplink is registered
 	// (for mid-registration attach catch-up).
 	regBuffer []irc.Message
@@ -237,6 +245,7 @@ func New(net store.Network, st *store.Store, hist *history.Store, log *slog.Logg
 		pendingJoinKeys: make(map[string]string),
 		downlinks:       make(map[ClientID]Downlink),
 		awaitingUplink:  make(map[ClientID]bool),
+		awaitingNick:    make(map[ClientID]string),
 		isupport:        irc.NewISUPPORT(),
 		upCaps:          make(map[string]bool),
 		debugTargets:    make(map[ClientID]*sessionDebugTarget),

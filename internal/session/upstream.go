@@ -152,21 +152,44 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	if visible {
 		s.regBuffer = append(s.regBuffer, msg)
 	}
-	var targets []Downlink
+	type regTarget struct {
+		d        Downlink
+		nickFrom string // non-empty: self-NICK nickFrom → msg.Params[0] before this 001
+	}
+	var targets []regTarget
 	if visible {
-		targets = make([]Downlink, 0, len(s.awaitingUplink))
+		targets = make([]regTarget, 0, len(s.awaitingUplink))
 		for id := range s.awaitingUplink {
-			if d, ok := s.downlinks[id]; ok {
-				targets = append(targets, d)
+			d, ok := s.downlinks[id]
+			if !ok {
+				continue
 			}
+			t := regTarget{d: d}
+			if msg.Command == "001" && len(msg.Params) > 0 {
+				actual := msg.Params[0]
+				told := s.awaitingNick[id]
+				if told != "" && told != "*" && !s.isupport.CaseMapping.Equal(told, actual) {
+					t.nickFrom = told
+				}
+				s.awaitingNick[id] = actual
+			}
+			targets = append(targets, t)
 		}
 	}
 	gotWelcome := s.gotWelcome
+	ident := s.networkIdent()
 	s.mu.Unlock()
 
 	if visible {
-		for _, d := range targets {
-			_ = d.Send(s.rewriteFor(d, msg))
+		for _, t := range targets {
+			if t.nickFrom != "" {
+				_ = t.d.Send(s.rewriteFor(t.d, irc.Message{
+					Source:  t.nickFrom + "!" + ident + "@" + ServerName,
+					Command: "NICK",
+					Params:  []string{msg.Params[0]},
+				}))
+			}
+			_ = t.d.Send(s.rewriteFor(t.d, msg))
 		}
 	}
 
@@ -236,6 +259,7 @@ func (s *Session) completeRegistration() {
 		}
 	}
 	s.awaitingUplink = make(map[ClientID]bool)
+	s.awaitingNick = make(map[ClientID]string)
 	s.regBuffer = nil
 	loggedIn, haveLogin := s.rplLoggedInLocked()
 	s.mu.Unlock()
@@ -574,6 +598,7 @@ func (s *Session) HandleDisconnect(err error) {
 	if wasRegistered {
 		s.downlinks = make(map[ClientID]Downlink)
 		s.awaitingUplink = make(map[ClientID]bool)
+		s.awaitingNick = make(map[ClientID]string)
 	} else {
 		// Stay attached and keep waiting for the next successful registration.
 		awaiting := make(map[ClientID]bool, len(s.downlinks))

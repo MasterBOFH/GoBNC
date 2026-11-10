@@ -2360,7 +2360,7 @@ func assertNoSelfNICK(t *testing.T, msgs []irc.Message) {
 	t.Helper()
 	for _, m := range msgs {
 		if m.Command == "NICK" {
-			t.Fatalf("must not send NICK; 001 is the nick source of truth: %+v", msgs)
+			t.Fatalf("must not send NICK: %+v", msgs)
 		}
 	}
 }
