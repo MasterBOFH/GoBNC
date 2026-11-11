@@ -415,7 +415,8 @@ Added to retecloud-api `lite-mode` in track S and implemented identically by `go
   path removes a network from a running brain yet): clients reconcile their list from
   `authenticate_success.sessions` on every connect; `sync_session` (and the other per-session
   requests except `subscribe_buffer`, which answers "sync_session with sync_mode lite required")
-  naming a vanished id is answered "No access to session".
+  naming a vanished id is answered "No access to session" with `code: "no_access"` and the
+  request's `session_id`; clients decide by the code.
 - GoBNC only: a stopped network (after `disconnect_session`) has no Session in the brain, so its
   live module calls (`events.subscribe`, `clients.attach`, `devices.seed`, writes) answer
   `not_found`. A lite `sync_session` for it succeeds as the spec's disconnected bootstrap

@@ -241,7 +241,7 @@ func (m *Module) handleSetBufferHighlight(c *wsConn, msg *ClientMessage) {
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		fail("No access to session", "no_access")
+		fail(errNoAccessToSession, codeNoAccess)
 		return
 	}
 	key := n.key(req.Buffer)
@@ -334,7 +334,7 @@ func (m *Module) handleSetHighlightRules(c *wsConn, msg *ClientMessage) {
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		fail("No access to session", "no_access", nil)
+		fail(errNoAccessToSession, codeNoAccess, nil)
 		return
 	}
 	stored, _, err := m.readHighlightRules(n.id)

@@ -81,7 +81,7 @@ func (m *Module) handleSyncSession(c *wsConn, msg *ClientMessage) {
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		c.send(errorFrame("sync_session", msg.RequestID, "No access to session"))
+		c.send(noAccessFrame("sync_session", msg.RequestID, msg.SessionID))
 		return
 	}
 	if mode := strings.ToLower(strings.TrimSpace(req.SyncMode)); mode != syncModeLite {
@@ -336,7 +336,7 @@ func (m *Module) handleUnsyncSession(c *wsConn, msg *ClientMessage) {
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		c.send(errorFrame("unsync_session", msg.RequestID, "No access to session"))
+		c.send(noAccessFrame("unsync_session", msg.RequestID, msg.SessionID))
 		return
 	}
 	if err := m.call(wire.MethodDevicesSetNetwork, wire.DeviceSetNetworkParams{ClientID: req.ClientID, Network: n.id, Subscribed: false}, nil); err != nil {
