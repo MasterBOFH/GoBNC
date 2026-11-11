@@ -197,6 +197,22 @@ func errorFrame(msgType, requestID, text string) ServerMessage {
 	return ServerMessage{Type: msgType + "_error", RequestID: requestID, Error: text}
 }
 
+// Rete A869: a session the account cannot reach (deleted, or not this account's) answers every
+// per-session request with this text and code, and the request's session_id. A client stops
+// reconnecting to the session on it, so it decides by the code, never the wording.
+const (
+	errNoAccessToSession = "No access to session"
+	codeNoAccess         = "no_access"
+)
+
+// noAccessFrame answers a per-session request for a session the account cannot reach.
+func noAccessFrame(msgType, requestID, sessionID string) ServerMessage {
+	f := errorFrame(msgType, requestID, errNoAccessToSession)
+	f.SessionID = sessionID
+	f.Code = codeNoAccess
+	return f
+}
+
 // authenticate_error codes.
 const (
 	authInvalidRequest     = "invalid_request"     // malformed data or no client_id

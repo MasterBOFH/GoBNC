@@ -25,7 +25,7 @@ func (m *Module) syncedNetwork(c *wsConn, msg *ClientMessage, kind string) (*net
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		c.send(errorFrame(kind, msg.RequestID, "No access to session"))
+		c.send(noAccessFrame(kind, msg.RequestID, msg.SessionID))
 		return nil, nil, false
 	}
 	ls := c.sessions[n.id]
@@ -44,7 +44,7 @@ func (m *Module) handleGetMessages(c *wsConn, msg *ClientMessage) {
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		c.send(errorFrame("get_messages", msg.RequestID, "No access to session"))
+		c.send(noAccessFrame("get_messages", msg.RequestID, msg.SessionID))
 		return
 	}
 	if req.Buffer == nil || strings.TrimSpace(*req.Buffer) == "" {
@@ -233,7 +233,7 @@ func (m *Module) networkControl(c *wsConn, msg *ClientMessage, kind, method stri
 	}
 	n := m.networkFor(msg.SessionID)
 	if n == nil {
-		c.send(errorFrame(kind, msg.RequestID, "No access to session"))
+		c.send(noAccessFrame(kind, msg.RequestID, msg.SessionID))
 		return
 	}
 	if err := m.call(method, wire.NetworkParams{Network: n.id}, nil); err != nil {
