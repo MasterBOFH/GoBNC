@@ -51,12 +51,21 @@ func ParseRules(raw []byte) ([]Rule, error) {
 	return rules, nil
 }
 
-// Positive reports whether a rule type is positive (a match makes a highlight); every other
-// type, unknown ones included, is negative.
+// Positive reports whether a rule type is positive (a trigger: any match makes a highlight).
 func Positive(ruleType string) bool {
 	switch ruleType {
 	case "contains_my_nick", "contains_text", "sender_is", "sender_logged_in", "sender_on_common_channels",
 		"sender_opped_on_common_channels", "sender_voiced_on_common_channels", "message_on_channel":
+		return true
+	}
+	return false
+}
+
+// Negative reports whether a rule type is a "not" rule (Rete A3102): a requirement every
+// highlight must meet. A type that is neither, an unknown one, is ignored.
+func Negative(ruleType string) bool {
+	switch ruleType {
+	case "sender_is_not", "sender_not_logged_in", "sender_not_on_common_channels", "message_not_on_channel":
 		return true
 	}
 	return false
@@ -76,8 +85,9 @@ type Line struct {
 }
 
 // Eval is the evaluation order of WEBSOCKET_PROTOCOL.md (the first step that decides wins):
-// switch off, our own line, a DM, a negative rule, the positive rules, then the default nick
-// mention. rules nil (never written) or without enabled rules uses the default.
+// switch off, our own line, a DM, a "not" rule that does not hold, the positive rules, then the
+// default nick mention. rules nil (never written) or without enabled positive rules uses the
+// default. Rete A3102: every enabled "not" rule must hold (it was: any matching one suppressed).
 func Eval(rules []Rule, l Line, myNick string, cm irc.CaseMapping) bool {
 	if l.Off {
 		return false
@@ -93,12 +103,13 @@ func Eval(rules []Rule, l Line, myNick string, cm irc.CaseMapping) bool {
 		if !r.IsEnabled {
 			continue
 		}
-		if Positive(r.RuleType) {
+		switch {
+		case Positive(r.RuleType):
 			positives++
-			continue
-		}
-		if match(r, l, myNick, cm) {
-			return false
+		case Negative(r.RuleType):
+			if !match(r, l, myNick, cm) {
+				return false
+			}
 		}
 	}
 	if positives > 0 {
@@ -123,7 +134,7 @@ func match(r Rule, l Line, myNick string, cm irc.CaseMapping) bool {
 	case "sender_is":
 		return v != "" && cm.Equal(l.Sender, v)
 	case "sender_is_not":
-		return v != "" && !cm.Equal(l.Sender, v)
+		return v == "" || !cm.Equal(l.Sender, v) // no nick yet: the requirement holds
 	case "sender_logged_in":
 		return l.Sender != "" && l.Account != ""
 	case "sender_not_logged_in":
@@ -139,7 +150,7 @@ func match(r Rule, l Line, myNick string, cm irc.CaseMapping) bool {
 	case "message_on_channel":
 		return v != "" && cm.Equal(l.Buffer, v)
 	case "message_not_on_channel":
-		return v != "" && !cm.Equal(l.Buffer, v)
+		return v == "" || !cm.Equal(l.Buffer, v) // no channel yet: the requirement holds
 	}
 	return false
 }
