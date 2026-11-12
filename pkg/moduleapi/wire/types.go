@@ -65,6 +65,9 @@ type NetworkEvent struct {
 	State   string `json:"state"`
 	Nick    string `json:"nick"`
 	Change  string `json:"change"`
+	// Time is when a state change (Change == ChangeState) happened, as stored in the Server
+	// buffer's State row for it (RFC 3339 nano, UTC); empty when no row was stored.
+	Time string `json:"time,omitempty"`
 }
 
 // --- events ---
@@ -167,6 +170,14 @@ const ServerBuffer = "Server"
 // "irc.example.net"); the Server buffer is all of those targets together. A real nick
 // "Server" keeps a query of its own (keyed by its fold, "server").
 const ServerBufferKey = "*"
+
+// HistoryStateCommand is the Command of a stored Server-buffer State row: the uplink went down,
+// connected or registered (Rete A3131). Its Text is the JSON object a lite page serves as the
+// row's event_data: connected, registered, an optional message and timestamp (RFC 3339 nano,
+// UTC, the same instant as the live state frame's). It has no Raw. Such rows, the registration
+// burst's numerics and the uplink's ERROR are stored under ServerBufferKey itself: module pages
+// of the Server buffer serve them, IRC clients' playback and CHATHISTORY never do.
+const HistoryStateCommand = "STATE"
 
 // BufferKey is the key of the buffer a module names: ServerBufferKey for a name that folds
 // like ServerBuffer (module buffer names are compared under the network's CASEMAPPING, so on

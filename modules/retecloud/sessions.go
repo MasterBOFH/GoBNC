@@ -67,10 +67,16 @@ func (m *Module) onNetworkEvent(ev wire.NetworkEvent) {
 	if ev.State != wire.NetRegistered {
 		n.joined = map[string]string{} // a reconnect rejoins from scratch
 	}
+	// The time of the Server buffer's State row for this change when one was stored, so a page
+	// that later serves the row names the same instant as this frame (Rete A3131).
+	at := ev.Time
+	if at == "" {
+		at = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	data := map[string]interface{}{
 		"connected":  ev.State == wire.NetRegistered || ev.State == wire.NetConnecting,
 		"registered": ev.State == wire.NetRegistered,
-		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
+		"timestamp":  at,
 	}
 	m.broadcastFollowers(ev.Network, ServerMessage{Type: "state", SessionID: sid, Data: data})
 	m.sessionStateChanged(n, before)

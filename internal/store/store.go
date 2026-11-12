@@ -577,9 +577,11 @@ func (s *Store) InsertMessage(ctx context.Context, m Message) (int64, error) {
 }
 
 // DistinctTargets returns every distinct target with stored history on networkID.
-// Includes both channel and query targets; callers filter as needed.
+// Includes both channel and query targets; callers filter as needed. The Server buffer's
+// module-only rows (ServerRowsTarget) are not listed.
 func (s *Store) DistinctTargets(ctx context.Context, networkID int64) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT target FROM messages WHERE network_id=?`, networkID)
+	// The Server buffer's module-only rows (ServerRowsTarget) are no IRC target.
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT target FROM messages WHERE network_id=? AND target<>?`, networkID, ServerRowsTarget)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +629,7 @@ func (s *Store) TargetsBetween(ctx context.Context, networkID int64, lo, hi time
 		where += ")"
 	}
 	in("command", "IN", commands)
-	in("target", "NOT IN", exclude)
+	in("target", "NOT IN", append([]string{ServerRowsTarget}, exclude...)) // module-only rows are no target
 	args = append(args, formatTime(lo), formatTime(hi))
 	order := "ASC"
 	if desc {

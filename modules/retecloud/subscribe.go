@@ -200,9 +200,14 @@ func aroundPage(res wire.HistoryMessagesResult, anchor int64, page map[string]in
 	return kept, res.HasBefore
 }
 
-// messageResponse is a history line as retecloud-api replays a stored raw line.
+// messageResponse is a history line as retecloud-api replays a stored raw line; a stored State
+// row (the uplink went down, connected or registered, Rete A3131) is served as the base
+// protocol's State row, its stored JSON as event_data.
 func messageResponse(msg wire.HistoryMessage) MessageResponse {
 	ts, _ := time.Parse(time.RFC3339Nano, msg.Time)
+	if msg.Command == wire.HistoryStateCommand && json.Valid([]byte(msg.Text)) {
+		return MessageResponse{ID: msg.ID, Timestamp: ts, Event: "State", EventData: json.RawMessage(msg.Text)}
+	}
 	data, _ := json.Marshal(storedLine{Raw: msg.Raw, BufferName: msg.Buffer})
 	return MessageResponse{ID: msg.ID, Timestamp: ts, Event: "Raw", EventData: data}
 }

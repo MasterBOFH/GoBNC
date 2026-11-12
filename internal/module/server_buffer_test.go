@@ -34,6 +34,7 @@ func TestModuleReadsTheServerBufferFromServerTargets(t *testing.T) {
 	for _, name := range []string{wire.ServerBuffer, "server"} {
 		var res wire.HistoryMessagesResult
 		tc.call(wire.MethodHistoryMessages, wire.HistoryMessagesParams{Network: nid, Buffer: name}, &res)
+		res.Messages = notices(res.Messages) // the Server buffer also holds the fixture's registration rows (A3131)
 		if len(res.Messages) != 2 || res.Messages[0].ID != srvIDs[0] || res.Messages[1].ID != srvIDs[1] ||
 			res.Messages[0].Buffer != name {
 			t.Fatalf("history.messages %q = %+v, want the two server notices", name, res.Messages)
@@ -64,4 +65,16 @@ func TestModuleReadsTheServerBufferFromServerTargets(t *testing.T) {
 		}
 	}
 	t.Fatalf("activity = %+v, no Server buffer", act.Buffers)
+}
+
+// notices keeps a page's NOTICE rows: the fixture's network registered, so the Server buffer
+// also holds its burst numerics and State row (Rete A3131).
+func notices(msgs []wire.HistoryMessage) []wire.HistoryMessage {
+	var out []wire.HistoryMessage
+	for _, m := range msgs {
+		if m.Command == "NOTICE" {
+			out = append(out, m)
+		}
+	}
+	return out
 }

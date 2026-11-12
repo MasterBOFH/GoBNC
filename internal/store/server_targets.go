@@ -14,6 +14,15 @@ import (
 // irc.example.net under "irc.example.net"), an ordinary history target. The module API's
 // Server buffer (key wire.ServerBufferKey, "*") is every such target of a network together:
 // the id-paged reads and activity below take "*" for that set.
+//
+// Rows stored under "*" itself (ServerRowsTarget) are the Server buffer's too: the registration
+// burst's numerics, the uplink's ERROR and the State rows (Rete A3131). They are module-only: no
+// IRC client's playback, CHATHISTORY or TARGETS lists or serves them (DistinctTargets and
+// TargetsBetween leave "*" out, internal/history refuses it).
+
+// ServerRowsTarget is the target of the Server buffer's module-only rows: wire.ServerBufferKey,
+// which no nick, channel or server can be.
+const ServerRowsTarget = wire.ServerBufferKey
 
 // serverTargetCache knows each network's server-name targets once asked (one DISTINCT scan),
 // and learns new ones as InsertMessage stores them. A target emptied by retention stays listed;
@@ -93,9 +102,7 @@ func (s *Store) messagesOf(ctx context.Context, networkID int64, target string) 
 	if err != nil {
 		return "", nil, err
 	}
-	if len(targets) == 0 {
-		return "0", nil, nil
-	}
+	targets = append([]string{ServerRowsTarget}, targets...)
 	args := []any{networkID}
 	for _, t := range targets {
 		args = append(args, t)

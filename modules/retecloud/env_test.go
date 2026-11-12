@@ -180,7 +180,8 @@ func (e *testEnv) addNetwork(name string) int64 {
 		srv := e.srv
 		e.be.mu.Unlock()
 		if srv != nil {
-			srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: name, State: state, Nick: sess.Nick(), Change: wire.ChangeState})
+			srv.NetworkChanged(wire.NetworkEvent{Network: id, Name: name, State: state, Nick: sess.Nick(), Change: wire.ChangeState,
+				Time: sess.StateRowTime(state)})
 		}
 	})
 	e.be.mu.Lock()

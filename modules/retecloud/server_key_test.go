@@ -2,6 +2,7 @@ package retecloud
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,13 @@ func TestLiteServerBufferReadsTheServerTargets(t *testing.T) {
 	ircLineOf(t, c, mk, "services notice")
 	mk = c.count()
 	rid = c.request("get_messages", map[string]any{"buffer": wire.ServerBuffer}, e.sid("undernet"))
-	msgs := c.waitFor(mk, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+	all := c.waitFor(mk, 5*time.Second, reply(rid, "get_messages_success"))["data"].(map[string]any)["messages"].([]any)
+	var msgs []any // the Server lines fed here; the page also holds the registration's rows (A3131)
+	for _, m := range all {
+		if raw, _ := m.(map[string]any)["event_data"].(map[string]any)["raw"].(string); strings.Contains(raw, " NOTICE ") {
+			msgs = append(msgs, m)
+		}
+	}
 	if len(msgs) != 3 {
 		t.Fatalf("Server history = %v, want the three Server lines", msgs)
 	}
