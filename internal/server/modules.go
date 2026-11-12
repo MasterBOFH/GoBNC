@@ -147,6 +147,9 @@ func (s *Server) notifyNetwork(n store.Network, sess *session.Session, change st
 		if nick := sess.Nick(); nick != "" {
 			ev.Nick = nick
 		}
+		if change == wire.ChangeState {
+			ev.Time = sess.StateRowTime(ev.State) // the Server buffer's State row (Rete A3131)
+		}
 	} else {
 		ev.Nick = s.stoppedNick(n)
 	}

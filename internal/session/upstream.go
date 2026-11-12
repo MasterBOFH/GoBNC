@@ -13,6 +13,7 @@ import (
 	"github.com/MasterBOFH/GoBNC/internal/irc"
 	"github.com/MasterBOFH/GoBNC/internal/keeper"
 	gobnclog "github.com/MasterBOFH/GoBNC/internal/log"
+	"github.com/MasterBOFH/GoBNC/internal/store"
 	"github.com/MasterBOFH/GoBNC/pkg/moduleapi/wire"
 	"github.com/google/uuid"
 )
@@ -69,7 +70,7 @@ func (s *Session) HandleLine(raw []byte, seq uint64) {
 		s.uplinkDown = false
 		s.mu.Unlock()
 		s.busMu.Unlock()
-		s.notifyState(wire.NetConnecting)
+		s.recordState(wire.NetConnecting, "")
 	}
 	msg, err := irc.Parse(string(raw))
 	if err != nil {
@@ -167,6 +168,9 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	if visible {
 		s.regBuffer = append(s.regBuffer, msg)
 	}
+	// The burst's numerics and an ERROR are the Server buffer's module-only rows (Rete A3131).
+	storeRow := (visible && isNumeric(msg.Command)) || msg.Command == "ERROR"
+	seq := s.lineSeq
 	type regTarget struct {
 		d        Downlink
 		nickFrom string // non-empty: self-NICK nickFrom → msg.Params[0] before this 001
@@ -195,6 +199,9 @@ func (s *Session) HandleRegistrationLine(msg irc.Message) {
 	ident := s.networkIdent()
 	s.mu.Unlock()
 	s.busMu.Unlock()
+	if storeRow {
+		s.storeServerRow(msg, seq)
+	}
 
 	if visible {
 		for _, t := range targets {
@@ -293,7 +300,7 @@ func (s *Session) completeRegistration() {
 	s.mu.Unlock()
 
 	s.log.Info("uplink registered", "nick", nick)
-	s.notifyState(wire.NetRegistered)
+	s.recordState(wire.NetRegistered, "")
 	if added := caps.Diff(prevOffer, nowOffer); len(added) > 0 {
 		s.broadcastCapNotify("NEW", added)
 	}
@@ -687,7 +694,7 @@ func (s *Session) HandleDisconnect(err error) {
 	s.uplinkDown = true
 	s.mu.Unlock()
 	s.busMu.Unlock()
-	s.notifyState(wire.NetDisconnected)
+	s.recordState(wire.NetDisconnected, reason)
 
 	if wasRegistered {
 		errMsg := irc.Message{Command: "ERROR", Params: []string{reason}}
@@ -1215,6 +1222,9 @@ func (s *Session) historyTargets(msg irc.Message) []string {
 			return nil // ignore user modes
 		}
 		return []string{cm.Canonical(t)}
+	case "ERROR":
+		// The uplink's ERROR: a Server-buffer module-only row (Rete A3131), no IRC target.
+		return []string{store.ServerRowsTarget}
 	case "QUIT", "NICK":
 		nick := msg.Nick()
 		folded := cm.Canonical(nick)

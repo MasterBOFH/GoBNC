@@ -122,6 +122,11 @@ func (h *Store) HandleCHATHISTORY(s Sender, networkID int64, msg irc.Message) er
 	}
 	sub := strings.ToUpper(msg.Params[0])
 	target := msg.Params[1]
+	if target == store.ServerRowsTarget && sub != "TARGETS" {
+		// The Server buffer's module-only rows (burst numerics, ERROR, State) are no IRC
+		// target: an empty batch, as for a target with no history.
+		return h.sendBatch(s, target, nil, true)
+	}
 	limit := 50
 	q := store.HistoryQuery{NetworkID: networkID, Target: target}
 	ctx := context.Background()

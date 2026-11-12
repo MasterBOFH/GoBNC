@@ -107,6 +107,11 @@ type Session struct {
 	// the next uplink line.
 	stateHook  func(state string)
 	uplinkDown bool
+	// The Server buffer's State rows (server_rows.go), guarded by mu: stateRowUp says the last
+	// row stored was a connect or registration, stateRowState / stateRowTime name the latest row.
+	stateRowUp    bool
+	stateRowState string
+	stateRowTime  string
 
 	mu       sync.RWMutex
 	self     *User
