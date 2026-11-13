@@ -24,7 +24,7 @@ func Open(path string) (*Store, error) {
 	if err := ensureOwnerOnlyFile(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", withBusyTimeout(path))
 	if err != nil {
 		return nil, err
 	}
@@ -37,6 +37,25 @@ func Open(path string) (*Store, error) {
 	// SQLite may create sidecar files; keep the main DB owner-only after first write.
 	_ = os.Chmod(path, 0o600)
 	return s, nil
+}
+
+// busyTimeoutMS is how long a statement waits for another connection's lock on the database
+// file before giving up with SQLITE_BUSY. The file is shared: the gobnc CLI (status, network,
+// auth) opens it while the daemon runs, and a resumed brain's Store opens it while the previous
+// one may still be committing. Without a timeout SQLite fails at once — a CLI command errors
+// out, or the daemon drops a history insert — whenever the two merely overlap; with it, the
+// loser waits out what is normally a commit of a few milliseconds.
+const busyTimeoutMS = 5000
+
+// withBusyTimeout adds busyTimeoutMS to path's DSN as a _pragma, so modernc.org/sqlite applies
+// it to every connection it opens — a one-off PRAGMA would be lost whenever database/sql
+// replaced the connection.
+func withBusyTimeout(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
 }
 
 // ensureOwnerOnlyFile creates path with 0600 if missing, or chmods an existing file to 0600.
