@@ -59,10 +59,27 @@ func (d *Driver) StopNetwork(id keeper.NetworkID) error {
 // for it more recently than its last successful Dial/Reconnect.
 func (d *Driver) armReconnect(id keeper.NetworkID) {
 	d.mu.Lock()
+	epoch := d.epochs[id]
+	d.mu.Unlock()
+	d.armReconnectForEpoch(id, epoch)
+}
+
+// armReconnectForEpoch is armReconnect for a caller that has already
+// decided, as of epoch, that id needs a redial — handleNetworkEvent, whose
+// decision is made under d.mu but whose arming necessarily happens after
+// releasing it. If id's epoch has moved past epoch by the time this runs,
+// or by the time the timer fires, a Reconnect has superseded the
+// connection this redial was for and the redial is dropped: otherwise a
+// timer armed just after Reconnect's clearStopped (which only cancels
+// timers that already exist) would later reset the new attempt's State
+// mid-registration and send a duplicate Dial.
+func (d *Driver) armReconnectForEpoch(id keeper.NetworkID, epoch uint64) {
+	d.mu.Lock()
 	cfg, ok := d.dialConfigs[id]
 	netCfg, tracked := d.configs[id]
+	superseded := d.epochs[id] != epoch
 	d.mu.Unlock()
-	if !ok {
+	if !ok || superseded {
 		return
 	}
 	d.reconnMu.Lock()
@@ -98,11 +115,15 @@ func (d *Driver) armReconnect(id keeper.NetworkID) {
 		// no ActionRegistered would ever fire again. Same reset
 		// Reconnect's own resetStateLocked call performs, just reached
 		// from the auto-redial path instead of a caller-driven one.
-		if tracked {
-			d.mu.Lock()
-			d.resetStateLocked(id, netCfg)
+		d.mu.Lock()
+		if d.epochs[id] != epoch {
 			d.mu.Unlock()
+			return // superseded since arming; see armReconnectForEpoch
 		}
+		if tracked {
+			d.resetStateLocked(id, netCfg)
+		}
+		d.mu.Unlock()
 		_ = d.client.SendDial(id, cfg, 0) // best-effort; a failure surfaces as another DialResult, re-arming
 	})
 	d.reconnMu.Unlock()
