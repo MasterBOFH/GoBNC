@@ -451,3 +451,48 @@ func TestResolveFingerprintColons(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenWaitsOutAnotherWriter: a second Open of the same database file —
+// the gobnc CLI (status, network, auth) against a running daemon, or a
+// resumed brain's Server while the previous one is still storing lines —
+// runs migrate, which reads the schema even when it has nothing to change.
+// While another connection is committing (holding the EXCLUSIVE lock, which
+// in rollback-journal mode blocks readers too; BEGIN EXCLUSIVE holds it here
+// for long enough to be sure of the overlap), that must wait rather than
+// fail outright with SQLITE_BUSY — every history insert is a commit, so a
+// daemon storing a busy channel's lines makes that overlap routine. The same
+// busy timeout keeps the daemon's own inserts from failing while the CLI
+// briefly holds the lock.
+func TestOpenWaitsOutAnotherWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gobnc.db")
+	st1, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st1.Close()
+
+	ctx := context.Background()
+	conn, err := st1.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		released <- err
+	}()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open while another connection held the write lock: %v", err)
+	}
+	defer st2.Close()
+	if err := <-released; err != nil {
+		t.Fatalf("COMMIT: %v", err)
+	}
+}
