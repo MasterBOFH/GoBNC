@@ -753,10 +753,25 @@ func (d *Driver) disarmDeadline(id keeper.NetworkID) {
 // covering both the registering and already-registered disconnect cases.
 func (d *Driver) failRegistration(id keeper.NetworkID, err error) {
 	d.mu.Lock()
+	s, failed := d.failStateLocked(id, err)
+	d.mu.Unlock()
+	if !failed {
+		return
+	}
+	trySendResult(d.results, Result{Network: id, State: s})
+	_ = d.client.SendClose(id)
+}
+
+// failStateLocked moves id's State to PhaseFailed with err and disarms its
+// registration deadline, reporting the new State and whether it actually
+// transitioned (false when id is untracked or already terminal). Caller
+// holds d.mu — split out of failRegistration so handleNetworkEvent can make
+// its stale-epoch check and this transition one atomic step under the same
+// lock; see handleNetworkEvent for the race that needs that.
+func (d *Driver) failStateLocked(id keeper.NetworkID, err error) (registration.State, bool) {
 	s, tracked := d.states[id]
 	if !tracked || s.Phase == registration.PhaseComplete || s.Phase == registration.PhaseFailed {
-		d.mu.Unlock()
-		return
+		return s, false
 	}
 	s.Phase = registration.PhaseFailed
 	s.Err = err
@@ -765,9 +780,7 @@ func (d *Driver) failRegistration(id keeper.NetworkID, err error) {
 		t.Stop()
 		delete(d.deadlines, id)
 	}
-	d.mu.Unlock()
-	trySendResult(d.results, Result{Network: id, State: s})
-	_ = d.client.SendClose(id)
+	return s, true
 }
 
 // State returns the current registration.State for id and whether it's
@@ -959,29 +972,51 @@ func (d *Driver) handleNetworkEvent(ev keeper.NetworkEventMsg) {
 	if ev.Kind != keeper.EventDisconnected {
 		return
 	}
+	msg := "uplink disconnected during registration"
+	if ev.Error != "" {
+		msg += ": " + ev.Error
+	}
+
+	// The stale-epoch check and everything it gates happen under one hold
+	// of d.mu — the same lock Reconnect holds while it resets State and
+	// bumps the epoch. Checking, unlocking, then failing (as this used to)
+	// let a Reconnect land in between: the check passed against the old
+	// epoch, Reconnect installed a fresh State for the new attempt, and
+	// the old connection's disconnect then failed *that* State — the new
+	// attempt reported PhaseFailed with the old socket's EOF before it
+	// had even dialed. stopNickRecovery/clearNickRecoveryHold/stopKeepalive
+	// only take their own mutexes (resetStateLocked calls them under d.mu
+	// too), and are inside the hold so they can't tear down loops a
+	// just-reconnected attempt has already started.
 	d.mu.Lock()
 	current := d.epochs[ev.Network]
-	d.mu.Unlock()
 	if ev.Epoch < current {
+		d.mu.Unlock()
 		// A disconnect notification for a connection Reconnect has
 		// already superseded — see Reconnect's doc comment for exactly
 		// why this can happen and why the fix is here, not there.
 		return
 	}
 	// A genuine disconnect on the current epoch — whether or not
-	// registration had already completed (failRegistration below is a
-	// no-op past a terminal Phase, but a nick-recovery loop can very much
+	// registration had already completed (failStateLocked is a no-op
+	// past a terminal Phase, but a nick-recovery loop can very much
 	// still be running at that point and needs tearing down here, not
 	// just on the next fresh registration attempt).
 	d.stopNickRecovery(ev.Network)
 	d.clearNickRecoveryHold(ev.Network)
 	d.stopKeepalive(ev.Network)
-	msg := "uplink disconnected during registration"
-	if ev.Error != "" {
-		msg += ": " + ev.Error
+	s, failed := d.failStateLocked(ev.Network, fmt.Errorf("%s", msg))
+	d.mu.Unlock()
+
+	// No SendClose, unlike failRegistration's other callers: the keeper
+	// clears its connection before publishing EventDisconnected (see
+	// Keeper.readLoop), so there is nothing left to close — and a Close
+	// sent now could instead land on the connection a concurrent
+	// Reconnect has just dialed.
+	if failed {
+		trySendResult(d.results, Result{Network: ev.Network, State: s})
 	}
-	d.failRegistration(ev.Network, fmt.Errorf("%s", msg))
-	d.armReconnect(ev.Network)
+	d.armReconnectForEpoch(ev.Network, current)
 }
 
 // recordEpoch remembers id's current epoch, taking the higher of what's
