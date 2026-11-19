@@ -140,6 +140,9 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_target_time ON messages(network_id, target, time)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(network_id, msgid)`,
+		// The id-ordered reads (the module API's history pages, a buffer's newest line) walk
+		// this one; without it SQLite sorts a buffer's whole history to answer each of them.
+		`CREATE INDEX IF NOT EXISTS idx_messages_target_id ON messages(network_id, target, id)`,
 		`CREATE TABLE IF NOT EXISTS read_markers (
 			network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
 			target TEXT NOT NULL,

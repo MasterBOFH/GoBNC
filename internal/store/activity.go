@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -36,8 +37,7 @@ func (s *Store) BufferActivity(ctx context.Context, networkID int64, target stri
 	}
 	var id sql.NullInt64
 	var ts sql.NullString
-	err = s.db.QueryRowContext(ctx, `SELECT id, time FROM messages WHERE `+where+`
-		ORDER BY id DESC LIMIT 1`, args...).Scan(&id, &ts)
+	err = s.db.QueryRowContext(ctx, fmt.Sprintf(sqlNewestLine, where), args...).Scan(&id, &ts)
 	if err == sql.ErrNoRows {
 		return a, nil
 	}
@@ -46,10 +46,7 @@ func (s *Store) BufferActivity(ctx context.Context, networkID int64, target stri
 	}
 	a.LastID = id.Int64
 	a.LastTime, _ = time.Parse(time.RFC3339Nano, ts.String)
-	rows, err := s.db.QueryContext(ctx, `SELECT id, command, source, text FROM messages
-		WHERE `+where+` AND time>? AND id>? AND command IN ('PRIVMSG','NOTICE')
-		  AND (substr(text, 1, 1) != char(1) OR substr(text, 1, 7) = char(1) || 'ACTION')
-		ORDER BY id DESC LIMIT ?`, append(args, formatTime(marker), floorID, MaxActivityRows)...)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(unreadLinesSQL(!marker.IsZero()), where), append(args, formatTime(marker), floorID, MaxActivityRows)...)
 	if err != nil {
 		return a, err
 	}
@@ -62,4 +59,22 @@ func (s *Store) BufferActivity(ctx context.Context, networkID int64, target stri
 		a.Unread = append(a.Unread, l)
 	}
 	return a, rows.Err()
+}
+
+// sqlNewestLine is a buffer's newest line; %s is messagesOf's buffer filter.
+const sqlNewestLine = `SELECT id, time FROM messages WHERE %s ORDER BY id DESC LIMIT 1`
+
+// unreadLinesSQL is BufferActivity's unread-line query; %s is messagesOf's buffer filter.
+// With a read marker (hasMarker), the unread lines are the few after it, so it ranges over
+// the time index: the id index would walk the buffer's whole history backwards when nothing
+// is unread. With none, every line is unread and the id index reads the newest first.
+func unreadLinesSQL(hasMarker bool) string {
+	from := "messages"
+	if hasMarker {
+		from = "messages INDEXED BY idx_messages_target_time"
+	}
+	return `SELECT id, command, source, text FROM ` + from + `
+		WHERE %s AND time>? AND id>? AND command IN ('PRIVMSG','NOTICE')
+		  AND (substr(text, 1, 1) != char(1) OR substr(text, 1, 7) = char(1) || 'ACTION')
+		ORDER BY id DESC LIMIT ?`
 }

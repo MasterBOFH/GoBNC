@@ -72,24 +72,32 @@ func reverseMessages(ms []Message) []Message {
 // ascending. target is the folded name historyTargets stores under, or "*" for the Server
 // buffer: every server-name target of the network together (messagesOf).
 
+// The buffer-scoped id queries; %s is messagesOf's buffer filter. Each walks
+// idx_messages_target_id for one target (TestIDQueriesUseTargetIDIndex).
+const (
+	sqlMessagesBefore  = `SELECT ` + idCols + ` FROM messages WHERE %s AND id<? ORDER BY id DESC LIMIT ?`
+	sqlMessagesAfter   = `SELECT ` + idCols + ` FROM messages WHERE %s AND id>? ORDER BY id ASC LIMIT ?`
+	sqlMessagesBetween = `SELECT ` + idCols + ` FROM messages WHERE %s AND id>? AND id<? ORDER BY id ASC LIMIT ?`
+	sqlMessagesLatest  = `SELECT ` + idCols + ` FROM messages WHERE %s ORDER BY id DESC LIMIT ?`
+	sqlMessageBefore   = `SELECT ` + idCols + ` FROM messages WHERE %s AND id<? ORDER BY id DESC LIMIT 1`
+	sqlMessageAfter    = `SELECT ` + idCols + ` FROM messages WHERE %s AND id>? ORDER BY id ASC LIMIT 1`
+)
+
 // MessagesBefore returns up to limit messages with id < before.
 func (s *Store) MessagesBefore(ctx context.Context, networkID int64, target string, before int64, limit int) ([]Message, error) {
-	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id<?
-		ORDER BY id DESC LIMIT ?`, before, limit)
+	ms, err := s.queryBuffer(ctx, networkID, target, sqlMessagesBefore, before, limit)
 	return reverseMessages(ms), err
 }
 
 // MessagesAfter returns up to limit messages with id > after.
 func (s *Store) MessagesAfter(ctx context.Context, networkID int64, target string, after int64, limit int) ([]Message, error) {
-	return s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>?
-		ORDER BY id ASC LIMIT ?`, after, limit)
+	return s.queryBuffer(ctx, networkID, target, sqlMessagesAfter, after, limit)
 }
 
 // MessagesBetween returns up to limit messages with after < id < before, oldest first: the
 // gap fill's page, which starts at the gap's older edge.
 func (s *Store) MessagesBetween(ctx context.Context, networkID int64, target string, after, before int64, limit int) ([]Message, error) {
-	return s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>? AND id<?
-		ORDER BY id ASC LIMIT ?`, after, before, limit)
+	return s.queryBuffer(ctx, networkID, target, sqlMessagesBetween, after, before, limit)
 }
 
 // MessagesAround returns up to limit messages centred on id: about half before it, the rest
@@ -109,20 +117,19 @@ func (s *Store) MessagesAround(ctx context.Context, networkID int64, target stri
 
 // MessagesLatest returns the newest limit messages.
 func (s *Store) MessagesLatest(ctx context.Context, networkID int64, target string, limit int) ([]Message, error) {
-	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s
-		ORDER BY id DESC LIMIT ?`, limit)
+	ms, err := s.queryBuffer(ctx, networkID, target, sqlMessagesLatest, limit)
 	return reverseMessages(ms), err
 }
 
 // HasMessageBefore reports whether a message with id < id exists.
 func (s *Store) HasMessageBefore(ctx context.Context, networkID int64, target string, id int64) (bool, error) {
-	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id<? ORDER BY id DESC LIMIT 1`, id)
+	ms, err := s.queryBuffer(ctx, networkID, target, sqlMessageBefore, id)
 	return len(ms) > 0, err
 }
 
 // HasMessageAfter reports whether a message with id > id exists.
 func (s *Store) HasMessageAfter(ctx context.Context, networkID int64, target string, id int64) (bool, error) {
-	ms, err := s.queryBuffer(ctx, networkID, target, `SELECT `+idCols+` FROM messages WHERE %s AND id>? ORDER BY id ASC LIMIT 1`, id)
+	ms, err := s.queryBuffer(ctx, networkID, target, sqlMessageAfter, id)
 	return len(ms) > 0, err
 }
 
