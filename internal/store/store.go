@@ -35,6 +35,13 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// Write-ahead logging: a stored line appends to the -wal file instead of rewriting pages
+	// through a rollback journal, and a reader (the CLI beside the running bouncer) does not
+	// block the writer. The mode is kept in the file, so this converts an existing store once.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("journal_mode: %w", err)
+	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
