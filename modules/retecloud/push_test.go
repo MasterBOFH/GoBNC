@@ -536,10 +536,10 @@ func TestClearsReadElsewhere(t *testing.T) {
 	desk.liteSync(sid, "desk", nil)
 
 	mark := relay.count()
-	e.feed("undernet", ":x!x@h PRIVMSG #a :me one")
+	e.feedSpaced("undernet", ":x!x@h PRIVMSG #a :me one")
 	pushed := relay.wait(mark, 1)[0]
 	pushedID := int64(pushed.content["id"].(float64))
-	e.feed("undernet", ":x!x@h PRIVMSG #b :not a highlight")
+	e.feedSpaced("undernet", ":x!x@h PRIVMSG #b :not a highlight")
 
 	// A buffer nothing was pushed in gets no clear.
 	mark = relay.count()
@@ -556,7 +556,7 @@ func TestClearsReadElsewhere(t *testing.T) {
 	}
 	// Reading again with nothing new pushed: no clear.
 	mark = relay.count()
-	e.feed("undernet", ":x!x@h PRIVMSG #a :plain")
+	e.feedSpaced("undernet", ":x!x@h PRIVMSG #a :plain")
 	desk.call("read_cursor", sid, map[string]any{"buffer": "#a", "last_message_id": lastStoredID(t, e, "undernet", "#a")})
 	relay.none(mark, "clear", "nothing pushed since the last clear")
 
@@ -566,7 +566,7 @@ func TestClearsReadElsewhere(t *testing.T) {
 	var ids []int64
 	for i := 2; i <= 4; i++ {
 		m := relay.count()
-		e.feed("undernet", fmt.Sprintf(":x!x@h PRIVMSG #a :me %d", i))
+		e.feedSpaced("undernet", fmt.Sprintf(":x!x@h PRIVMSG #a :me %d", i))
 		ids = append(ids, int64(relay.waitType(m, "message", 1)[0].content["id"].(float64)))
 	}
 	mark = relay.count()
@@ -590,7 +590,7 @@ func TestClearsReadElsewhere(t *testing.T) {
 	// same line later sends nothing either).
 	clock.advance(readingElsewhereWindow + time.Second)
 	mark = relay.count()
-	e.feed("undernet", ":x!x@h PRIVMSG #a :me five")
+	e.feedSpaced("undernet", ":x!x@h PRIVMSG #a :me five")
 	five := int64(relay.waitType(mark, "message", 1)[0].content["id"].(float64))
 	clock.advance(time.Minute)
 	phone.liteSync(sid, "ios-1", nil)

@@ -83,6 +83,9 @@ type testEnv struct {
 	cancel  context.CancelFunc
 	stopSrv func()
 	runErr  chan error // Run's result
+
+	stampMu   sync.Mutex
+	lastStamp time.Time // the newest server-time feedSpaced stamped
 }
 
 const testPassword = "s3cret"
@@ -224,6 +227,24 @@ func (e *testEnv) feed(network string, lines ...string) {
 	s := e.session(network)
 	for _, l := range lines {
 		s.HandleLine([]byte(l), 1000+e.seq.Add(1))
+	}
+}
+
+// feedSpaced feeds lines each with an upstream server-time tag at least a millisecond after the
+// previous one it stamped, and not before now. A read marker is a millisecond timestamp, so a
+// line stored in the same millisecond as the line a read cursor names counts as read with it;
+// fed back to back, lines often share one. A test that reads up to one line and then counts or
+// names the lines after it feeds them through this.
+func (e *testEnv) feedSpaced(network string, lines ...string) {
+	for _, l := range lines {
+		e.stampMu.Lock()
+		next := time.Now().UTC().Truncate(time.Millisecond)
+		if after := e.lastStamp.Add(time.Millisecond); next.Before(after) {
+			next = after
+		}
+		e.lastStamp = next
+		e.stampMu.Unlock()
+		e.feed(network, "@time="+next.Format("2006-01-02T15:04:05.000Z")+" "+l)
 	}
 }
 

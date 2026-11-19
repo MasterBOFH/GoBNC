@@ -94,14 +94,14 @@ func TestFirstSyncKeepsExistingMarkers(t *testing.T) {
 	other := e.dial(false)
 	other.authenticate("desktop")
 	other.liteSync(e.sid("undernet"), "desktop", nil)
-	e.feed("undernet", ":dm!d@h PRIVMSG me :read line")
+	e.feedSpaced("undernet", ":dm!d@h PRIVMSG me :read line")
 	rid := other.request("subscribe_buffer", map[string]any{"buffer": "dm", "history": 5}, e.sid("undernet"))
 	sub := other.waitFor(0, 5*time.Second, reply(rid, "subscribe_buffer_success", "subscribe_buffer_error"))
 	msgs := sub["data"].(map[string]any)["messages"].([]any)
 	readID := msgs[len(msgs)-1].(map[string]any)["id"]
 	rc := other.request("read_cursor", map[string]any{"buffer": "dm", "last_message_id": readID}, e.sid("undernet"))
 	other.waitFor(0, 5*time.Second, reply(rc, "read_cursor_success", "read_cursor_error"))
-	e.feed("undernet", ":dm!d@h PRIVMSG me :unread one", ":dm!d@h PRIVMSG me :unread two")
+	e.feedSpaced("undernet", ":dm!d@h PRIVMSG me :unread one", ":dm!d@h PRIVMSG me :unread two")
 
 	c := e.dial(false)
 	c.authenticate("ios-new")
