@@ -30,7 +30,7 @@ func Open(path string) (*Store, error) {
 	if err := ensureOwnerOnlyFile(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dataSource(path))
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +56,21 @@ func Open(path string) (*Store, error) {
 	// SQLite may create sidecar files; keep the main DB owner-only after first write.
 	_ = os.Chmod(path, 0o600)
 	return s, nil
+}
+
+// busyTimeoutMillis is how long a statement waits for another connection's lock (the gobnc CLI
+// beside the running bouncer, a brain starting while the one it replaces still writes) before
+// it fails with "database is locked".
+const busyTimeoutMillis = 5000
+
+// dataSource is path with the driver's options: every connection the pool opens waits up to
+// busyTimeoutMillis for a lock. A path holding '?' (which the driver would read as options)
+// opens as it always did, without the wait.
+func dataSource(path string) string {
+	if strings.Contains(path, "?") {
+		return path
+	}
+	return path + "?_busy_timeout=" + strconv.Itoa(busyTimeoutMillis)
 }
 
 // ensureOwnerOnlyFile creates path with 0600 if missing, or chmods an existing file to 0600.
