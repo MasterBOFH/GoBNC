@@ -52,6 +52,8 @@ type Message struct {
 	Time      int64  `json:"time"`
 	ID        int64  `json:"id"`
 	Skipped   int    `json:"skipped,omitempty"` // lines held back by the buffer's cap (coalesce.go)
+	// Badge: this bouncer's count for the phone's app icon (Rete A3353); nil omits it.
+	Badge *int `json:"badge,omitempty"`
 }
 
 // Clear is a clear push's plaintext.
@@ -65,6 +67,8 @@ type Clear struct {
 	Buffer    string `json:"buffer"`
 	ReadID    int64  `json:"read_id"`
 	Time      int64  `json:"time"`
+	// Badge: this bouncer's count for the phone's app icon after the read (Rete A3353).
+	Badge *int `json:"badge,omitempty"`
 }
 
 // ErrTooLarge is returned when a message does not fit the budget even with an empty text.

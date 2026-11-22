@@ -78,7 +78,7 @@ func (m *Module) pushLine(n *network, line wire.LineEvent) {
 		eid := push.NewEventID()
 		pt, err := push.MessagePlaintext(push.Message{EID: eid, Src: push.SourceGoBNC, Profile: d.reg.Profile,
 			SessionID: sessionID(n.id), Network: n.name, Buffer: b.Name, Kind: kind, Sender: line.Nick, Text: text,
-			Action: action, Time: at.Unix(), ID: b.ID, Skipped: decision.Skipped})
+			Action: action, Time: at.Unix(), ID: b.ID, Skipped: decision.Skipped, Badge: m.deviceBadge(id, d)})
 		if err != nil {
 			m.log.Warn("push: content", "network", n.id, "id", b.ID, "err", err)
 			continue
@@ -287,7 +287,7 @@ func (m *Module) sendClear(k clearKey, st *clearState, readID int64, at time.Tim
 	}
 	eid := push.NewEventID()
 	pt, err := push.ClearPlaintext(push.Clear{EID: eid, Src: push.SourceGoBNC, Profile: d.reg.Profile,
-		SessionID: sessionID(k.network), Buffer: k.key, ReadID: readID, Time: at.Unix()})
+		SessionID: sessionID(k.network), Buffer: k.key, ReadID: readID, Time: at.Unix(), Badge: m.deviceBadge(k.device, d)})
 	if err != nil {
 		m.log.Warn("push: clear content", "err", err)
 		return
