@@ -101,6 +101,7 @@ func (m *Module) onLine(line wire.LineEvent) {
 			c.send(frame)
 		}
 	}
+	m.badgeChanged(n.id) // a new line: the network's counts may have moved
 	m.pushLine(n, line)
 	n.trackSelf(line)
 	n.trackMembers(line)

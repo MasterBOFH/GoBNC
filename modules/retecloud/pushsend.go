@@ -224,6 +224,7 @@ func (m *Module) notePushed(device string, network int64, key string, id int64) 
 // onReadMove records a read cursor moving (for the reading-elsewhere rule) and clears the
 // notifications it covers on the other devices pushed in that buffer.
 func (m *Module) onReadMove(rm wire.ReadMarkerEvent, origin string) {
+	m.badgeChanged(rm.Network)
 	now := m.now()
 	moves := m.push.readMoves[rm.Network]
 	if moves == nil {

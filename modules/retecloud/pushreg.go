@@ -45,8 +45,10 @@ type pushState struct {
 	devices     map[string]*pushDevice
 	readMoves   map[int64]map[string]time.Time // network → origin device ("" = not a lite device) → last move
 	clears      map[clearKey]*clearState
-	relayPaused map[string]time.Time // relay_url → no requests until then (503)
-	coalesce    *push.Coalescer      // one notification per conversation; cool-down and cap per buffer
+	relayPaused map[string]time.Time    // relay_url → no requests until then (503)
+	coalesce    *push.Coalescer         // one notification per conversation; cool-down and cap per buffer
+	badges      map[badgeKey]badgeEntry // a device's count per network, for the app icon (badge.go)
+	badgeGone   map[int64]bool          // pushed networks no longer in m.nets, logged once (badge.go)
 }
 
 // relayTimeout bounds one relay request.
