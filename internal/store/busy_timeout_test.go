@@ -7,15 +7,15 @@ import (
 	"time"
 )
 
-// TestOpenSetsBusyTimeout: the store's connection waits busyTimeoutMillis for a lock.
+// TestOpenSetsBusyTimeout: the store's connection waits busyTimeoutMS for a lock.
 func TestOpenSetsBusyTimeout(t *testing.T) {
 	s := openTemp(t)
 	var ms int
 	if err := s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&ms); err != nil {
 		t.Fatal(err)
 	}
-	if ms != busyTimeoutMillis {
-		t.Fatalf("busy_timeout = %d, want %d", ms, busyTimeoutMillis)
+	if ms != busyTimeoutMS {
+		t.Fatalf("busy_timeout = %d, want %d", ms, busyTimeoutMS)
 	}
 }
 

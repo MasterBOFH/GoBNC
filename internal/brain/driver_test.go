@@ -508,6 +508,26 @@ func TestDriverAutoJoinsOnRegistrationComplete(t *testing.T) {
 // which would hang forever if the old, already-terminal State from the
 // first connection were left in place (Step no-ops on a terminal phase).
 func TestDriverReconnectRedialsAndReregisters(t *testing.T) {
+	runReconnectRedialScenario(t)
+}
+
+// TestDriverStaleDisconnectNeverFailsReconnectedAttempt repeats the
+// Reconnect scenario above enough times to reliably hit the race it used to
+// lose about one run in ten: serveOne closes the first connection right
+// after 376, so that connection's EventDisconnected{epoch 1} races the
+// test's Reconnect. handleNetworkEvent used to check the epoch, release
+// d.mu, and only then fail the State — a Reconnect landing in that gap had
+// already installed the fresh State for the new attempt, so the stale
+// disconnect failed the new attempt ("uplink disconnected during
+// registration: EOF") before it had even dialed. Each iteration gets its
+// own keeper, listener and fake server.
+func TestDriverStaleDisconnectNeverFailsReconnectedAttempt(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		t.Run(fmt.Sprintf("iter%d", i), runReconnectRedialScenario)
+	}
+}
+
+func runReconnectRedialScenario(t *testing.T) {
 	mgr := keeper.NewManager(8192, 4096, nil)
 	sockPath := testSockPath(t)
 
