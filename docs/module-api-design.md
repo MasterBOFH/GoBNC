@@ -486,6 +486,13 @@ stores a QUIT or NICK once per shared channel, and a line stored under more than
 each stored buffer with its own id (`buffers[].id`), in `buffers` order; `buffer`/`id` are the
 first. retecloud-api stores such a line once and never sends it, so no harness test covers it.
 
+A CTCP request or reply (`kind` `ctcp` / `ctcp_reply`; ACTION is a `message`) reaches every lite
+connection following the network, not only a subscriber of its buffer: the device draws it in its
+Server buffer whatever its target, as an IRC client does, so our own request to a peer, the peer's
+reply and a relayed request show on a phone with no query open to the peer. A subscriber of the
+line's buffer gets it once, by the subscription's own rule (snapshot dedupe, resume). retecloud-api
+`7269335` still routes such a line to the peer's query only.
+
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
 `buffer_state`; identity `realname`, `secure`, `bot` and `oper` are not known to the brain.

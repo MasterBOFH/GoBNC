@@ -118,6 +118,10 @@ type lineRoute struct {
 	activity             bool   // a stored message or notice from someone else: counts as unread
 	numeric              int    // numeric replies (0 otherwise)
 	renameFrom, renameTo string // a NICK: a query subscription follows the nick
+	// ctcp: a CTCP request or reply (not ACTION). The device draws it in its Server buffer
+	// whatever its target, as an IRC client does, so a connection not subscribed to its buffer
+	// gets it too: our own /ctcp to a peer, the peer's reply, a relayed request.
+	ctcp bool
 }
 
 func (n *network) route(line wire.LineEvent) lineRoute {
@@ -150,6 +154,7 @@ func (n *network) route(line wire.LineEvent) lineRoute {
 		r.always = line.Self
 	case wire.LineMessage, wire.LineNotice, wire.LineTagmsg, wire.LineCTCP, wire.LineCTCPReply:
 		r.always = inServer
+		r.ctcp = line.Kind == wire.LineCTCP || line.Kind == wire.LineCTCPReply
 		stored := len(line.Buffers) > 0 && line.Buffers[0].ID > 0
 		if (line.Kind == wire.LineMessage || line.Kind == wire.LineNotice) && stored && !line.Self && !inServer {
 			r.activity = true
@@ -192,6 +197,9 @@ func (m *Module) liteAllows(c *wsConn, n *network, ls *liteSession, line wire.Li
 		}
 		sub.lastSent = max(sub.lastSent, b.ID)
 		return true
+	}
+	if r.ctcp {
+		return true // after the subscribed check, so a subscriber's copy keeps its dedupe and resume
 	}
 	if r.activity && len(line.Buffers) > 0 {
 		m.countActivity(c, n, ls, line)
