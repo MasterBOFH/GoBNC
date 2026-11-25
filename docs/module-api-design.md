@@ -491,7 +491,7 @@ connection following the network, not only a subscriber of its buffer: the devic
 Server buffer whatever its target, as an IRC client does, so our own request to a peer, the peer's
 reply and a relayed request show on a phone with no query open to the peer. A subscriber of the
 line's buffer gets it once, by the subscription's own rule (snapshot dedupe, resume). retecloud-api
-`7269335` still routes such a line to the peer's query only.
+routes it the same way.
 
 Known differences from retecloud-api, none visible to the lite tests: `get_messages` needs a
 `buffer` (no network-wide paging), at most 500 lines per page; `creation_id` is 0 in
