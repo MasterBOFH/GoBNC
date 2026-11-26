@@ -64,6 +64,7 @@ Then connect with `PASS libera/` (or `libera`) and that client cert enabled.
 Enable bouncer SASL with `--sasl=true`:
 
 - `--sasl-user=` + `--sasl-pass` → SCRAM-SHA-256 or PLAIN (whichever the server offers)
+  - with SCRAM-SHA-256 the server must prove it knows the password too: a success reply without a valid server signature counts as a SASL failure
 - no password + client cert → **EXTERNAL** (optional `--sasl-user=` is the authorization identity)
 - `network add` with `--sasl-user=` implies `--sasl=true` if you omit `--sasl=`
 
