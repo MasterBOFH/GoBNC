@@ -549,8 +549,10 @@ not a new hand-written test case guessing at what the server might send.
 (`irc.ISUPPORT` reused directly, not reimplemented), completion on 376/422,
 the SASL `AUTHENTICATE` exchange (PLAIN, EXTERNAL, and SCRAM-SHA-256 — the
 last verified with a genuine `xdg-go/scram` server conversation on the
-other end, real crypto on both sides, not a mocked challenge), and the
-nick-collision ladder retry (432/433/437).
+other end, real crypto on both sides, not a mocked challenge; a SCRAM
+903/907 counts as success only after the server-final's signature has
+verified, and no success numeric counts after the client's own
+`AUTHENTICATE *`), and the nick-collision ladder retry (432/433/437).
 
 **Why SASL and the nick ladder are tested synthetically, not from the
 corpus**: no real server reachable during transcript capture required SASL

@@ -32,6 +32,9 @@ type SASLConfig struct {
 // a real conversation.
 type scramConversation interface {
 	Step(challenge string) (response string, err error)
+	// Valid reports whether the server-final arrived and its server
+	// signature verified — the server's proof that it knows the password.
+	Valid() bool
 }
 
 // stepLoggedIn handles 900 (RPL_LOGGEDIN), noting the account is not
@@ -46,9 +49,15 @@ func stepLoggedIn(s State, in Input) (State, []Action) {
 
 // stepSASLOutcome handles 903 (success), 904/905/906 (failure), 907
 // (already authenticated) — mirrors uplink.handleSASLOutcome plus the
-// pre-registration CAP END trigger from uplink.register's switch.
+// pre-registration CAP END trigger from uplink.register's switch. A
+// success numeric the exchange doesn't back up (see saslSuccessRefused)
+// is a failure like 904: it fails registration when SASL is required and
+// falls back to registering unauthenticated otherwise.
 func stepSASLOutcome(s State, in Input) (State, []Action) {
 	msg := in.Msg
+	refused := saslSuccessRefused(s, msg.Command)
+	failed := refused != nil || (msg.Command != "903" && msg.Command != "907")
+	s.saslSucceeded = !failed
 	s.saslMech = ""
 	s.scramConv = nil
 
@@ -61,13 +70,55 @@ func stepSASLOutcome(s State, in Input) (State, []Action) {
 		// outage (901) already left it, which nothing tears down either.
 		return s, nil
 	}
-	if msg.Command != "903" && msg.Command != "907" && s.SASL.Required {
+	if failed && s.SASL.Required {
 		s.Phase = PhaseFailed
-		s.Err = fmt.Errorf("SASL failed: %s %v", msg.Command, msg.Params)
+		s.Err = refused
+		if s.Err == nil {
+			s.Err = fmt.Errorf("SASL failed: %s %v", msg.Command, msg.Params)
+		}
 		return s, []Action{{Kind: ActionFailed, Err: s.Err, Replay: in.Replay}}
 	}
 	s.Phase = PhaseAwaitingWelcome
 	return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
+}
+
+// saslSuccessRefused returns why a success numeric (903, or 907 "already
+// authenticated") must not count as success for the exchange this State
+// ran, or nil if it may. SCRAM authenticates both ways: the server proves
+// it knows the password with the signature in its server-final, so a
+// success numeric before that signature has verified is a server (or a
+// man in the middle) claiming success without the proof, and accepting
+// it would throw the mutual authentication away. A success numeric after
+// GoBNC itself aborted the exchange (AUTHENTICATE *) is refused for any
+// mechanism: there was no exchange left to succeed. PLAIN and EXTERNAL
+// carry no server proof, so their success numerics are taken as sent.
+func saslSuccessRefused(s State, cmd string) error {
+	if cmd != "903" && cmd != "907" {
+		return nil
+	}
+	if s.saslAborted {
+		return fmt.Errorf("SASL failed: %s after the exchange was aborted", cmd)
+	}
+	if isSCRAM(s.saslAttempt) && !s.saslVerified {
+		return fmt.Errorf("SASL %s failed: %s without a verified server signature", s.saslAttempt, cmd)
+	}
+	return nil
+}
+
+func isSCRAM(mech string) bool {
+	return strings.HasPrefix(strings.ToUpper(mech), "SCRAM-")
+}
+
+// beginSASL records the start of a new exchange with mech, clearing what
+// the previous one left behind.
+func beginSASL(s State, mech string) State {
+	s.saslMech = mech
+	s.scramConv = nil
+	s.saslAttempt = mech
+	s.saslVerified = false
+	s.saslAborted = false
+	s.saslSucceeded = false
+	return s
 }
 
 // startSASL begins AUTHENTICATE with a mechanism we can complete, called
@@ -84,8 +135,7 @@ func startSASL(s State, in Input) (State, []Action) {
 		return s, []Action{{Kind: ActionSend, Line: "CAP END", Replay: in.Replay}}
 	}
 	s.Phase = PhaseAuthenticating
-	s.saslMech = mech
-	s.scramConv = nil
+	s = beginSASL(s, mech)
 	return s, []Action{{Kind: ActionSend, Line: "AUTHENTICATE " + mech, Replay: in.Replay}}
 }
 
@@ -145,8 +195,11 @@ func stepAuthenticate(s State, in Input) (State, []Action) {
 		return s, nil
 	}
 	if param == "*" {
+		// The server ended the exchange; whatever was verified so far
+		// doesn't make a later success numeric count.
 		s.saslMech = ""
 		s.scramConv = nil
+		s.saslVerified = false
 		return s, nil
 	}
 	mech := s.saslMech
@@ -206,9 +259,15 @@ func stepSCRAM(s State, in Input, param string) (State, []Action) {
 		s.scramConv = conv
 	}
 
+	// conv.Step on the server-final checks its server signature and
+	// fails on a mismatch, an e= error or a malformed message, each of
+	// which aborts here.
 	resp, err := conv.Step(challenge)
 	if err != nil {
 		return abortSASL(s, in, err)
+	}
+	if conv.Valid() {
+		s.saslVerified = true
 	}
 	// IRCv3: if the mechanism ends with a non-empty server challenge (SCRAM
 	// server-final), the client MUST still send an empty AUTHENTICATE +.
@@ -221,6 +280,8 @@ func stepSCRAM(s State, in Input, param string) (State, []Action) {
 func abortSASL(s State, in Input, err error) (State, []Action) {
 	s.saslMech = ""
 	s.scramConv = nil
+	s.saslVerified = false
+	s.saslAborted = true
 	actions := []Action{{Kind: ActionSend, Line: "AUTHENTICATE *", Replay: in.Replay}}
 	if s.GotWelcome {
 		// Post-registration (StepPost) — see stepSASLOutcome on why
@@ -323,8 +384,7 @@ func StepPost(s State, in Input) (State, []Action) {
 			if !ok {
 				return s, nil
 			}
-			s.saslMech = mech
-			s.scramConv = nil
+			s = beginSASL(s, mech)
 			return s, []Action{{Kind: ActionSend, Line: "AUTHENTICATE " + mech, Replay: in.Replay}}
 		}
 		return s, nil

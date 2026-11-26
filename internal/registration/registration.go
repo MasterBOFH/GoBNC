@@ -112,6 +112,19 @@ type State struct {
 	saslMech  string
 	scramConv scramConversation
 
+	// saslAttempt is the mechanism of the most recent exchange this State
+	// started, kept after saslMech is cleared (by an abort from either
+	// side) so the outcome numeric can still be judged against it.
+	// saslVerified is set once a SCRAM server-final's signature has
+	// verified; saslAborted once GoBNC itself has sent AUTHENTICATE *.
+	// saslSucceeded records the verdict on the last outcome numeric:
+	// true only for a success numeric saslSuccessRefused accepted.
+	// See saslSuccessRefused.
+	saslAttempt   string
+	saslVerified  bool
+	saslAborted   bool
+	saslSucceeded bool
+
 	// Offered accumulates CAP LS tokens (name -> value, value may be
 	// empty) across however many LS lines a 302 negotiation spans — a
 	// multi-line LS is not a special case, just more tokens added to the
